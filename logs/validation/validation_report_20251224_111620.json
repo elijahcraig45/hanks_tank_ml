@@ -1,0 +1,45 @@
+{
+  "timestamp": "2025-12-24T11:16:20.541509",
+  "overall_status": "PASSED",
+  "summary": {
+    "total_checks": 3,
+    "passed": 3,
+    "warnings": 0,
+    "critical": 0
+  },
+  "results": [
+    {
+      "check_name": "table_exists",
+      "table": "games_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 27,703 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:16:19.595015"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "games_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (19 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:16:19.766538"
+    },
+    {
+      "check_name": "game_count",
+      "table": "games_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No games for future year (expected)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:16:20.541362"
+    }
+  ]
+}

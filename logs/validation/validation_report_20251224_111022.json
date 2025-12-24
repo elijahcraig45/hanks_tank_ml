@@ -1,0 +1,331 @@
+{
+  "timestamp": "2025-12-24T11:10:22.354736",
+  "overall_status": "FAILED",
+  "summary": {
+    "total_checks": 29,
+    "passed": 19,
+    "warnings": 2,
+    "critical": 8
+  },
+  "results": [
+    {
+      "check_name": "table_exists",
+      "table": "teams_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 330 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:10.521273"
+    },
+    {
+      "check_name": "record_count",
+      "table": "teams_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Correct record count: 30",
+      "actual_value": 30,
+      "expected_value": 30,
+      "timestamp": "2025-12-24T11:10:11.461218"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "team_stats",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Table not found: 404 GET https://bigquery.googleapis.com/bigquery/v2/projects/hankstank/datasets/mlb_historical_data/tables/team_stats?prettyPrint=false: Not found: Table hankstank:mlb_historical_data.team_stats",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:11.590565"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "team_stats",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Schema check failed: 404 GET https://bigquery.googleapis.com/bigquery/v2/projects/hankstank/datasets/mlb_historical_data/tables/team_stats?prettyPrint=false: Not found: Table hankstank:mlb_historical_data.team_stats",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:11.722286"
+    },
+    {
+      "check_name": "table_validation_team_stats",
+      "table": "team_stats",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Validation failed with error: 404 Not found: Table hankstank:mlb_historical_data.team_stats was not found in location US; reason: notFound, message: Not found: Table hankstank:mlb_historical_data.team_stats was not found in location US\n\nLocation: US\nJob ID: e2779ca5-b689-4218-8e81-9f5c1a30001f\n",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:12.157092"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "player_stats",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Table not found: 404 GET https://bigquery.googleapis.com/bigquery/v2/projects/hankstank/datasets/mlb_historical_data/tables/player_stats?prettyPrint=false: Not found: Table hankstank:mlb_historical_data.player_stats",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:12.459765"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "player_stats",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Schema check failed: 404 GET https://bigquery.googleapis.com/bigquery/v2/projects/hankstank/datasets/mlb_historical_data/tables/player_stats?prettyPrint=false: Not found: Table hankstank:mlb_historical_data.player_stats",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:12.671624"
+    },
+    {
+      "check_name": "table_validation_player_stats",
+      "table": "player_stats",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Validation failed with error: 404 Not found: Table hankstank:mlb_historical_data.player_stats was not found in location US; reason: notFound, message: Not found: Table hankstank:mlb_historical_data.player_stats was not found in location US\n\nLocation: US\nJob ID: 1501103e-b4b0-4814-981c-8c2d6d70da41\n",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:12.975776"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "standings_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 330 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:13.163133"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "standings_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (22 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:13.330165"
+    },
+    {
+      "check_name": "record_count",
+      "table": "standings_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Correct record count: 30",
+      "actual_value": 30,
+      "expected_value": 30,
+      "timestamp": "2025-12-24T11:10:14.253246"
+    },
+    {
+      "check_name": "null_check_team_id",
+      "table": "standings_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in team_id",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:15.142918"
+    },
+    {
+      "check_name": "null_check_wins",
+      "table": "standings_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in wins",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:15.142947"
+    },
+    {
+      "check_name": "null_check_losses",
+      "table": "standings_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in losses",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:15.142952"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "games_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 27,703 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:15.317023"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "games_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (19 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:15.470362"
+    },
+    {
+      "check_name": "game_count",
+      "table": "games_historical",
+      "year": 2025,
+      "severity": "Severity.WARNING",
+      "passed": false,
+      "message": "Game count outside expected range: 2511 (expected 2400-2500)",
+      "actual_value": 2511,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:16.221184"
+    },
+    {
+      "check_name": "duplicate_check",
+      "table": "games_historical",
+      "year": 2025,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Found 34 duplicate game_pks",
+      "actual_value": 34,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:17.009941"
+    },
+    {
+      "check_name": "score_validity",
+      "table": "games_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All scores valid (max: home=22.0, away=24.0)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:17.830349"
+    },
+    {
+      "check_name": "null_check",
+      "table": "games_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in critical fields",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:18.606935"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "rosters_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 16,733 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:18.787669"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "rosters_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (23 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:18.981775"
+    },
+    {
+      "check_name": "roster_size",
+      "table": "rosters_historical",
+      "year": 2025,
+      "severity": "Severity.WARNING",
+      "passed": false,
+      "message": "Teams with unusual roster sizes: Team 116: 41 players",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:20.142653"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "transactions_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 490,520 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:20.329409"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "transactions_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (18 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:20.475219"
+    },
+    {
+      "check_name": "table_validation_transactions_historical",
+      "table": "transactions_historical",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Validation failed with error: 400 No matching signature for function EXTRACT for argument types: DATE_TIME_PART FROM STRING\n  Signature: EXTRACT(DATE_TIME_PART FROM DATE)\n    Argument 1: Unable to coerce type STRING to expected type DATE\n  Signature: EXTRACT(DATE_TIME_PART FROM TIMESTAMP [AT TIME ZONE STRING])\n    Argument 1: Unable to coerce type STRING to expected type TIMESTAMP\n  Signature: EXTRACT(DATE_TIME_PART FROM DATETIME)\n    Argument 1: Unable to coerce type STRING to expected type DATETIME\n  Signature: EXTRACT(DATE_TIME_PART FROM TIME)\n    Argument 1: Unable to coerce type STRING to expected type TIME\n  Signature: EXTRACT(DATE_TIME_PART FROM INTERVAL)\n    Argument 1: Unable to coerce type STRING to expected type INTERVAL at [4:15]; reason: invalidQuery, location: query, message: No matching signature for function EXTRACT for argument types: DATE_TIME_PART FROM STRING\n  Signature: EXTRACT(DATE_TIME_PART FROM DATE)\n    Argument 1: Unable to coerce type STRING to expected type DATE\n  Signature: EXTRACT(DATE_TIME_PART FROM TIMESTAMP [AT TIME ZONE STRING])\n    Argument 1: Unable to coerce type STRING to expected type TIMESTAMP\n  Signature: EXTRACT(DATE_TIME_PART FROM DATETIME)\n    Argument 1: Unable to coerce type STRING to expected type DATETIME\n  Signature: EXTRACT(DATE_TIME_PART FROM TIME)\n    Argument 1: Unable to coerce type STRING to expected type TIME\n  Signature: EXTRACT(DATE_TIME_PART FROM INTERVAL)\n    Argument 1: Unable to coerce type STRING to expected type INTERVAL at [4:15]\n\nLocation: US\nJob ID: 288684b3-458f-498d-8057-158485b25029\n",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:21.063994"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "statcast_pitches",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 7,813,531 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:21.231934"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "statcast_pitches",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (121 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:21.396830"
+    },
+    {
+      "check_name": "pitch_count",
+      "table": "statcast_pitches",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Statcast data exists for 2025",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:10:22.353176"
+    }
+  ]
+}

@@ -1,0 +1,320 @@
+{
+  "timestamp": "2025-12-24T12:04:38.855338",
+  "overall_status": "PASSED",
+  "summary": {
+    "total_checks": 28,
+    "passed": 28,
+    "warnings": 0,
+    "critical": 0
+  },
+  "results": [
+    {
+      "check_name": "table_exists",
+      "table": "teams_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 330 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:28.574223"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "teams_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (14 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:28.739439"
+    },
+    {
+      "check_name": "record_count",
+      "table": "teams_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No data for future year (expected)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:29.567248"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "team_stats_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 700 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:29.819416"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "team_stats_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (48 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:29.979709"
+    },
+    {
+      "check_name": "record_count",
+      "table": "team_stats_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No data for future year (expected)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:30.673806"
+    },
+    {
+      "check_name": "null_check_team_id",
+      "table": "team_stats_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in team_id",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:31.480722"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "player_stats_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 1,706 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:31.654691"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "player_stats_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (64 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:31.809721"
+    },
+    {
+      "check_name": "record_count",
+      "table": "player_stats_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No data for future year (expected)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:32.515565"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "standings_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 330 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:32.702622"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "standings_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (22 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:32.875466"
+    },
+    {
+      "check_name": "record_count",
+      "table": "standings_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No data for future year (expected)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:33.642997"
+    },
+    {
+      "check_name": "null_check_team_id",
+      "table": "standings_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in team_id",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:34.373844"
+    },
+    {
+      "check_name": "null_check_wins",
+      "table": "standings_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in wins",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:34.373889"
+    },
+    {
+      "check_name": "null_check_losses",
+      "table": "standings_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in losses",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:34.373904"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "games_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 27,172 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:34.529607"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "games_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (19 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:34.694092"
+    },
+    {
+      "check_name": "game_count",
+      "table": "games_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No games for future year (expected)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:35.382868"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "rosters_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 16,733 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:35.573107"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "rosters_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (23 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:35.754468"
+    },
+    {
+      "check_name": "roster_size",
+      "table": "rosters_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All team rosters within expected range (26-70)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:36.525624"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "transactions_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 490,520 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:36.699442"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "transactions_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (18 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:36.985195"
+    },
+    {
+      "check_name": "transaction_count",
+      "table": "transactions_historical",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No transactions for future year (expected)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:37.765985"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "statcast_pitches",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 7,813,531 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:37.931724"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "statcast_pitches",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (121 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:38.098228"
+    },
+    {
+      "check_name": "pitch_count",
+      "table": "statcast_pitches",
+      "year": 2026,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No Statcast data for 2026",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T12:04:38.855198"
+    }
+  ]
+}

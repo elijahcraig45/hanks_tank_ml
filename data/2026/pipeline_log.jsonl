@@ -1,0 +1,1 @@
+{"date": "2025-10-30", "timestamp": "2025-12-24T12:00:44.409844", "dry_run": true, "steps": {"collection": {"success": true, "games_collected": 0, "statcast_pitches": 0, "players_updated": 0, "teams_updated": 0, "errors": []}, "sync": {"skipped": true}, "validation": {"success": false, "error": "'MLBDataValidator' object has no attribute 'validate_all_tables'"}}}

@@ -1,0 +1,177 @@
+{
+  "timestamp": "2025-12-24T11:09:56.439919",
+  "overall_status": "FAILED",
+  "summary": {
+    "total_checks": 15,
+    "passed": 10,
+    "warnings": 1,
+    "critical": 4
+  },
+  "results": [
+    {
+      "check_name": "table_exists",
+      "table": "games_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 27,703 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:48.809717"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "games_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (19 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:48.988640"
+    },
+    {
+      "check_name": "game_count",
+      "table": "games_historical",
+      "year": 2025,
+      "severity": "Severity.WARNING",
+      "passed": false,
+      "message": "Game count outside expected range: 2511 (expected 2400-2500)",
+      "actual_value": 2511,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:50.217315"
+    },
+    {
+      "check_name": "duplicate_check",
+      "table": "games_historical",
+      "year": 2025,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Found 34 duplicate game_pks",
+      "actual_value": 34,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:51.240417"
+    },
+    {
+      "check_name": "score_validity",
+      "table": "games_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All scores valid (max: home=22.0, away=24.0)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:52.287040"
+    },
+    {
+      "check_name": "null_check",
+      "table": "games_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in critical fields",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:53.189063"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "teams",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Table not found: 404 GET https://bigquery.googleapis.com/bigquery/v2/projects/hankstank/datasets/mlb_historical_data/tables/teams?prettyPrint=false: Not found: Table hankstank:mlb_historical_data.teams",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:53.325669"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "teams",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Schema check failed: 404 GET https://bigquery.googleapis.com/bigquery/v2/projects/hankstank/datasets/mlb_historical_data/tables/teams?prettyPrint=false: Not found: Table hankstank:mlb_historical_data.teams",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:53.453719"
+    },
+    {
+      "check_name": "table_validation_teams",
+      "table": "teams",
+      "year": null,
+      "severity": "Severity.CRITICAL",
+      "passed": false,
+      "message": "Validation failed with error: 404 Not found: Table hankstank:mlb_historical_data.teams was not found in location US; reason: notFound, message: Not found: Table hankstank:mlb_historical_data.teams was not found in location US\n\nLocation: US\nJob ID: 3e4bd3bf-02f7-443a-9f25-3e6a3a590bb7\n",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:53.826363"
+    },
+    {
+      "check_name": "table_exists",
+      "table": "standings_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Table exists with 330 rows",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:54.011616"
+    },
+    {
+      "check_name": "schema_integrity",
+      "table": "standings_historical",
+      "year": null,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "All required columns present (22 total columns)",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:54.307257"
+    },
+    {
+      "check_name": "record_count",
+      "table": "standings_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "Correct record count: 30",
+      "actual_value": 30,
+      "expected_value": 30,
+      "timestamp": "2025-12-24T11:09:55.295115"
+    },
+    {
+      "check_name": "null_check_team_id",
+      "table": "standings_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in team_id",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:56.438569"
+    },
+    {
+      "check_name": "null_check_wins",
+      "table": "standings_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in wins",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:56.438600"
+    },
+    {
+      "check_name": "null_check_losses",
+      "table": "standings_historical",
+      "year": 2025,
+      "severity": "Severity.PASS",
+      "passed": true,
+      "message": "No NULL values in losses",
+      "actual_value": null,
+      "expected_value": null,
+      "timestamp": "2025-12-24T11:09:56.438605"
+    }
+  ]
+}
