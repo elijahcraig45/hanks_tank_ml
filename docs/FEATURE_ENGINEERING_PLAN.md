@@ -1668,6 +1668,11 @@ def transfer_learning_approach():
    - Aging curves, comparables
    - Park factors, league adjustments
 
+### Internal Research
+1. **[Moneyball Principles & MLB Feature Engineering](../research/moneyball_ml_principles.md)**
+   - Comprehensive guide on Moneyball concepts, key statistics (OPS, WHIP, WAR), and their translation into ML features.
+   - Includes strategies for time-series analysis and modern Statcast integration.
+
 3. **Fangraphs**
    - wRC+ (weighted runs created plus)
    - FIP (fielding independent pitching)

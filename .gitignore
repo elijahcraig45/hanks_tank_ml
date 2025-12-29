@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/2026/*.log
+logs/validation/*.json
+
+# Local data cache
+data/2026/games/*.json
+data/2026/stats/*.json
+data/2026/statcast/*.json
+data/2026/*.jsonl
+
+# GCP credentials
+*.json
+!package*.json
+credentials.json
+service-account.json
+
+# Temporary files
+*.tmp
+*.bak
+*~
