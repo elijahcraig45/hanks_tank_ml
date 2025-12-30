@@ -390,10 +390,12 @@ def rest_advantage(team_id, game_date):
    - Facing strong offense increases risk
    - Source: `team_stats_historical`
 
-3. **Days Rest**
-   - Pitchers on normal rest (4-5 days) perform best
-   - Extra rest or short rest affects performance
-   - Source: `games_historical` appearances
+3. **Days Rest & Fatigue (See [../research/PITCHER_FATIGUE_FEATURES.md](../research/PITCHER_FATIGUE_FEATURES.md))**
+   - **Days Rest:** Pitchers on normal rest (4-5 days) perform best.
+   - **Short Rest Flag:** < 4 days (significant penalty).
+   - **Reliever Workload:** Consecutive days pitched, pitches in last 3 days.
+   - **"Dead Arm" Indicators:** Rolling velocity drop vs. season average.
+   - Source: `games_historical` appearances, `statcast_pitches`
 
 4. **Pitch Velocity Trends**
    - Declining velocity = fatigue or injury

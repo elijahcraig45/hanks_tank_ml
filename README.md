@@ -27,15 +27,14 @@ hanks_tank_ml/
 │
 ├── ml_curriculum/                # Learning materials
 │   ├── CURRICULUM.md             # Course outline
-│   ├── LESSON_01_DATA_PIPELINES.md  # Lesson 1: Pipelines & ETL
-│   ├── LESSON_02_BIGQUERY_DEEP_DIVE.md # Lesson 2: BigQuery & SQL
-│   └── LESSON_03_DATA_MODELING.md   # Lesson 3: Data Modeling
+│   └── LESSON_01_DATA_PIPELINES.md  # Lesson 1: Pipelines & ETL
 │
 ├── research/                     # Research & Feature Engineering
 │   ├── moneyball_principles.md   # Moneyball concepts
 │   ├── advanced_sabermetrics.md  # Modern metrics (wRC+, FIP)
 │   ├── park_and_weather_factors.md # Environmental factors
-│   └── competitor_analysis.md    # Benchmarks & Competitors
+│   ├── pitcher_rest_cycles.md    # Pitcher fatigue deep dive
+│   └── PITCHER_FATIGUE_FEATURES.md # Fatigue modeling specs
 │
 ├── data/                         # Local data cache
 │   └── 2026/                     # 2026 season data
@@ -201,17 +200,7 @@ Following the ML curriculum in `ml_curriculum/`:
    - Prediction serving
    - Model monitoring
 
-## � Research & Analysis
-
-We have conducted extensive research to guide our feature engineering and modeling strategy.
-
-*   **[Moneyball Principles](research/moneyball_principles.md)**: Core concepts like Market Inefficiency and Pythagorean Expectation.
-*   **[Advanced Sabermetrics](research/advanced_sabermetrics.md)**: Modern metrics (wRC+, FIP, SIERA) that isolate skill from luck.
-*   **[Park & Weather](research/park_and_weather_factors.md)**: How environment (Coors Field, Wind, Temp) affects game outcomes.
-*   **[Competitor Analysis](research/competitor_analysis.md)**: Benchmarks (aim for 55% accuracy) and lessons from PECOTA/ZiPS.
-*   **[Fringe Factors](research/astrology_and_calendar_effects.md)**: Circadian rhythms, jet lag, and other hidden variables.
-
-## �💡 Key Features
+## 💡 Key Features
 
 ✅ **Automated** - Runs daily via cron, zero manual work  
 ✅ **Safe** - Upsert prevents duplicates  
