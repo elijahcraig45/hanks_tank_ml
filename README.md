@@ -1,57 +1,60 @@
-# Hank's Tank MLB Data Platform
+# Hank's Tank MLB Prediction Pipeline
 
-Automated MLB data pipeline for historical collection, real-time tracking, and ML model training. Designed to be future-proof and cost-effective on Google Cloud Platform.
+Senior-level ML/analytics project that builds an end-to-end MLB prediction system: data collection, validation, feature engineering, model training, and daily inference readiness. The pipeline uses historical game data (2015–2025) with a strict temporal split to avoid leakage and benchmarks models against a 2025 holdout season.
 
-## 📚 Key Documentation
+## Highlights
 
-- **[Production Architecture](docs/PRODUCTION_ARCHITECTURE.md)**: High-level system design, cloud infrastructure, and cost estimates.
-- **[Data Collection Design](docs/DATA_COLLECTION_SYSTEM_DESIGN.md)**: Detailed API specifications for the data collector.
-- **[ML Curriculum](ml_curriculum/CURRICULUM.md)**: Learning path for building the ML models.
+- **Reproducible ML workflow** with clear train/validation splits (2015–2024 train, 2025 validation)
+- **Feature engineering at scale** (57 engineered features, rolling form, rest, park effects, matchup deltas)
+- **Model evaluation and documentation** with traceable performance comparisons
+- **Production-oriented tooling** (data validation reports, automation scripts, model artifacts)
 
-## 🚀 Quick Start
+## Results (2025 Holdout)
 
-### 1. Setup Environment
+| Version | Algorithm | Features | Accuracy | AUC |
+|---|---|---:|---:|---:|
+| V1 | Logistic Regression | 5 | 54.0% | 0.543 |
+| V2 | Logistic Regression | 44 | 54.4% | 0.534 |
+| V3 | XGBoost | 57 | **54.6%** | **0.546** |
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
-```
+Detailed write-ups:
+- [docs/V3_TRAINING_RESULTS.md](docs/V3_TRAINING_RESULTS.md)
+- [docs/MODEL_EVOLUTION_COMPLETE.md](docs/MODEL_EVOLUTION_COMPLETE.md)
 
-### 2. Run Prototypes
+## Tech Stack
 
-We use Jupyter notebooks for prototyping and testing data collection:
+- Python, pandas, NumPy, scikit-learn
+- XGBoost, LightGBM, Optuna (experimentation)
+- BigQuery ingestion and validation
+- Parquet-based training datasets
 
-```bash
-# Launch the test notebook
-jupyter notebook notebooks/data_collection_test.ipynb
-```
+## Repo Structure
 
-### 3. Automation Scripts
+- [src](src) — feature engineering and model training scripts
+- [data](data) — training/validation datasets and logs
+- [docs](docs) — model results and validation summaries
+- [scripts](scripts) — automation and validation helpers
+- [notebooks](notebooks) — exploration and prototyping
 
-Scripts for daily operations are located in `scripts/`:
-- `setup_2026_automation.sh`: Initial setup
-- `run_daily_2026.sh`: Daily data collection job
+## Key Scripts
 
-## 📊 System Overview
+- [src/build_training_data.py](src/build_training_data.py) — base feature pipeline (V1)
+- [src/build_v2_features.py](src/build_v2_features.py) — enhanced features (V2)
+- [src/build_v3_features.py](src/build_v3_features.py) — advanced features (V3)
+- [src/train_game_models.py](src/train_game_models.py) — baseline training
+- [src/train_v2_models.py](src/train_v2_models.py) — V2 training
+- [src/train_v3_models.py](src/train_v3_models.py) — V3 training (best)
+- [src/train_v4_models.py](src/train_v4_models.py) — experimental stacked ensemble
+- [src/train_v4_tuned.py](src/train_v4_tuned.py) — experimental hyperparameter tuning
+- [src/predict_2026_games.py](src/predict_2026_games.py) — 2026 inference pipeline
 
-```
-MLB Stats API / Statcast
-          ↓
-    [Data Collector]
-          ↓
-    [Validation Layer]
-          ↓
-      [BigQuery]
-          ↓
-   [Feature Engine]
-          ↓
-      [ML Models]
-```
+## Data Quality & Validation
 
-## 📁 Project Structure
+Daily validation reports are generated during season monitoring.
 
-- `src/`: Core Python source code for pipelines and collectors.
-- `docs/`: Detailed system documentation and design specs.
-- `notebooks/`: Prototyping and testing environments.
-- `research/`: Baseball analytics research and feature engineering plans.
-- `scripts/`: Shell scripts for automation and deployment.
+- [docs/BIGQUERY_DATA_SCHEMA.md](docs/BIGQUERY_DATA_SCHEMA.md)
+- [logs/validation](logs/validation)
+
+## Notes
+
+This project focuses on deterministic, leakage-safe MLB prediction modeling. Future iterations aim to add external signals (injuries, roster changes, market lines) to push beyond the historical-data ceiling.
