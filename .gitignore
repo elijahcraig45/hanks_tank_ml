@@ -40,3 +40,5 @@ service-account.json
 *.tmp
 *.bak
 *~
+*.pkl
+models/
