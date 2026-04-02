@@ -555,38 +555,41 @@ class SeasonPipeline:
             logger.error("transactions failed: %s", e)
             self.stats["errors"].append(f"transactions: {e}")
 
-        # Statcast
-        try:
-            sc = self.collect_statcast(target_date)
-            if not sc.empty:
-                self._delete_date("statcast_pitches", "game_date", target_date)
-                # Only keep columns that exist in the BQ schema
-                keep_cols = [
-                    "pitch_type", "game_date", "game_year", "game_pk",
-                    "pitcher", "batter", "player_name", "events", "description",
-                    "release_speed", "release_pos_x", "release_pos_z",
-                    "release_spin_rate", "spin_axis", "release_extension",
-                    "effective_speed", "zone", "plate_x", "plate_z",
-                    "pfx_x", "pfx_z", "game_type", "stand", "p_throws",
-                    "home_team", "away_team", "balls", "strikes",
-                    "inning", "inning_topbot", "outs_when_up",
-                    "hit_distance_sc", "launch_speed", "launch_angle",
-                    "estimated_ba_using_speedangle",
-                    "estimated_woba_using_speedangle",
-                    "estimated_slg_using_speedangle",
-                    "woba_value", "woba_denom", "babip_value", "iso_value",
-                    "vx0", "vy0", "vz0", "ax", "ay", "az",
-                    "sz_top", "sz_bot", "bat_speed", "swing_length",
-                    "attack_angle", "delta_home_win_exp", "delta_run_exp",
-                    "pitch_name", "home_score", "away_score", "synced_at",
-                ]
-                existing = [c for c in keep_cols if c in sc.columns]
-                sc = sc[existing]
-                self._load_to_bq(sc, "statcast_pitches")
-                self.stats["statcast"] += len(sc)
-        except Exception as e:
-            logger.error("statcast failed: %s", e)
-            self.stats["errors"].append(f"statcast: {e}")
+        # Statcast — pull two days to compensate for Baseball Savant's ~24-48h
+        # publication lag.  target_date is "yesterday"; target_date-1 is the
+        # day Savant has typically just finished publishing.
+        for sc_date in (target_date - timedelta(days=1), target_date):
+            try:
+                sc = self.collect_statcast(sc_date)
+                if not sc.empty:
+                    self._delete_date("statcast_pitches", "game_date", sc_date)
+                    # Only keep columns that exist in the BQ schema
+                    keep_cols = [
+                        "pitch_type", "game_date", "game_year", "game_pk",
+                        "pitcher", "batter", "player_name", "events", "description",
+                        "release_speed", "release_pos_x", "release_pos_z",
+                        "release_spin_rate", "spin_axis", "release_extension",
+                        "effective_speed", "zone", "plate_x", "plate_z",
+                        "pfx_x", "pfx_z", "game_type", "stand", "p_throws",
+                        "home_team", "away_team", "balls", "strikes",
+                        "inning", "inning_topbot", "outs_when_up",
+                        "hit_distance_sc", "launch_speed", "launch_angle",
+                        "estimated_ba_using_speedangle",
+                        "estimated_woba_using_speedangle",
+                        "estimated_slg_using_speedangle",
+                        "woba_value", "woba_denom", "babip_value", "iso_value",
+                        "vx0", "vy0", "vz0", "ax", "ay", "az",
+                        "sz_top", "sz_bot", "bat_speed", "swing_length",
+                        "attack_angle", "delta_home_win_exp", "delta_run_exp",
+                        "pitch_name", "home_score", "away_score", "synced_at",
+                    ]
+                    existing = [c for c in keep_cols if c in sc.columns]
+                    sc = sc[existing]
+                    self._load_to_bq(sc, "statcast_pitches")
+                    self.stats["statcast"] += len(sc)
+            except Exception as e:
+                logger.error("statcast failed for %s: %s", sc_date, e)
+                self.stats["errors"].append(f"statcast({sc_date}): {e}")
 
     def run_rosters(self, target_date: date):
         """Rosters only need weekly refresh."""
