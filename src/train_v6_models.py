@@ -333,10 +333,23 @@ class V6Trainer:
         self.feature_cols: list[str] = []
         self.fill_values: dict = {}
 
+    def _fetch_parquet(self, local_path: Path, gcs_object: str) -> pd.DataFrame:
+        """Load parquet from local disk, falling back to GCS download if not found."""
+        if local_path.exists():
+            return pd.read_parquet(local_path)
+        logger.info("%s not found locally — downloading from gs://%s/%s",
+                    local_path, GCS_BUCKET, gcs_object)
+        from google.cloud import storage as gcs_storage
+        client = gcs_storage.Client(project=PROJECT)
+        data = client.bucket(GCS_BUCKET).blob(gcs_object).download_as_bytes()
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(data)
+        return pd.read_parquet(local_path)
+
     def load_data(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         logger.info("Loading V3 training data...")
-        train_df = pd.read_parquet(TRAIN_PATH)
-        val_df   = pd.read_parquet(VAL_PATH)
+        train_df = self._fetch_parquet(TRAIN_PATH, "data/training/train_v3_2015_2024.parquet")
+        val_df   = self._fetch_parquet(VAL_PATH,   "data/training/val_v3_2025.parquet")
         logger.info("Train: %d rows | Val: %d rows", len(train_df), len(val_df))
         return train_df, val_df
 
@@ -374,10 +387,9 @@ class V6Trainer:
 
         # Median imputation fitted on train only — stored as fill_values for inference
         for col in self.feature_cols:
-            fill_val = train_df[col].median()
-            if pd.isna(fill_val):
-                fill_val = 0.0
-            self.fill_values[col] = float(fill_val)
+            med = train_df[col].median()
+            fill_val = float(med) if pd.notna(med) else 0.0
+            self.fill_values[col] = fill_val
             train_df[col] = train_df[col].fillna(fill_val)
             val_df[col]   = val_df[col].fillna(fill_val)
 

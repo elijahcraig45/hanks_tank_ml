@@ -48,14 +48,19 @@ DATASET = "mlb_2026_season"
 BUCKET = "hanks_tank_data"
 MLB_API = "https://statsapi.mlb.com/api/v1"
 
-GAME_FEATURES_TABLE = f"{PROJECT}.{DATASET}.game_features"
-MATCHUP_TABLE = f"{PROJECT}.{DATASET}.matchup_features"
-PREDICTIONS_TABLE = f"{PROJECT}.{DATASET}.game_predictions"
-LINEUPS_TABLE = f"{PROJECT}.{DATASET}.lineups"
+GAME_FEATURES_TABLE  = f"{PROJECT}.{DATASET}.game_features"
+MATCHUP_TABLE        = f"{PROJECT}.{DATASET}.matchup_features"
+MATCHUP_V7_TABLE     = f"{PROJECT}.{DATASET}.matchup_v7_features"
+PREDICTIONS_TABLE    = f"{PROJECT}.{DATASET}.game_predictions"
+LINEUPS_TABLE        = f"{PROJECT}.{DATASET}.lineups"
 
-# V5 model (matchup-aware), falls back to V4
+# Model GCS paths — predictor tries V7 → V6 → V5 → V4
+V7_MODEL_GCS = "models/vertex/game_outcome_2026_v7/model.pkl"
+V6_MODEL_GCS = "models/vertex/game_outcome_2026_v6/model.pkl"
 V5_MODEL_GCS = "models/vertex/game_outcome_2026_v5/model.pkl"
 V4_MODEL_GCS = "models/vertex/game_outcome_2026/model.pkl"
+V7_LOCAL = Path("models/game_outcome_2026_v7.pkl")
+V6_LOCAL = Path("models/game_outcome_2026_v6.pkl")
 V5_LOCAL = Path("models/game_outcome_2026_v5.pkl")
 V4_LOCAL = Path("models/game_outcome_2026_vertex.pkl")
 
@@ -121,29 +126,33 @@ class DailyPredictor:
     # Model loading
     # -----------------------------------------------------------------------
     def load_model(self) -> None:
-        """Try V5 (matchup-aware) first, fall back to V4."""
-        loaded = False
+        """Try V7 → V6 → V5 → V4 in order, using local cache when available."""
+        _versions = [
+            ("v7", V7_LOCAL, V7_MODEL_GCS),
+            ("v6", V6_LOCAL, V6_MODEL_GCS),
+            ("v5", V5_LOCAL, V5_MODEL_GCS),
+        ]
+        data = None
 
-        # Try V5 local then GCS
         if not self.fallback_v4:
-            if V5_LOCAL.exists():
-                logger.info("Loading V5 model from %s", V5_LOCAL)
-                with open(V5_LOCAL, "rb") as f:
-                    data = pickle.load(f)
-                loaded = True
-            else:
+            for label, local_path, gcs_path in _versions:
+                if local_path.exists():
+                    logger.info("Loading %s model from %s", label, local_path)
+                    with open(local_path, "rb") as f:
+                        data = pickle.load(f)
+                    break
                 try:
-                    logger.info("Downloading V5 model from GCS...")
+                    logger.info("Downloading %s model from GCS...", label)
                     client = storage.Client(project=PROJECT)
                     bucket = client.bucket(BUCKET)
-                    blob = bucket.blob(V5_MODEL_GCS)
+                    blob = bucket.blob(gcs_path)
                     data = pickle.loads(blob.download_as_bytes())
-                    loaded = True
+                    break
                 except Exception as e:
-                    logger.warning("V5 model not available: %s — falling back to V4", e)
+                    logger.warning("%s model not available: %s — trying next version", label, e)
 
         # V4 fallback
-        if not loaded:
+        if data is None:
             if V4_LOCAL.exists():
                 logger.info("Loading V4 model from %s", V4_LOCAL)
                 with open(V4_LOCAL, "rb") as f:
@@ -259,12 +268,30 @@ class DailyPredictor:
             logger.debug("Could not load lineup starters: %s", e)
             return pd.DataFrame()
 
+    def load_v7_features(self, game_pks: list[int]) -> pd.DataFrame:
+        """Load V7 matchup features (bullpen health, moon phase, pitcher venue splits)."""
+        pk_list = ", ".join(str(pk) for pk in game_pks)
+        sql = f"""
+            SELECT *
+            FROM `{MATCHUP_V7_TABLE}`
+            WHERE game_pk IN ({pk_list})
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY game_pk ORDER BY computed_at DESC
+            ) = 1
+        """
+        try:
+            return self.bq.query(sql).to_dataframe()
+        except Exception as e:
+            logger.debug("Could not load v7 features (table may not exist yet): %s", e)
+            return pd.DataFrame()
+
     # -----------------------------------------------------------------------
     # Feature assembly
     # -----------------------------------------------------------------------
     def assemble_features(
         self, game: dict, game_feat_row: Optional[pd.Series],
-        matchup_row: Optional[pd.Series]
+        matchup_row: Optional[pd.Series],
+        v7_row: Optional[pd.Series] = None,
     ) -> pd.DataFrame:
         """
         Combine team-level and matchup features into the model input vector.
@@ -355,6 +382,14 @@ class DailyPredictor:
             }
             feat.update(neutral_matchup)
 
+        # V7 features (bullpen health, moon phase, pitcher venue splits)
+        if v7_row is not None and not v7_row.empty:
+            skip_cols = {"game_pk", "game_date", "home_team_id", "away_team_id", "computed_at"}
+            for col in v7_row.index:
+                if col not in skip_cols:
+                    val = v7_row[col]
+                    feat[col] = float(val) if pd.notna(val) else None
+
         # Build final feature vector aligned with model's expected features
         row = {}
         for fname in self.feature_names:
@@ -432,6 +467,7 @@ class DailyPredictor:
         game_pks = [g["game_pk"] for g in games]
         game_features_df = self.load_game_features(game_pks)
         matchup_df = self.load_matchup_features(game_pks)
+        v7_df = self.load_v7_features(game_pks)
         starter_df = self.load_lineup_starters(game_pks)
 
         pred_rows = []
@@ -452,7 +488,14 @@ class DailyPredictor:
                 if not mf_subset.empty:
                     mf_row = mf_subset.iloc[0]
 
-            feat_df = self.assemble_features(game, gf_row, mf_row)
+            # V7 features
+            v7_row = None
+            if not v7_df.empty and "game_pk" in v7_df.columns:
+                v7_subset = v7_df[v7_df["game_pk"] == pk]
+                if not v7_subset.empty:
+                    v7_row = v7_subset.iloc[0]
+
+            feat_df = self.assemble_features(game, gf_row, mf_row, v7_row)
             pred = self.predict_game(game, feat_df, mf_row)
 
             # Starter info from lineup table (prefer over schedule)
