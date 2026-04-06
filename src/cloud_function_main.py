@@ -67,18 +67,37 @@ def daily_pipeline(request):
         if mode == "matchup_features":
             results["steps"].append(_run_matchup_features(target, game_pks, dry_run))
 
+        # V7 matchup features (bullpen health, moon phase, pitcher venue splits)
+        if mode in ("matchup_v7_features", "pregame_v7", "daily"):
+            results["steps"].append(_run_v7_features(target, game_pks, dry_run))
+
         if mode == "predict_today":
             results["steps"].append(_run_daily_prediction(target, game_pks, dry_run, req_json))
 
-        # Combined pre-game pipeline: lineups → matchup features → today prediction
-        if mode == "pregame":
+        # Combined pre-game pipeline: lineups → V5/V6 matchup → V7 features → prediction
+        if mode in ("pregame", "pregame_v7"):
             results["steps"].append(_run_lineup_fetch(target, game_pks, dry_run))
             results["steps"].append(_run_matchup_features(target, game_pks, dry_run))
+            if mode == "pregame_v7":
+                results["steps"].append(_run_v7_features(target, game_pks, dry_run))
             results["steps"].append(_run_daily_prediction(target, game_pks, dry_run, req_json))
 
         # Weekly model training (Sundays only) — keeps training cost-efficient
+        # Runs V6 by default; switches to V7 if v7_model is in request body
         if mode == "train_weekly" or (mode == "daily" and target.weekday() == 6):
-            results["steps"].append(_run_weekly_training(dry_run))
+            model_version = req_json.get("model_version", "v6")
+            if model_version == "v7":
+                results["steps"].append(_run_weekly_training_v7(dry_run))
+            else:
+                results["steps"].append(_run_weekly_training(dry_run))
+
+        # V7 backfill: recompute V7 features for a historical date range
+        if mode == "backfill_v7":
+            results["steps"].append(_run_v7_backfill(
+                date.fromisoformat(req_json.get("start", "2026-03-01")),
+                date.fromisoformat(req_json.get("end", target.isoformat())),
+                dry_run,
+            ))
 
         # Roster refresh on Mondays
         if mode == "daily" and target.weekday() == 0:
@@ -134,14 +153,63 @@ def _run_daily_prediction(
 
 
 def _run_weekly_training(dry_run: bool) -> dict:
-    """Run V5 model training (Sundays only, weekly cadence)."""
-    from train_v5_models import V5Trainer
+    """Run V6 model training (Sundays only, weekly cadence — production default)."""
+    from train_v6_models import V6Trainer
 
-    trainer = V5Trainer(use_matchup_join=True)
-    trainer.run(dry_run=dry_run)
+    trainer = V6Trainer(use_v6_join=True, use_v5_join=True)
+    trainer.run(dry_run=dry_run, upload=True)
     return {
         "step": "weekly_training",
-        "model": "v5_matchup_stacked_ensemble",
+        "model": "v6_pitcher_venue_stacked_ensemble",
+    }
+
+
+def _run_weekly_training_v7(dry_run: bool) -> dict:
+    """Run V7 model training. Invoked via {mode: train_weekly, model_version: v7}."""
+    from train_v7_models import V7Trainer
+
+    trainer = V7Trainer(use_v5_join=True, use_v6_join=True, use_v7_join=True)
+    trainer.run(dry_run=dry_run, upload=True)
+    return {
+        "step": "weekly_training_v7",
+        "model": "v7_bullpen_moon_venue_stacked_ensemble",
+    }
+
+
+def _run_v7_features(target: date, game_pks: list, dry_run: bool) -> dict:
+    """Build V7 matchup features (bullpen health, moon phase, pitcher venue splits)."""
+    from build_v7_features import V7FeatureBuilder
+
+    builder = V7FeatureBuilder(dry_run=dry_run)
+    if game_pks:
+        result = builder.run_for_game_pks(game_pks, target)
+    else:
+        result = builder.run_for_date(target)
+    return {"step": "v7_features", **result}
+
+
+def _run_v7_backfill(start: date, end: date, dry_run: bool) -> dict:
+    """Backfill V7 features day-by-day for a historical date range."""
+    from build_v7_features import V7FeatureBuilder
+    import time
+
+    builder = V7FeatureBuilder(dry_run=dry_run)
+    total = 0
+    errors = []
+    current = start
+    while current <= end:
+        try:
+            r = builder.run_for_date(current)
+            total += r.get("games_processed", 0)
+        except Exception as e:
+            errors.append({"date": current.isoformat(), "error": str(e)})
+        current += timedelta(days=1)
+        time.sleep(0.25)   # gentle rate-limit against BQ
+    return {
+        "step": "v7_backfill",
+        "dates_processed": (end - start).days + 1,
+        "games_processed": total,
+        "errors": errors,
     }
 
 
