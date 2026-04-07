@@ -100,6 +100,7 @@ MATCHUP_V6_TABLE        = f"{PROJECT}.{SEASON_DS}.matchup_v6_features"
 MATCHUP_V7_TABLE        = f"{PROJECT}.{SEASON_DS}.matchup_v7_features"
 LINEUPS_TABLE           = f"{PROJECT}.{SEASON_DS}.lineups"
 PITCHER_STATS_TABLE     = f"{PROJECT}.{HIST_DS}.pitcher_game_stats"
+PITCHER_STATS_SEASON    = f"{PROJECT}.{SEASON_DS}.pitcher_game_stats"
 GAMES_HIST_TABLE        = f"{PROJECT}.{HIST_DS}.games_historical"
 STATCAST_SEASON_TABLE   = f"{PROJECT}.{SEASON_DS}.statcast_pitches"
 STATCAST_HIST_TABLE     = f"{PROJECT}.{HIST_DS}.statcast_pitches"
@@ -496,8 +497,8 @@ class V7FeatureBuilder:
         """Fetch home_starter_id, away_starter_id, venue_id from lineup/game tables."""
         sql = f"""
         SELECT
-            COALESCE(l_h.pitcher_id, NULL) AS home_starter_id,
-            COALESCE(l_a.pitcher_id, NULL) AS away_starter_id,
+            COALESCE(l_h.player_id, NULL) AS home_starter_id,
+            COALESCE(l_a.player_id, NULL) AS away_starter_id,
             g.venue_id
         FROM (
             SELECT game_pk, venue_id, home_team_id, away_team_id
@@ -509,12 +510,12 @@ class V7FeatureBuilder:
             WHERE game_pk = {game_pk}
         ) g
         LEFT JOIN (
-            SELECT game_pk, pitcher_id FROM `{LINEUPS_TABLE}`
+            SELECT game_pk, player_id FROM `{LINEUPS_TABLE}`
             WHERE game_pk = {game_pk} AND team_type = 'home' AND batting_order = 0
             QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY confirmed_at DESC) = 1
         ) l_h ON l_h.game_pk = g.game_pk
         LEFT JOIN (
-            SELECT game_pk, pitcher_id FROM `{LINEUPS_TABLE}`
+            SELECT game_pk, player_id FROM `{LINEUPS_TABLE}`
             WHERE game_pk = {game_pk} AND team_type = 'away' AND batting_order = 0
             QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY confirmed_at DESC) = 1
         ) l_a ON l_a.game_pk = g.game_pk
@@ -528,6 +529,7 @@ class V7FeatureBuilder:
             h_sp = int(r["home_starter_id"]) if r["home_starter_id"] is not None else None
             a_sp = int(r["away_starter_id"]) if r["away_starter_id"] is not None else None
             vid  = int(r["venue_id"]) if r["venue_id"] is not None else None
+            return h_sp, a_sp, vid, None
             return h_sp, a_sp, vid, None
         except Exception as e:
             logger.warning("Starter/venue lookup failed for game %d: %s", game_pk, e)
@@ -544,8 +546,7 @@ class V7FeatureBuilder:
         # Pull game list for the date
         try:
             games_sql = f"""
-            SELECT game_pk, home_team_id, away_team_id, venue_id,
-                   EXTRACT(HOUR FROM game_time_utc) AS game_hour_utc
+            SELECT game_pk, home_team_id, away_team_id, venue_id
             FROM `{PROJECT}.{SEASON_DS}.games`
             WHERE game_date = '{target.isoformat()}'
             """
@@ -564,7 +565,7 @@ class V7FeatureBuilder:
             h_team    = int(game["home_team_id"])
             a_team    = int(game["away_team_id"])
             venue_id  = int(game["venue_id"]) if game["venue_id"] is not None else None
-            g_hour    = float(game.get("game_hour_utc") or 23.0)
+            g_hour    = 23.0  # Default to ~7 PM ET (23:00 UTC)
 
             # Group A: bullpen health
             h_bp = self._bullpen_health_query(h_team, target)
@@ -606,10 +607,10 @@ class V7FeatureBuilder:
 
             row = {
                 "game_pk": game_pk,
-                "game_date": target.isoformat(),
+                "game_date": target,  # Keep as date object for BigQuery
                 "home_team_id": h_team,
                 "away_team_id": a_team,
-                "computed_at": datetime.now(timezone.utc).isoformat(),
+                "computed_at": datetime.now(timezone.utc),  # BigQuery TIMESTAMP type
                 # Bullpen
                 "home_bullpen_pitches_7d":    h_bp["bullpen_pitches_7d"],
                 "away_bullpen_pitches_7d":    a_bp["bullpen_pitches_7d"],
