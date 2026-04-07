@@ -300,31 +300,54 @@ class V7FeatureBuilder:
 
         sql = f"""
         WITH relief_usage AS (
+            -- Combine pitcher_game_stats (historical) + statcast pitch-level data (2026)
             SELECT
-                pg.pitcher,
-                pg.game_pk,
-                g.game_date,
-                pg.total_pitches,
-                pg.innings_pitched,
-                -- high_leverage proxy: > 60 pitches in ≤ 2 innings = high stress
-                CASE WHEN pg.total_pitches > 60 AND pg.innings_pitched <= 2
+                pitcher,
+                game_pk,
+                game_date,
+                total_pitches,
+                innings_pitched,
+                CASE WHEN total_pitches > 60 AND innings_pitched <= 2
                      THEN 1.5 ELSE 1.0 END AS leverage_weight
-            FROM `{PITCHER_STATS_TABLE}` pg
-            JOIN (
-                SELECT game_pk, game_date, home_team_id, away_team_id
-                FROM `{PROJECT}.{SEASON_DS}.games`
-                WHERE game_date >= '{cutoff}' AND game_date < '{gd_str}'
+            FROM (
+                -- Historical relief usage from pitcher_game_stats
+                SELECT
+                    pg.pitcher,
+                    pg.game_pk,
+                    g.game_date,
+                    pg.total_pitches,
+                    pg.innings_pitched
+                FROM `{PITCHER_STATS_TABLE}` pg
+                JOIN (
+                    SELECT game_pk, CAST(game_date AS DATE) as game_date, home_team_id, away_team_id
+                    FROM `{GAMES_HIST_TABLE}`
+                    WHERE CAST(game_date AS DATE) >= '{cutoff}'
+                      AND CAST(game_date AS DATE) < '{gd_str}'
+                ) g ON pg.game_pk = g.game_pk
+                WHERE
+                    (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+                    AND pg.team_id = {team_id}
+                    AND COALESCE(pg.is_starter, FALSE) = FALSE
+                    AND pg.total_pitches > 0
                 UNION ALL
-                SELECT game_pk, CAST(game_date AS DATE), home_team_id, away_team_id
-                FROM `{GAMES_HIST_TABLE}`
-                WHERE CAST(game_date AS DATE) >= '{cutoff}'
-                  AND CAST(game_date AS DATE) < '{gd_str}'
-            ) g ON pg.game_pk = g.game_pk
-            WHERE
-                (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
-                AND pg.team_id = {team_id}
-                AND COALESCE(pg.is_starter, FALSE) = FALSE
-                AND pg.total_pitches > 0
+                -- 2026 relief usage from statcast_pitches
+                SELECT
+                    sc.pitcher,
+                    sc.game_pk,
+                    CAST(sc.game_date AS DATE),
+                    COUNT(*) as total_pitches,
+                    -- Estimate IP: divide pitch count by ~4 (avg pitches per inning)
+                    COUNT(*) / 4.0 as innings_pitched
+                FROM `{STATCAST_SEASON_TABLE}` sc
+                JOIN `{PROJECT}.{SEASON_DS}.games` g ON sc.game_pk = g.game_pk
+                WHERE
+                    CAST(sc.game_date AS DATE) >= '{cutoff}'
+                    AND CAST(sc.game_date AS DATE) < '{gd_str}'
+                    AND (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+                    AND sc.pitcher_team_id = {team_id}
+                    AND COALESCE(sc.is_pitcher_starter, FALSE) = FALSE
+                GROUP BY sc.pitcher, sc.game_pk, CAST(sc.game_date AS DATE)
+            )
         ),
         closer_candidate AS (
             -- Closer proxy: highest WPA or highest-leverage appearance in last 30 days
