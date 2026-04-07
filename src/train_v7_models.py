@@ -516,7 +516,8 @@ class V7Trainer:
             "model":        stacked,
             "model_name":   "V7_BullpenMoonVenueSplit",
             "version":      "v7",
-            "feature_cols": self.feature_cols,
+            "features":     self.feature_cols,  # Changed from feature_cols to features
+            "feature_cols": self.feature_cols,  # Keep for backward compatibility
             "fill_values":  self.fill_values,
             "metrics":      result["metrics"],
             "trained_at":   datetime.utcnow().isoformat(),
