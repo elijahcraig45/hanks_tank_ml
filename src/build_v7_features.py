@@ -514,10 +514,316 @@ class V7FeatureBuilder:
     def _neutral_pitcher_venue() -> dict:
         return {"venue_era": 4.25, "venue_whip": 1.30, "venue_k9": 8.0, "venue_pa_total": 0}
 
+    def _pitcher_arsenal_2026_statcast(
+        self, pitcher_id: int, game_date: date
+    ) -> dict:
+        """
+        Extract pitcher arsenal stats from 2026 statcast data.
+        Returns mean fastball velocity, K-BB%, and xwOBA allowed.
+        """
+        if pitcher_id is None:
+            return {
+                "mean_velo": None,
+                "velo_norm": None,
+                "k_bb_pct": None,
+                "xwoba_allowed": None,
+                "fastball_pct": None,
+                "breaking_pct": None,
+                "offspeed_pct": None,
+                "velo_trend": None,
+            }
+        gd_str = game_date.isoformat()
+        sql = f"""
+        SELECT
+            AVG(release_speed) AS mean_velo,
+            COUNTIF(pitch_type = 'FF') / NULLIF(COUNT(*), 0) AS fastball_pct,
+            COUNTIF(pitch_type IN ('CB', 'CU', 'SL', 'SV')) / NULLIF(COUNT(*), 0) AS breaking_pct,
+            COUNTIF(pitch_type IN ('CH', 'FO', 'KN', 'SC')) / NULLIF(COUNT(*), 0) AS offspeed_pct,
+            COUNT(*) AS pitch_count
+        FROM `{STATCAST_SEASON_TABLE}`
+        WHERE pitcher = {pitcher_id}
+          AND game_date < '{gd_str}'
+          AND release_speed IS NOT NULL
+        """
+        try:
+            row = self.bq.query(sql).to_dataframe()
+            if row.empty:
+                return {
+                    "mean_velo": None,
+                    "velo_norm": None,
+                    "k_bb_pct": None,
+                    "xwoba_allowed": None,
+                    "fastball_pct": None,
+                    "breaking_pct": None,
+                    "offspeed_pct": None,
+                    "velo_trend": None,
+                }
+            r = row.iloc[0]
+            mean_velo = float(r["mean_velo"]) if pd.notna(r["mean_velo"]) else None
+            velo_norm = ((mean_velo - LEAGUE_AVG_VELO) / VELO_STD) if mean_velo else None
+            # Statcast doesn't have K-BB% directly; estimate from pitch count if available
+            # For now, use None since we'd need event-level data
+            k_bb_pct = None
+            xwoba = None  # Also not in statcast_pitches
+            fb_pct = float(r["fastball_pct"]) if pd.notna(r["fastball_pct"]) else None
+            break_pct = float(r["breaking_pct"]) if pd.notna(r["breaking_pct"]) else None
+            off_pct = float(r["offspeed_pct"]) if pd.notna(r["offspeed_pct"]) else None
+            
+            return {
+                "mean_velo": mean_velo,
+                "velo_norm": velo_norm,
+                "k_bb_pct": k_bb_pct,
+                "xwoba_allowed": xwoba,
+                "fastball_pct": fb_pct,
+                "breaking_pct": break_pct,
+                "offspeed_pct": off_pct,
+                "velo_trend": None,  # Would need historical comparison
+            }
+        except Exception as e:
+            logger.warning("Pitcher arsenal statcast failed for pid=%d: %s", pitcher_id, e)
+            return {
+                "mean_velo": None,
+                "velo_norm": None,
+                "k_bb_pct": None,
+                "xwoba_allowed": None,
+                "fastball_pct": None,
+                "breaking_pct": None,
+                "offspeed_pct": None,
+                "velo_trend": None,
+            }
+
+    def _pitcher_arsenal_from_game_stats(
+        self, pitcher_id: int, game_date: date
+    ) -> dict:
+        """
+        Load pitcher arsenal from available sources (in order of preference):
+        1. pitcher_game_stats (historical + 2026 via UNION)
+        2. statcast pitch data aggregated into game stats
+        3. Return NULLs if neither available
+        """
+        if pitcher_id is None:
+            return {
+                "mean_velo": None,
+                "velo_norm": None,
+                "k_bb_pct": None,
+                "xwoba_allowed": None,
+                "fastball_pct": None,
+                "breaking_pct": None,
+                "offspeed_pct": None,
+                "velo_trend": None,
+            }
+
+        cutoff_days = 30
+        cutoff = (game_date - timedelta(days=cutoff_days)).isoformat()
+        gd_str = game_date.isoformat()
+
+        # Try pitcher_game_stats first
+        try:
+            self.bq.get_table(PITCHER_STATS_TABLE)
+            has_pitcher_stats = True
+        except Exception:
+            has_pitcher_stats = False
+
+        if has_pitcher_stats:
+            # Query pitcher_game_stats (Union historical + 2026)
+            sql = f"""
+            WITH recent_starts AS (
+                SELECT *
+                FROM (
+                    SELECT * FROM `{PITCHER_STATS_TABLE}`
+                    WHERE pitcher = {pitcher_id}
+                      AND game_date < '{gd_str}'
+                      AND game_date >= '{cutoff}'
+                      AND total_pitches >= 25
+                    UNION ALL
+                    SELECT * FROM `{PITCHER_STATS_SEASON}`
+                    WHERE pitcher = {pitcher_id}
+                      AND game_date < '{gd_str}'
+                      AND game_date >= '{cutoff}'
+                      AND total_pitches >= 25
+                ) combined
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY game_date ORDER BY 1) = 1
+            ),
+            recent_ranked AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (PARTITION BY pitcher ORDER BY game_date DESC) AS rn
+                FROM recent_starts
+            ),
+            velo_trend AS (
+                SELECT
+                    pitcher,
+                    AVG(CASE WHEN rn <= 2 THEN mean_fastball_velo END) AS velo_recent,
+                    AVG(CASE WHEN rn > 2 THEN mean_fastball_velo END) AS velo_baseline
+                FROM recent_ranked
+                GROUP BY pitcher
+            ),
+            rolling AS (
+                SELECT
+                    pitcher,
+                    AVG(mean_fastball_velo) AS mean_velo,
+                    AVG(fastball_pct) AS fastball_pct,
+                    AVG(breaking_pct) AS breaking_pct,
+                    AVG(offspeed_pct) AS offspeed_pct,
+                    AVG(k_bb_pct) AS k_bb_pct,
+                    AVG(xwoba_allowed) AS xwoba_allowed,
+                    SUM(total_pitches) AS total_pitches
+                FROM recent_starts
+                GROUP BY pitcher
+            )
+            SELECT
+                r.pitcher,
+                r.mean_velo,
+                r.fastball_pct,
+                r.breaking_pct,
+                r.offspeed_pct,
+                r.k_bb_pct,
+                r.xwoba_allowed,
+                CASE WHEN vt.velo_baseline > 0
+                    THEN (vt.velo_recent - vt.velo_baseline) / vt.velo_baseline
+                    ELSE NULL
+                END AS velo_trend
+            FROM rolling r
+            LEFT JOIN velo_trend vt ON r.pitcher = vt.pitcher
+            """
+        else:
+            # Fallback: Aggregate from statcast data
+            sql = f"""
+            WITH pitcher_games AS (
+                SELECT
+                    DATE(game_date) as game_dt,
+                    pitcher,
+                    COUNT(*) as pitch_count,
+                    ROUND(AVG(release_speed), 2) as mean_velo
+                FROM `{PROJECT}.{SEASON_DS}.statcast_pitches`
+                WHERE pitcher = {pitcher_id}
+                  AND DATE(game_date) < '{gd_str}'
+                  AND DATE(game_date) >= '{cutoff}'
+                GROUP BY DATE(game_date), pitcher
+            ),
+            rolling AS (
+                SELECT
+                    pitcher,
+                    AVG(mean_velo) AS mean_velo,
+                    NULL as fastball_pct,
+                    NULL as breaking_pct,
+                    NULL as offspeed_pct,
+                    NULL as k_bb_pct,
+                    NULL as xwoba_allowed,
+                    SUM(pitch_count) as total_pitches
+                FROM pitcher_games
+                GROUP BY pitcher
+            )
+            SELECT
+                pitcher,
+                mean_velo,
+                fastball_pct,
+                breaking_pct,
+                offspeed_pct,
+                k_bb_pct,
+                xwoba_allowed,
+                NULL as velo_trend
+            FROM rolling
+            """
+
+        try:
+            row = self.bq.query(sql).to_dataframe()
+            if row.empty:
+                logger.debug("No pitcher_arsenal data for pitcher %d on %s", pitcher_id, gd_str)
+                return {
+                    "mean_velo": None,
+                    "velo_norm": None,
+                    "k_bb_pct": None,
+                    "xwoba_allowed": None,
+                    "fastball_pct": None,
+                    "breaking_pct": None,
+                    "offspeed_pct": None,
+                    "velo_trend": None,
+                }
+
+            r = row.iloc[0]
+            mean_velo = float(r["mean_velo"]) if pd.notna(r["mean_velo"]) else None
+            velo_norm = ((mean_velo - LEAGUE_AVG_VELO) / VELO_STD) if mean_velo else None
+            k_bb_pct = float(r["k_bb_pct"]) if pd.notna(r["k_bb_pct"]) else None
+            xwoba_allowed = float(r["xwoba_allowed"]) if pd.notna(r["xwoba_allowed"]) else None
+            fb_pct = float(r["fastball_pct"]) if pd.notna(r["fastball_pct"]) else None
+            break_pct = float(r["breaking_pct"]) if pd.notna(r["breaking_pct"]) else None
+            off_pct = float(r["offspeed_pct"]) if pd.notna(r["offspeed_pct"]) else None
+            velo_trend = float(r["velo_trend"]) if pd.notna(r["velo_trend"]) else None
+
+            return {
+                "mean_velo": mean_velo,
+                "velo_norm": velo_norm,
+                "k_bb_pct": k_bb_pct,
+                "xwoba_allowed": xwoba_allowed,
+                "fastball_pct": fb_pct,
+                "breaking_pct": break_pct,
+                "offspeed_pct": off_pct,
+                "velo_trend": velo_trend,
+            }
+        except Exception as e:
+            logger.warning("Pitcher arsenal from game_stats failed for pid=%d: %s", pitcher_id, e)
+            return {
+                "mean_velo": None,
+                "velo_norm": None,
+                "k_bb_pct": None,
+                "xwoba_allowed": None,
+                "fastball_pct": None,
+                "breaking_pct": None,
+                "offspeed_pct": None,
+                "velo_trend": None,
+            }
+
+    def _infer_starters_from_statcast(
+        self, game_pk: int, game_date: date
+    ) -> tuple[Optional[int], Optional[int]]:
+        """
+        Infer starter pitcher IDs from statcast data.
+        Uses the pitcher with the most pitches as the likely starter.
+        Called when lineups don't have confirmed starters yet.
+        
+        Returns: (home_starter_id, away_starter_id)
+        """
+        try:
+            sql = f"""
+            WITH pitcher_pitch_counts AS (
+                SELECT 
+                    game_pk,
+                    inning_topbot,
+                    pitcher,
+                    COUNT(*) as pitch_count,
+                    ROW_NUMBER() OVER (PARTITION BY game_pk, inning_topbot ORDER BY COUNT(*) DESC) as pitch_rank
+                FROM `{PROJECT}.{SEASON_DS}.statcast_pitches`
+                WHERE game_pk = {game_pk}
+                  AND DATE(game_date) = '{game_date.isoformat()}'
+                GROUP BY game_pk, inning_topbot, pitcher
+            )
+            SELECT 
+                game_pk,
+                MAX(CASE WHEN inning_topbot = 'Bot' AND pitch_rank = 1 THEN pitcher END) as home_starter_id,
+                MAX(CASE WHEN inning_topbot = 'Top' AND pitch_rank = 1 THEN pitcher END) as away_starter_id
+            FROM pitcher_pitch_counts
+            GROUP BY game_pk
+            """
+            row = self.bq.query(sql).to_dataframe()
+            if row.empty:
+                return None, None
+            
+            r = row.iloc[0]
+            h_sp = int(r["home_starter_id"]) if r["home_starter_id"] is not None else None
+            a_sp = int(r["away_starter_id"]) if r["away_starter_id"] is not None else None
+            return h_sp, a_sp
+            
+        except Exception as e:
+            logger.warning("Could not infer starters from statcast for game %d: %s", game_pk, e)
+            return None, None
+
     def _get_starters_and_venue(
         self, game_pk: int, game_date: date
     ) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
-        """Fetch home_starter_id, away_starter_id, venue_id from lineup/game tables."""
+        """
+        Fetch home_starter_id, away_starter_id, venue_id from lineup/game tables.
+        Falls back to inferring starters from statcast if lineups not confirmed.
+        """
         sql = f"""
         SELECT
             COALESCE(l_h.player_id, NULL) AS home_starter_id,
@@ -534,13 +840,13 @@ class V7FeatureBuilder:
         ) g
         LEFT JOIN (
             SELECT game_pk, player_id FROM `{LINEUPS_TABLE}`
-            WHERE game_pk = {game_pk} AND team_type = 'home' AND batting_order = 0
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY confirmed_at DESC) = 1
+            WHERE game_pk = {game_pk} AND team_type = 'home' AND is_probable_pitcher = true
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY fetched_at DESC) = 1
         ) l_h ON l_h.game_pk = g.game_pk
         LEFT JOIN (
             SELECT game_pk, player_id FROM `{LINEUPS_TABLE}`
-            WHERE game_pk = {game_pk} AND team_type = 'away' AND batting_order = 0
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY confirmed_at DESC) = 1
+            WHERE game_pk = {game_pk} AND team_type = 'away' AND is_probable_pitcher = true
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY fetched_at DESC) = 1
         ) l_a ON l_a.game_pk = g.game_pk
         LIMIT 1
         """
@@ -548,15 +854,27 @@ class V7FeatureBuilder:
             row = self.bq.query(sql).to_dataframe()
             if row.empty:
                 return None, None, None, None
+            
             r = row.iloc[0]
             h_sp = int(r["home_starter_id"]) if r["home_starter_id"] is not None else None
             a_sp = int(r["away_starter_id"]) if r["away_starter_id"] is not None else None
             vid  = int(r["venue_id"]) if r["venue_id"] is not None else None
+            
+            # If either starter not found in lineups, try to infer from statcast
+            if h_sp is None or a_sp is None:
+                h_stat, a_stat = self._infer_starters_from_statcast(game_pk, game_date)
+                if h_sp is None:
+                    h_sp = h_stat
+                if a_sp is None:
+                    a_sp = a_stat
+            
             return h_sp, a_sp, vid, None
-            return h_sp, a_sp, vid, None
+            
         except Exception as e:
-            logger.warning("Starter/venue lookup failed for game %d: %s", game_pk, e)
-            return None, None, None, None
+            logger.warning("Starter/venue lookup failed for game %d, trying statcast: %s", game_pk, e)
+            h_sp, a_sp = self._infer_starters_from_statcast(game_pk, game_date)
+            return h_sp, a_sp, None, None
+
 
     # -----------------------------------------------------------------------
     # Main run method
@@ -623,6 +941,13 @@ class V7FeatureBuilder:
             else:
                 a_venue = self._neutral_pitcher_venue()
 
+            # Pitcher arsenal: use pitcher_game_stats (includes historical + 2026 when available)
+            h_arsenal = self._pitcher_arsenal_from_game_stats(h_sp, target)
+            a_arsenal = self._pitcher_arsenal_from_game_stats(a_sp, target)
+            arsenal_adv = None
+            if h_arsenal["velo_norm"] is not None and a_arsenal["velo_norm"] is not None:
+                arsenal_adv = float(round(h_arsenal["velo_norm"] - a_arsenal["velo_norm"], 3))
+
             era_diff = float(round(
                 (a_venue["venue_era"] or 4.25) - (h_venue["venue_era"] or 4.25),
                 3
@@ -662,6 +987,24 @@ class V7FeatureBuilder:
                 "away_starter_venue_k9":      a_venue["venue_k9"],
                 "away_starter_venue_pa_total": a_venue["venue_pa_total"],
                 "starter_venue_era_differential": era_diff,
+                # Pitcher arsenal from 2026 statcast
+                "home_starter_mean_velo":     h_arsenal["mean_velo"],
+                "away_starter_mean_velo":     a_arsenal["mean_velo"],
+                "home_starter_velo_norm":     h_arsenal["velo_norm"],
+                "away_starter_velo_norm":     a_arsenal["velo_norm"],
+                "home_starter_k_bb_pct":      h_arsenal["k_bb_pct"],
+                "away_starter_k_bb_pct":      a_arsenal["k_bb_pct"],
+                "home_starter_xwoba_allowed": h_arsenal["xwoba_allowed"],
+                "away_starter_xwoba_allowed": a_arsenal["xwoba_allowed"],
+                "home_starter_fastball_pct":  h_arsenal["fastball_pct"],
+                "away_starter_fastball_pct":  a_arsenal["fastball_pct"],
+                "home_starter_breaking_pct":  h_arsenal["breaking_pct"],
+                "away_starter_breaking_pct":  a_arsenal["breaking_pct"],
+                "home_starter_offspeed_pct":  h_arsenal["offspeed_pct"],
+                "away_starter_offspeed_pct":  a_arsenal["offspeed_pct"],
+                "home_starter_velo_trend":    h_arsenal["velo_trend"],
+                "away_starter_velo_trend":    a_arsenal["velo_trend"],
+                "starter_arsenal_advantage":  arsenal_adv,
             }
             rows.append(row)
 
@@ -674,7 +1017,18 @@ class V7FeatureBuilder:
             logger.info(result_df.to_string())
             return {"status": "dry_run", "games_processed": len(result_df)}
 
-        # Upsert into BQ (overwrite today's rows)
+        # Upsert into BQ: delete old rows for this date, then append new ones
+        try:
+            target_str = target.isoformat()
+            delete_sql = f"""
+            DELETE FROM `{MATCHUP_V7_TABLE}`
+            WHERE DATE(game_date) = '{target_str}'
+            """
+            self.bq.query(delete_sql).result()
+            logger.info("Deleted existing V7 features for %s", target)
+        except Exception as e:
+            logger.warning("Could not delete old V7 rows for %s: %s", target, e)
+
         job_config = bigquery.LoadJobConfig(
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
             schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
