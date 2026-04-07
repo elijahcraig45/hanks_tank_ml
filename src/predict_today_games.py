@@ -91,6 +91,31 @@ PREDICTIONS_SCHEMA = [
     bigquery.SchemaField("h2h_data_available", "BOOLEAN"),
     bigquery.SchemaField("game_time_utc", "TIMESTAMP"),
     bigquery.SchemaField("predicted_at", "TIMESTAMP"),
+    # V7 pitcher arsenal (2026 statcast)
+    bigquery.SchemaField("home_starter_mean_velo", "FLOAT"),
+    bigquery.SchemaField("away_starter_mean_velo", "FLOAT"),
+    bigquery.SchemaField("home_starter_velo_norm", "FLOAT"),
+    bigquery.SchemaField("away_starter_velo_norm", "FLOAT"),
+    bigquery.SchemaField("home_starter_k_bb_pct", "FLOAT"),
+    bigquery.SchemaField("away_starter_k_bb_pct", "FLOAT"),
+    bigquery.SchemaField("home_starter_xwoba_allowed", "FLOAT"),
+    bigquery.SchemaField("away_starter_xwoba_allowed", "FLOAT"),
+    bigquery.SchemaField("starter_arsenal_advantage", "FLOAT"),
+    # V7 bullpen health
+    bigquery.SchemaField("home_bullpen_fatigue_score", "FLOAT"),
+    bigquery.SchemaField("away_bullpen_fatigue_score", "FLOAT"),
+    bigquery.SchemaField("bullpen_fatigue_differential", "FLOAT"),
+    bigquery.SchemaField("home_closer_days_rest", "FLOAT"),
+    bigquery.SchemaField("away_closer_days_rest", "FLOAT"),
+    # V7 moon phase
+    bigquery.SchemaField("moon_illumination", "FLOAT"),
+    bigquery.SchemaField("is_full_moon", "INTEGER"),
+    # V7 pitcher venue splits
+    bigquery.SchemaField("home_starter_venue_era", "FLOAT"),
+    bigquery.SchemaField("away_starter_venue_era", "FLOAT"),
+    bigquery.SchemaField("starter_venue_era_differential", "FLOAT"),
+    # V7 venue wOBA
+    bigquery.SchemaField("venue_woba_differential", "FLOAT"),
 ]
 
 
@@ -568,6 +593,31 @@ class DailyPredictor:
                 "h2h_data_available": h2h_available,
                 "game_time_utc": game.get("game_time_utc"),
                 "predicted_at": datetime.now(tz=timezone.utc).isoformat(),
+                # V7 pitcher arsenal (from matchup_v7_features)
+                "home_starter_mean_velo": float(v7_row.get("home_starter_mean_velo")) if v7_row is not None and pd.notna(v7_row.get("home_starter_mean_velo")) else None,
+                "away_starter_mean_velo": float(v7_row.get("away_starter_mean_velo")) if v7_row is not None and pd.notna(v7_row.get("away_starter_mean_velo")) else None,
+                "home_starter_velo_norm": float(v7_row.get("home_starter_velo_norm")) if v7_row is not None and pd.notna(v7_row.get("home_starter_velo_norm")) else None,
+                "away_starter_velo_norm": float(v7_row.get("away_starter_velo_norm")) if v7_row is not None and pd.notna(v7_row.get("away_starter_velo_norm")) else None,
+                "home_starter_k_bb_pct": float(v7_row.get("home_starter_k_bb_pct")) if v7_row is not None and pd.notna(v7_row.get("home_starter_k_bb_pct")) else None,
+                "away_starter_k_bb_pct": float(v7_row.get("away_starter_k_bb_pct")) if v7_row is not None and pd.notna(v7_row.get("away_starter_k_bb_pct")) else None,
+                "home_starter_xwoba_allowed": float(v7_row.get("home_starter_xwoba_allowed")) if v7_row is not None and pd.notna(v7_row.get("home_starter_xwoba_allowed")) else None,
+                "away_starter_xwoba_allowed": float(v7_row.get("away_starter_xwoba_allowed")) if v7_row is not None and pd.notna(v7_row.get("away_starter_xwoba_allowed")) else None,
+                "starter_arsenal_advantage": float(v7_row.get("starter_arsenal_advantage")) if v7_row is not None and pd.notna(v7_row.get("starter_arsenal_advantage")) else None,
+                # V7 bullpen health
+                "home_bullpen_fatigue_score": float(v7_row.get("home_bullpen_fatigue_score")) if v7_row is not None and pd.notna(v7_row.get("home_bullpen_fatigue_score")) else None,
+                "away_bullpen_fatigue_score": float(v7_row.get("away_bullpen_fatigue_score")) if v7_row is not None and pd.notna(v7_row.get("away_bullpen_fatigue_score")) else None,
+                "bullpen_fatigue_differential": float(v7_row.get("bullpen_fatigue_differential")) if v7_row is not None and pd.notna(v7_row.get("bullpen_fatigue_differential")) else None,
+                "home_closer_days_rest": float(v7_row.get("home_closer_days_rest")) if v7_row is not None and pd.notna(v7_row.get("home_closer_days_rest")) else None,
+                "away_closer_days_rest": float(v7_row.get("away_closer_days_rest")) if v7_row is not None and pd.notna(v7_row.get("away_closer_days_rest")) else None,
+                # V7 moon phase
+                "moon_illumination": float(v7_row.get("moon_illumination")) if v7_row is not None and pd.notna(v7_row.get("moon_illumination")) else None,
+                "is_full_moon": int(v7_row.get("is_full_moon")) if v7_row is not None and pd.notna(v7_row.get("is_full_moon")) else None,
+                # V7 pitcher venue splits
+                "home_starter_venue_era": float(v7_row.get("home_starter_venue_era")) if v7_row is not None and pd.notna(v7_row.get("home_starter_venue_era")) else None,
+                "away_starter_venue_era": float(v7_row.get("away_starter_venue_era")) if v7_row is not None and pd.notna(v7_row.get("away_starter_venue_era")) else None,
+                "starter_venue_era_differential": float(v7_row.get("starter_venue_era_differential")) if v7_row is not None and pd.notna(v7_row.get("starter_venue_era_differential")) else None,
+                # V7 venue wOBA
+                "venue_woba_differential": float(v7_row.get("venue_woba_differential")) if v7_row is not None and pd.notna(v7_row.get("venue_woba_differential")) else None,
             }
             pred_rows.append(pred_row)
             logger.info(
