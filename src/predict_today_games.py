@@ -134,6 +134,18 @@ PREDICTIONS_SCHEMA = [
     bigquery.SchemaField("starter_venue_era_differential", "FLOAT"),
     # V7 venue wOBA
     bigquery.SchemaField("venue_woba_differential", "FLOAT"),
+    # V8 Elo + team form (for frontend explanation cards)
+    bigquery.SchemaField("elo_differential", "FLOAT"),
+    bigquery.SchemaField("elo_home_win_prob", "FLOAT"),
+    bigquery.SchemaField("home_pythag_season", "FLOAT"),
+    bigquery.SchemaField("away_pythag_season", "FLOAT"),
+    bigquery.SchemaField("pythag_differential", "FLOAT"),
+    bigquery.SchemaField("home_run_diff_10g", "FLOAT"),
+    bigquery.SchemaField("away_run_diff_10g", "FLOAT"),
+    bigquery.SchemaField("home_current_streak", "INTEGER"),
+    bigquery.SchemaField("away_current_streak", "INTEGER"),
+    bigquery.SchemaField("h2h_win_pct_3yr", "FLOAT"),
+    bigquery.SchemaField("is_divisional", "INTEGER"),
 ]
 
 
@@ -820,6 +832,18 @@ class DailyPredictor:
                 "starter_venue_era_differential": float(v7_row.get("starter_venue_era_differential")) if v7_row is not None and pd.notna(v7_row.get("starter_venue_era_differential")) else None,
                 # V7 venue wOBA
                 "venue_woba_differential": float(v7_row.get("venue_woba_differential")) if v7_row is not None and pd.notna(v7_row.get("venue_woba_differential")) else None,
+                # V8 Elo + team form (power the frontend explanation cards for V8 predictions)
+                "elo_differential": float(v8_row.get("elo_differential")) if v8_row is not None and pd.notna(v8_row.get("elo_differential")) else None,
+                "elo_home_win_prob": float(v8_row.get("elo_home_win_prob")) if v8_row is not None and pd.notna(v8_row.get("elo_home_win_prob")) else None,
+                "home_pythag_season": float(v8_row.get("home_pythag_season")) if v8_row is not None and pd.notna(v8_row.get("home_pythag_season")) else None,
+                "away_pythag_season": float(v8_row.get("away_pythag_season")) if v8_row is not None and pd.notna(v8_row.get("away_pythag_season")) else None,
+                "pythag_differential": float(v8_row.get("pythag_differential")) if v8_row is not None and pd.notna(v8_row.get("pythag_differential")) else None,
+                "home_run_diff_10g": float(v8_row.get("home_run_diff_10g")) if v8_row is not None and pd.notna(v8_row.get("home_run_diff_10g")) else None,
+                "away_run_diff_10g": float(v8_row.get("away_run_diff_10g")) if v8_row is not None and pd.notna(v8_row.get("away_run_diff_10g")) else None,
+                "home_current_streak": int(v8_row.get("home_current_streak")) if v8_row is not None and pd.notna(v8_row.get("home_current_streak")) else None,
+                "away_current_streak": int(v8_row.get("away_current_streak")) if v8_row is not None and pd.notna(v8_row.get("away_current_streak")) else None,
+                "h2h_win_pct_3yr": float(v8_row.get("h2h_win_pct_3yr")) if v8_row is not None and pd.notna(v8_row.get("h2h_win_pct_3yr")) else None,
+                "is_divisional": int(v8_row.get("is_divisional")) if v8_row is not None and pd.notna(v8_row.get("is_divisional")) else None,
             }
             pred_rows.append(pred_row)
             logger.info(
@@ -849,9 +873,26 @@ class DailyPredictor:
                     )
                 else:
                     raise
-            errors = self.bq.insert_rows_json(PREDICTIONS_TABLE, pred_rows)
-            if errors:
-                logger.error("BQ insert errors: %s", errors)
+
+            # Use a load job rather than streaming insert so it always uses the
+            # current table schema (streaming inserts cache the schema and fail
+            # for ~10 min after an ALTER TABLE).
+            import json as _json
+            import io as _io
+            ndjson_bytes = _io.BytesIO(
+                "\n".join(_json.dumps(r, default=str) for r in pred_rows).encode()
+            )
+            job_cfg = bigquery.LoadJobConfig(
+                source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+                write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+                schema=PREDICTIONS_SCHEMA,
+            )
+            job = self.bq.load_table_from_file(
+                ndjson_bytes, PREDICTIONS_TABLE, job_config=job_cfg
+            )
+            job.result()  # wait for completion
+            if job.errors:
+                logger.error("BQ load job errors: %s", job.errors)
             else:
                 logger.info("Wrote %d predictions to BigQuery", len(pred_rows))
         elif pred_rows and self.dry_run:
