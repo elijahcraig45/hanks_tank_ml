@@ -1,0 +1,127 @@
+{
+  "results": [
+    {
+      "model": "FINAL1_CatBoost_cats_tuned",
+      "accuracy": 0.5676,
+      "auc": 0.5795,
+      "brier_score": 0.2434,
+      "confidence_analysis": {
+        "conf_5%": {
+          "accuracy": 0.609,
+          "coverage": 0.4324
+        },
+        "conf_10%": {
+          "accuracy": 0.671,
+          "coverage": 0.1254
+        },
+        "conf_12%": {
+          "accuracy": 0.72,
+          "coverage": 0.0607
+        }
+      },
+      "cv_accuracy": 0.5660184237461617,
+      "params": {
+        "iterations": 228,
+        "depth": 4,
+        "learning_rate": 0.025068719662768933,
+        "l2_leaf_reg": 2.6248501324111535,
+        "random_strength": 1.7296512103448074,
+        "border_count": 67,
+        "subsample": 0.890090411910429
+      },
+      "iteration": "FINAL1"
+    },
+    {
+      "model": "FINAL2_MLP_tuned",
+      "accuracy": 0.5546,
+      "auc": 0.5561,
+      "brier_score": 0.2458,
+      "confidence_analysis": {
+        "conf_5%": {
+          "accuracy": 0.588,
+          "coverage": 0.4664
+        },
+        "conf_10%": {
+          "accuracy": 0.625,
+          "coverage": 0.1359
+        },
+        "conf_12%": {
+          "accuracy": 0.6031,
+          "coverage": 0.0785
+        },
+        "conf_15%": {
+          "accuracy": 0.6324,
+          "coverage": 0.0275
+        }
+      },
+      "cv_accuracy": 0.5651995905834186,
+      "architecture": "(108, 241, 214, 209)",
+      "scaler": "<class 'sklearn.preprocessing._data.StandardScaler'>",
+      "iteration": "FINAL2"
+    },
+    {
+      "model": "FINAL_CatBoost_wide",
+      "accuracy": 0.5639,
+      "auc": 0.566,
+      "brier_score": 0.2447,
+      "confidence_analysis": {
+        "conf_5%": {
+          "accuracy": 0.592,
+          "coverage": 0.464
+        },
+        "conf_10%": {
+          "accuracy": 0.6164,
+          "coverage": 0.1477
+        },
+        "conf_12%": {
+          "accuracy": 0.6522,
+          "coverage": 0.0744
+        },
+        "conf_15%": {
+          "accuracy": 0.5918,
+          "coverage": 0.0198
+        }
+      },
+      "iteration": "aux"
+    },
+    {
+      "model": "FINAL_LightGBM",
+      "accuracy": 0.555,
+      "auc": 0.5474,
+      "brier_score": 0.2471,
+      "confidence_analysis": {
+        "conf_5%": {
+          "accuracy": 0.573,
+          "coverage": 0.4822
+        },
+        "conf_10%": {
+          "accuracy": 0.6023,
+          "coverage": 0.178
+        },
+        "conf_12%": {
+          "accuracy": 0.6187,
+          "coverage": 0.1125
+        },
+        "conf_15%": {
+          "accuracy": 0.5481,
+          "coverage": 0.0546
+        }
+      },
+      "iteration": "aux"
+    },
+    {
+      "model": "V8_FINAL_ENSEMBLE",
+      "accuracy": 0.5748,
+      "auc": 0.5725,
+      "brier_score": 0.2441,
+      "log_loss": 0.6813,
+      "weights": {
+        "cat_tuned": 0.5423341424219156,
+        "mlp_tuned": 0.24267883763244658,
+        "cat_wide": 0.03185326101337515,
+        "lgb": 0.1831337589322627
+      },
+      "iteration": "FINAL3"
+    }
+  ]
+}
