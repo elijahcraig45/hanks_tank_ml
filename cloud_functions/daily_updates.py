@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
 """
+DEPRECATED — This module is no longer the active cloud function implementation.
+
+Replaced by src/cloud_function_main.py (entry: daily_pipeline) as of 2026-04-08.
+See cloud_functions/DEPRECATED.md for the full migration guide.
+
+Known issues with this file (reasons for deprecation):
+  1. fetch_statcast_from_baseball_savant() returns [] always — never implemented
+  2. predict_today_games() returns a hardcoded placeholder — never wired to predictor
+  3. Entry points targeted by setup_scheduler.sh use old function names that no
+     longer match the deployed Cloud Function configuration
+  4. Missing catboost dependency — V8 model cannot be loaded from this code
+
+This file is retained as an audit artifact.
+----------------------------------------------------------------------
 Cloud Functions for Daily Data Pipeline: 2026 Season Data Updates
 
 Orchestrates daily data updates for statcast, pitcher stats, features, and predictions.

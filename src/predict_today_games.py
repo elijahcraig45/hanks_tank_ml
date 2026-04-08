@@ -37,6 +37,12 @@ import urllib3
 from google.cloud import bigquery, storage
 from model_classes import StackedV5Model  # noqa: F401 — needed for pickle deserialization
 
+# ---------------------------------------------------------------------------
+# Repo root — works regardless of working directory (local dev or Cloud Function)
+# ---------------------------------------------------------------------------
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_MODELS_DIR = _REPO_ROOT / "models"
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore")
 
@@ -51,20 +57,32 @@ MLB_API = "https://statsapi.mlb.com/api/v1"
 GAME_FEATURES_TABLE  = f"{PROJECT}.{DATASET}.game_features"
 MATCHUP_TABLE        = f"{PROJECT}.{DATASET}.matchup_features"
 MATCHUP_V7_TABLE     = f"{PROJECT}.{DATASET}.matchup_v7_features"
+V8_FEATURES_TABLE    = f"{PROJECT}.{DATASET}.game_v8_features"
 PREDICTIONS_TABLE    = f"{PROJECT}.{DATASET}.game_predictions"
 LINEUPS_TABLE        = f"{PROJECT}.{DATASET}.lineups"
 
-# Model GCS paths — predictor tries V7 → V6 → V5 → V4
+# ---------------------------------------------------------------------------
+# Model resolution chain: V8 → V7 → V6 → V5 → V4
+# Each model is tried in order (local path first, then GCS) until one loads.
+# V8 is the current best (57.65% overall, 65.4% at ≥60% confidence).
+# V7 is the previous production model. V4 is the final fallback.
+# ---------------------------------------------------------------------------
+V8_MODEL_GCS = "models/vertex/game_outcome_2026_v8/model.pkl"
 V7_MODEL_GCS = "models/vertex/game_outcome_2026_v7/model.pkl"
 V6_MODEL_GCS = "models/vertex/game_outcome_2026_v6/model.pkl"
 V5_MODEL_GCS = "models/vertex/game_outcome_2026_v5/model.pkl"
 V4_MODEL_GCS = "models/vertex/game_outcome_2026/model.pkl"
-V7_LOCAL = Path("models/game_outcome_2026_v7.pkl")
-V6_LOCAL = Path("models/game_outcome_2026_v6.pkl")
-V5_LOCAL = Path("models/game_outcome_2026_v5.pkl")
-V4_LOCAL = Path("models/game_outcome_2026_vertex.pkl")
+V8_LOCAL = _MODELS_DIR / "game_outcome_2026_v8_final.pkl"
+V7_LOCAL = _MODELS_DIR / "game_outcome_2026_v7.pkl"
+V6_LOCAL = _MODELS_DIR / "game_outcome_2026_v6.pkl"
+V5_LOCAL = _MODELS_DIR / "game_outcome_2026_v5.pkl"
+V4_LOCAL = _MODELS_DIR / "game_outcome_2026_vertex.pkl"
 
-CONFIDENCE_TIERS = {"high": 0.62, "medium": 0.57, "low": 0.53}
+# V8 uses updated confidence thresholds based on validation experiments:
+#   high   (≥60%): 65.4% accuracy on 11.7% of games — actionable picks
+#   medium (≥55%): 59.9% accuracy on 43% of games  — solid signal
+#   low    (<55%): essentially a coin flip            — show but flag
+CONFIDENCE_TIERS = {"high": 0.60, "medium": 0.55, "low": 0.50}
 
 PREDICTIONS_SCHEMA = [
     bigquery.SchemaField("game_pk", "INTEGER"),
@@ -119,6 +137,71 @@ PREDICTIONS_SCHEMA = [
 ]
 
 
+
+class V8EnsemblePredictor:
+    """Adapter that wraps the V8 multi-model bundle for sklearn-style inference.
+
+    The V8 bundle stores three sub-models (CatBoost cat_tuned, CatBoost cat_wide,
+    LightGBM lgb, MLP mlp) each with its own feature set and optional scaler.
+    This class routes inference through all sub-models and blends the home-win
+    probabilities using the Optuna-optimised weights from training time.
+    """
+
+    def __init__(self, bundle: dict):
+        self.models = bundle["models"]
+        self.scalers = bundle.get("scalers", {})
+        self.weights = bundle["weights"]
+        self.feature_sets = bundle["feature_sets"]
+        self.fill_values = bundle.get("fill_values", {})
+        # CatBoost categorical feature names (team IDs) for CatBoost sub-models
+        cat_idx = bundle.get("cat_feature_indices", [])
+        # Resolve indices → column names from the cat_tuned feature set
+        cat_cols = self.feature_sets.get("cat_tuned", [])
+        self._cat_feature_names = [cat_cols[i] for i in cat_idx if i < len(cat_cols)]
+        # Stable ordered feature union for external callers
+        seen: set = set()
+        self.all_features: list[str] = []
+        for fs in self.feature_sets.values():
+            for f in fs:
+                if f not in seen:
+                    seen.add(f)
+                    self.all_features.append(f)
+
+    def _is_catboost(self, model) -> bool:
+        return type(model).__module__.startswith("catboost")
+
+    def _proba_one(self, name: str, model, X_df: pd.DataFrame) -> np.ndarray:
+        """Home-win probability from a single sub-model."""
+        cols = self.feature_sets[name]
+        X_sub = pd.DataFrame(index=X_df.index)
+        for col in cols:
+            X_sub[col] = X_df[col] if col in X_df.columns else self.fill_values.get(col, 0.0)
+        X_sub = X_sub.fillna(0.0)
+
+        if self._is_catboost(model):
+            # CatBoost requires categorical columns to be int/str, not float.
+            # Pass as DataFrame so CatBoost resolves cat_features by column name.
+            cat_present = [c for c in self._cat_feature_names if c in X_sub.columns]
+            for col in cat_present:
+                X_sub[col] = X_sub[col].astype(int)
+            return model.predict_proba(X_sub, ntree_start=0)[:, 1]
+
+        scaler = self.scalers.get(name)
+        X_arr = scaler.transform(X_sub.values) if scaler else X_sub.values
+        return model.predict_proba(X_arr)[:, 1]
+
+    def predict_proba(self, X_df: pd.DataFrame) -> np.ndarray:
+        """Weighted ensemble probability. Accepts a DataFrame; returns shape (n, 2)."""
+        total_w = sum(self.weights.values()) or 1.0
+        blended = np.zeros(len(X_df))
+        for name, model in self.models.items():
+            w = self.weights.get(name, 0.0) / total_w
+            if w == 0:
+                continue
+            blended += w * self._proba_one(name, model, X_df)
+        return np.column_stack([1.0 - blended, blended])
+
+
 class DailyPredictor:
     def __init__(self, dry_run: bool = False, fallback_v4: bool = False):
         self.bq = bigquery.Client(project=PROJECT)
@@ -128,6 +211,7 @@ class DailyPredictor:
         self.scaler = None
         self.feature_names = None
         self.model_version = None
+        self._is_v8 = False  # Set to True after load_model() if V8 is found
         self._ensure_table()
 
     # -----------------------------------------------------------------------
@@ -151,8 +235,17 @@ class DailyPredictor:
     # Model loading
     # -----------------------------------------------------------------------
     def load_model(self) -> None:
-        """Try V7 → V6 → V5 → V4 in order, using local cache when available."""
+        """
+        Load best available model from local cache or GCS.
+        Resolution chain: V8 → V7 → V6 → V5 → V4 (oldest fallback).
+
+        V8 is the active production model as of 2026-04-08:
+          - 57.65% overall accuracy (val 2025), best single model
+          - 65.4% accuracy at ≥60% confidence threshold (11.7% of games)
+          - Uses CatBoost with team ID embeddings + 85-feature V8 set
+        """
         _versions = [
+            ("v8", V8_LOCAL, V8_MODEL_GCS),
             ("v7", V7_LOCAL, V7_MODEL_GCS),
             ("v6", V6_LOCAL, V6_MODEL_GCS),
             ("v5", V5_LOCAL, V5_MODEL_GCS),
@@ -162,40 +255,60 @@ class DailyPredictor:
         if not self.fallback_v4:
             for label, local_path, gcs_path in _versions:
                 if local_path.exists():
-                    logger.info("Loading %s model from %s", label, local_path)
+                    logger.info("Loading %s model from local: %s", label, local_path)
                     with open(local_path, "rb") as f:
                         data = pickle.load(f)
                     break
                 try:
-                    logger.info("Downloading %s model from GCS...", label)
+                    logger.info("Attempting to download %s model from GCS...", label)
                     client = storage.Client(project=PROJECT)
-                    bucket = client.bucket(BUCKET)
-                    blob = bucket.blob(gcs_path)
+                    bucket_obj = client.bucket(BUCKET)
+                    blob = bucket_obj.blob(gcs_path)
                     data = pickle.loads(blob.download_as_bytes())
+                    # Cache locally to avoid repeated GCS downloads
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(local_path, "wb") as f:
+                        pickle.dump(data, f)
+                    logger.info("%s model downloaded and cached locally", label)
                     break
                 except Exception as e:
-                    logger.warning("%s model not available: %s — trying next version", label, e)
+                    logger.warning("%s model unavailable: %s — trying next version", label, e)
 
-        # V4 fallback
+        # V4 final fallback — always available
         if data is None:
             if V4_LOCAL.exists():
-                logger.info("Loading V4 model from %s", V4_LOCAL)
+                logger.info("Falling back to V4 model: %s", V4_LOCAL)
                 with open(V4_LOCAL, "rb") as f:
                     data = pickle.load(f)
             else:
-                logger.info("Downloading V4 model from GCS...")
+                logger.info("Downloading V4 fallback model from GCS...")
                 client = storage.Client(project=PROJECT)
-                bucket = client.bucket(BUCKET)
-                blob = bucket.blob(V4_MODEL_GCS)
+                bucket_obj = client.bucket(BUCKET)
+                blob = bucket_obj.blob(V4_MODEL_GCS)
                 data = pickle.loads(blob.download_as_bytes())
 
-        self.model = data["model"]
-        self.scaler = data.get("scaler")
-        self.feature_names = data["features"]
-        self.model_version = data.get("model_name", "v4_fallback")
-        logger.info("Model loaded: %s (%d features)", self.model_version, len(self.feature_names))
-
-    # -----------------------------------------------------------------------
+        # V8 bundles use a different structure: multi-model ensemble with per-model
+        # feature sets, scalers, and Optuna-tuned blend weights.
+        if isinstance(data.get("models"), dict) and "weights" in data:
+            ensemble = V8EnsemblePredictor(data)
+            self.model = ensemble
+            self.scaler = None          # each sub-model handles its own scaling
+            self.feature_names = ensemble.all_features
+            self.model_version = data.get("version", "v8_final")
+            self._is_v8 = True
+        else:
+            self.model = data["model"]
+            self.scaler = data.get("scaler")
+            self.feature_names = data["features"]
+            self.model_version = data.get("model_name", "v4_fallback")
+            self._is_v8 = (
+                self.model_version.startswith("V8")
+                or "v8" in self.model_version.lower()
+            )
+        logger.info(
+            "Model loaded: %s (%d features) | V8 mode: %s",
+            self.model_version, len(self.feature_names), self._is_v8,
+        )    # -----------------------------------------------------------------------
     # Data loading
     # -----------------------------------------------------------------------
     def fetch_schedule(self, target_date: date, game_pks: Optional[list[int]] = None) -> list[dict]:
@@ -310,6 +423,34 @@ class DailyPredictor:
             logger.debug("Could not load v7 features (table may not exist yet): %s", e)
             return pd.DataFrame()
 
+    def load_v8_features(self, game_pks: list[int]) -> pd.DataFrame:
+        """
+        Load V8 features (Elo, Pythagorean, run differential, streaks, H2H).
+        Populated by build_v8_features_live.py in the daily pipeline.
+
+        Falls back gracefully to an empty DataFrame if the table does not yet
+        contain rows for the requested games — the V8 model will use neutral
+        imputed values in that case.
+        """
+        pk_list = ", ".join(str(pk) for pk in game_pks)
+        sql = f"""
+            SELECT *
+            FROM `{V8_FEATURES_TABLE}`
+            WHERE game_pk IN ({pk_list})
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY game_pk ORDER BY computed_at DESC
+            ) = 1
+        """
+        try:
+            return self.bq.query(sql).to_dataframe()
+        except Exception as e:
+            logger.warning(
+                "V8 features unavailable (game_v8_features may not exist or backfill "
+                "not yet run): %s — predictions will use neutral Elo/Pythagorean defaults",
+                e,
+            )
+            return pd.DataFrame()
+
     # -----------------------------------------------------------------------
     # Feature assembly
     # -----------------------------------------------------------------------
@@ -317,10 +458,12 @@ class DailyPredictor:
         self, game: dict, game_feat_row: Optional[pd.Series],
         matchup_row: Optional[pd.Series],
         v7_row: Optional[pd.Series] = None,
+        v8_row: Optional[pd.Series] = None,
     ) -> pd.DataFrame:
         """
-        Combine team-level and matchup features into the model input vector.
-        Handles missing features gracefully with median imputation placeholders.
+        Combine team-level, matchup, V7, and V8 features into the model input vector.
+        Priority: V8 features override V3/V4 equivalents when both are present.
+        Handles missing features gracefully with league-average defaults.
         """
         feat = {}
 
@@ -415,6 +558,54 @@ class DailyPredictor:
                     val = v7_row[col]
                     feat[col] = float(val) if pd.notna(val) else None
 
+        # V8 features (Elo, Pythagorean, run differential, streaks, H2H)
+        # These override any V3/V4 equivalents (e.g., V8 win_pct_season supersedes
+        # V3's rolling_win_pct_30 since V8 uses the actual game history directly).
+        if v8_row is not None and not v8_row.empty:
+            skip_cols = {
+                "game_pk", "game_date", "home_team_id", "away_team_id",
+                "computed_at", "data_completeness",
+            }
+            for col in v8_row.index:
+                if col not in skip_cols:
+                    val = v8_row[col]
+                    if pd.notna(val):
+                        feat[col] = float(val) if not isinstance(val, (bool, np.bool_)) else int(val)
+        else:
+            # V8 features not yet available — use neutral (league-average) defaults.
+            # The model handles these gracefully via median imputation.
+            # NOTE: Elo defaults to 0.5 win probability (no information) — predictions
+            # at these values will be lower confidence and correctly classified as "low" tier.
+            feat.update({
+                "home_elo": 1500.0, "away_elo": 1500.0, "elo_differential": 0.0,
+                "elo_home_win_prob": 0.532, "elo_win_prob_differential": 0.032,
+                "home_pythag_season": 0.5, "away_pythag_season": 0.5,
+                "home_pythag_last30": 0.5, "away_pythag_last30": 0.5,
+                "pythag_differential": 0.0, "home_luck_factor": 0.0,
+                "away_luck_factor": 0.0, "luck_differential": 0.0,
+                "home_run_diff_10g": 0.0, "away_run_diff_10g": 0.0,
+                "home_run_diff_30g": 0.0, "away_run_diff_30g": 0.0,
+                "run_diff_differential": 0.0,
+                "home_era_proxy_10g": 4.5, "away_era_proxy_10g": 4.5,
+                "home_era_proxy_30g": 4.5, "away_era_proxy_30g": 4.5,
+                "era_proxy_differential": 0.0,
+                "home_win_pct_season": 0.5, "away_win_pct_season": 0.5,
+                "home_scoring_momentum": 0.0, "away_scoring_momentum": 0.0,
+                "home_current_streak": 0, "away_current_streak": 0,
+                "home_win_pct_7g": 0.5, "away_win_pct_7g": 0.5,
+                "home_win_pct_14g": 0.5, "away_win_pct_14g": 0.5,
+                "streak_differential": 0,
+                "home_on_winning_streak": 0, "away_on_winning_streak": 0,
+                "home_on_losing_streak": 0, "away_on_losing_streak": 0,
+                "home_streak_direction": 0, "away_streak_direction": 0,
+                "h2h_win_pct_season": 0.5, "h2h_win_pct_3yr": 0.5,
+                "h2h_advantage_season": 0.0, "h2h_advantage_3yr": 0.0,
+                "h2h_games_3yr": 0, "is_divisional": 0,
+                "season_pct_complete": 0.1, "season_stage": 0,
+                "home_games_played_season": 5,
+                "season_stage_late": 0, "season_stage_early": 1,
+            })
+
         # Build final feature vector aligned with model's expected features
         row = {}
         for fname in self.feature_names:
@@ -437,12 +628,15 @@ class DailyPredictor:
             if X[col].isna().any():
                 X[col] = X[col].fillna(0.0)
 
-        if self.scaler:
-            X_scaled = self.scaler.transform(X)
+        # V8EnsemblePredictor handles its own feature selection and scaling
+        # internally and expects a DataFrame; older models expect a numpy array.
+        if isinstance(self.model, V8EnsemblePredictor):
+            proba = self.model.predict_proba(X)[0]
+        elif self.scaler:
+            proba = self.model.predict_proba(self.scaler.transform(X))[0]
         else:
-            X_scaled = X.values
+            proba = self.model.predict_proba(X.values)[0]
 
-        proba = self.model.predict_proba(X_scaled)[0]
         # proba[1] = home win probability
         home_win_prob = float(proba[1]) if len(proba) > 1 else float(proba[0])
         away_win_prob = 1.0 - home_win_prob
@@ -493,6 +687,7 @@ class DailyPredictor:
         game_features_df = self.load_game_features(game_pks)
         matchup_df = self.load_matchup_features(game_pks)
         v7_df = self.load_v7_features(game_pks)
+        v8_df = self.load_v8_features(game_pks) if self._is_v8 else pd.DataFrame()
         starter_df = self.load_lineup_starters(game_pks)
 
         pred_rows = []
@@ -520,7 +715,14 @@ class DailyPredictor:
                 if not v7_subset.empty:
                     v7_row = v7_subset.iloc[0]
 
-            feat_df = self.assemble_features(game, gf_row, mf_row, v7_row)
+            # V8 features (Elo, Pythagorean, run differential, streaks, H2H)
+            v8_row = None
+            if not v8_df.empty and "game_pk" in v8_df.columns:
+                v8_subset = v8_df[v8_df["game_pk"] == pk]
+                if not v8_subset.empty:
+                    v8_row = v8_subset.iloc[0]
+
+            feat_df = self.assemble_features(game, gf_row, mf_row, v7_row, v8_row)
             pred = self.predict_game(game, feat_df, mf_row)
 
             # Starter info from lineup table (prefer over schedule)
@@ -632,11 +834,21 @@ class DailyPredictor:
 
         if pred_rows and not self.dry_run:
             pk_list = ", ".join(str(r["game_pk"]) for r in pred_rows)
-            self.bq.query(
-                f"DELETE FROM `{PREDICTIONS_TABLE}` "
-                f"WHERE game_pk IN ({pk_list}) "
-                f"AND DATE(predicted_at) = '{target_date.isoformat()}'"
-            ).result()
+            # Delete prior predictions for these game PKs (idempotent upsert).
+            # Falls back to insert-only when the streaming buffer blocks DML.
+            try:
+                self.bq.query(
+                    f"DELETE FROM `{PREDICTIONS_TABLE}` "
+                    f"WHERE game_pk IN ({pk_list}) "
+                    f"AND DATE(predicted_at) = '{target_date.isoformat()}'"
+                ).result()
+            except Exception as exc:
+                if "streaming buffer" in str(exc).lower():
+                    logger.warning(
+                        "DELETE skipped (streaming buffer active) — inserting new predictions alongside existing"
+                    )
+                else:
+                    raise
             errors = self.bq.insert_rows_json(PREDICTIONS_TABLE, pred_rows)
             if errors:
                 logger.error("BQ insert errors: %s", errors)

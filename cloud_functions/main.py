@@ -1,19 +1,10 @@
 """
-Cloud Functions entry point - contains all functions for daily data pipeline
+DEPRECATED — this module is no longer the active Cloud Function entry point.
+
+The active entry point is src/cloud_function_main.py (function: daily_pipeline).
+This file is kept for audit purposes. See cloud_functions/DEPRECATED.md for details.
+
+Original purpose: re-export top-level functions from daily_updates.py for
+Cloud Functions framework discovery. Replaced by mode-based routing in
+cloud_function_main.py as of 2026-04-08.
 """
-
-# Re-export all functions from daily_updates
-from daily_updates import (
-    update_statcast_2026,
-    update_pitcher_stats_2026,
-    rebuild_v7_features,
-    predict_today_games
-)
-
-# Make functions available to functions-framework
-__all__ = [
-    'update_statcast_2026',
-    'update_pitcher_stats_2026',
-    'rebuild_v7_features',
-    'predict_today_games'
-]

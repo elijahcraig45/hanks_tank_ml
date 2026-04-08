@@ -1,0 +1,273 @@
+{
+  "results": [
+    {
+      "model": "EXT1_CatBoost_pitcher_elo",
+      "accuracy": 0.5627,
+      "auc": 0.568,
+      "brier_score": 0.2444,
+      "log_loss": 0.6819,
+      "iteration": "EXT1",
+      "n_features": 87
+    },
+    {
+      "model": "EXT1_XGBoost_pitcher_elo",
+      "accuracy": 0.5477,
+      "auc": 0.5435,
+      "brier_score": 0.248,
+      "log_loss": 0.6895,
+      "iteration": "EXT1",
+      "n_features": 87
+    },
+    {
+      "model": "EXT1_LightGBM_pitcher_elo",
+      "accuracy": 0.5619,
+      "auc": 0.5481,
+      "brier_score": 0.2479,
+      "log_loss": 0.6898,
+      "iteration": "EXT1",
+      "n_features": 87
+    },
+    {
+      "model": "EXT2_EloCalibration",
+      "accuracy": 0.57,
+      "best_config": {
+        "k": 15,
+        "bonus": 80,
+        "regression": 0.4
+      },
+      "iteration": "EXT2"
+    },
+    {
+      "model": "EXT3_CatBoost_cats_iter300_d5",
+      "accuracy": 0.5765,
+      "auc": 0.5745,
+      "brier_score": 0.2438,
+      "log_loss": 0.6806,
+      "iteration": "EXT3",
+      "n_features": 85
+    },
+    {
+      "model": "EXT3_CatBoost_cats_iter500_d6",
+      "accuracy": 0.5615,
+      "auc": 0.5622,
+      "brier_score": 0.2452,
+      "log_loss": 0.6836,
+      "iteration": "EXT3",
+      "n_features": 85
+    },
+    {
+      "model": "EXT3_CatBoost_cats_iter400_d5",
+      "accuracy": 0.5708,
+      "auc": 0.5718,
+      "brier_score": 0.2441,
+      "log_loss": 0.6813,
+      "iteration": "EXT3",
+      "n_features": 85
+    },
+    {
+      "model": "EXT4_MLP_128-64-32",
+      "accuracy": 0.5728,
+      "auc": 0.5784,
+      "brier_score": 0.2427,
+      "log_loss": 0.6782,
+      "iteration": "EXT4",
+      "n_features": 83
+    },
+    {
+      "model": "EXT4_MLP_256-128-64-32",
+      "accuracy": 0.551,
+      "auc": 0.5642,
+      "brier_score": 0.245,
+      "log_loss": 0.683,
+      "iteration": "EXT4",
+      "n_features": 83
+    },
+    {
+      "model": "EXT4_MLP_256-128-64",
+      "accuracy": 0.5672,
+      "auc": 0.5632,
+      "brier_score": 0.2455,
+      "log_loss": 0.6845,
+      "iteration": "EXT4",
+      "n_features": 83
+    },
+    {
+      "model": "EXT4_MLP_512-256-128-64",
+      "accuracy": 0.5663,
+      "auc": 0.5657,
+      "brier_score": 0.2448,
+      "log_loss": 0.6826,
+      "iteration": "EXT4",
+      "n_features": 83
+    },
+    {
+      "model": "EXT5_CatBoost_interactions",
+      "accuracy": 0.553,
+      "auc": 0.5545,
+      "brier_score": 0.2461,
+      "log_loss": 0.6855,
+      "iteration": "EXT5",
+      "n_features": 95
+    },
+    {
+      "model": "EXT5_XGBoost_interactions",
+      "accuracy": 0.5445,
+      "auc": 0.5432,
+      "brier_score": 0.2479,
+      "log_loss": 0.6893,
+      "iteration": "EXT5",
+      "n_features": 95
+    },
+    {
+      "model": "EXT5_LightGBM_interactions",
+      "accuracy": 0.5526,
+      "auc": 0.5508,
+      "brier_score": 0.2475,
+      "log_loss": 0.6888,
+      "iteration": "EXT5",
+      "n_features": 95
+    },
+    {
+      "model": "EXT6_ConfidenceFiltering",
+      "accuracy": 0.572,
+      "threshold_analysis": [
+        {
+          "threshold": 0.5,
+          "offset": 0.0,
+          "coverage": 1.0,
+          "accuracy": 0.572,
+          "n_games": 2472
+        },
+        {
+          "threshold": 0.51,
+          "offset": 0.01,
+          "coverage": 0.8669,
+          "accuracy": 0.5796,
+          "n_games": 2143
+        },
+        {
+          "threshold": 0.52,
+          "offset": 0.02,
+          "coverage": 0.7427,
+          "accuracy": 0.5833,
+          "n_games": 1836
+        },
+        {
+          "threshold": 0.53,
+          "offset": 0.03,
+          "coverage": 0.6335,
+          "accuracy": 0.5881,
+          "n_games": 1566
+        },
+        {
+          "threshold": 0.54,
+          "offset": 0.04,
+          "coverage": 0.5311,
+          "accuracy": 0.5948,
+          "n_games": 1313
+        },
+        {
+          "threshold": 0.55,
+          "offset": 0.05,
+          "coverage": 0.4523,
+          "accuracy": 0.602,
+          "n_games": 1118
+        },
+        {
+          "threshold": 0.56,
+          "offset": 0.06,
+          "coverage": 0.3604,
+          "accuracy": 0.6049,
+          "n_games": 891
+        },
+        {
+          "threshold": 0.57,
+          "offset": 0.07,
+          "coverage": 0.288,
+          "accuracy": 0.6053,
+          "n_games": 712
+        },
+        {
+          "threshold": 0.58,
+          "offset": 0.08,
+          "coverage": 0.2278,
+          "accuracy": 0.6217,
+          "n_games": 563
+        },
+        {
+          "threshold": 0.59,
+          "offset": 0.09,
+          "coverage": 0.1796,
+          "accuracy": 0.6216,
+          "n_games": 444
+        },
+        {
+          "threshold": 0.6,
+          "offset": 0.1,
+          "coverage": 0.1428,
+          "accuracy": 0.6204,
+          "n_games": 353
+        },
+        {
+          "threshold": 0.61,
+          "offset": 0.11,
+          "coverage": 0.1092,
+          "accuracy": 0.6222,
+          "n_games": 270
+        },
+        {
+          "threshold": 0.62,
+          "offset": 0.12,
+          "coverage": 0.0761,
+          "accuracy": 0.6064,
+          "n_games": 188
+        },
+        {
+          "threshold": 0.63,
+          "offset": 0.13,
+          "coverage": 0.053,
+          "accuracy": 0.6641,
+          "n_games": 131
+        },
+        {
+          "threshold": 0.64,
+          "offset": 0.14,
+          "coverage": 0.0348,
+          "accuracy": 0.6395,
+          "n_games": 86
+        },
+        {
+          "threshold": 0.65,
+          "offset": 0.15,
+          "coverage": 0.0166,
+          "accuracy": 0.6585,
+          "n_games": 41
+        },
+        {
+          "threshold": 0.66,
+          "offset": 0.16,
+          "coverage": 0.0093,
+          "accuracy": 0.6087,
+          "n_games": 23
+        }
+      ],
+      "iteration": "EXT6"
+    },
+    {
+      "model": "EXT7_OptimizedEnsemble",
+      "accuracy": 0.5655,
+      "auc": 0.5578,
+      "brier_score": 0.2458,
+      "log_loss": 0.6849,
+      "weights": {
+        "catboost_deep": 0.25660689170217427,
+        "catboost_wide": 0.25018039550228394,
+        "xgb": 0.15020364436950942,
+        "lgb": 0.2377774990563531,
+        "mlp": 0.10523156936967934
+      },
+      "iteration": "EXT7",
+      "n_features": 95
+    }
+  ]
+}
