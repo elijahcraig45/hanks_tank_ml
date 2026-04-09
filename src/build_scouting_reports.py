@@ -665,15 +665,6 @@ def upsert_reports(bq: bigquery.Client, reports: list[dict], dry_run: bool = Fal
 
     game_date = reports[0]["game_date"] if reports else None
 
-    # Delete existing rows for this date then insert fresh
-    if game_date:
-        delete_sql = f"""
-        DELETE FROM `{REPORTS_TABLE}`
-        WHERE game_date = '{game_date}'
-        """
-        bq.query(delete_sql).result()
-        logger.info("Cleared existing reports for %s", game_date)
-
     rows = []
     for r in reports:
         rows.append({
@@ -687,11 +678,19 @@ def upsert_reports(bq: bigquery.Client, reports: list[dict], dry_run: bool = Fal
             "generated_at":   r["generated_at"],
         })
 
-    errors = bq.insert_rows_json(f"{REPORTS_TABLE}", rows)
-    if errors:
-        logger.error("BQ insert errors: %s", errors)
-    else:
-        logger.info("Wrote %d scouting reports to BQ for %s", len(rows), game_date)
+    # Use load job with partition overwrite to avoid streaming-buffer DELETE conflicts.
+    # The $YYYYMMDD partition decorator overwrites exactly that day's partition atomically.
+    partition_suffix = (game_date or "").replace("-", "")
+    table_ref = f"{REPORTS_TABLE}${partition_suffix}"
+
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_TRUNCATE",
+        autodetect=True,
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+    )
+    job = bq.load_table_from_json(rows, table_ref, job_config=job_config)
+    job.result()
+    logger.info("Wrote %d scouting reports to BQ for %s (partition overwrite)", len(rows), game_date)
 
     return {"reports_written": len(rows), "game_date": game_date}
 
