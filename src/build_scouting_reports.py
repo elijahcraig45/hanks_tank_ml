@@ -683,9 +683,19 @@ def upsert_reports(bq: bigquery.Client, reports: list[dict], dry_run: bool = Fal
     partition_suffix = (game_date or "").replace("-", "")
     table_ref = f"{REPORTS_TABLE}${partition_suffix}"
 
+    schema = [
+        bigquery.SchemaField("game_pk",        "INTEGER"),
+        bigquery.SchemaField("game_date",       "DATE"),
+        bigquery.SchemaField("home_team_id",    "INTEGER"),
+        bigquery.SchemaField("away_team_id",    "INTEGER"),
+        bigquery.SchemaField("home_team_name",  "STRING"),
+        bigquery.SchemaField("away_team_name",  "STRING"),
+        bigquery.SchemaField("report",          "JSON"),
+        bigquery.SchemaField("generated_at",    "TIMESTAMP"),
+    ]
     job_config = bigquery.LoadJobConfig(
         write_disposition="WRITE_TRUNCATE",
-        autodetect=True,
+        schema=schema,
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
     )
     job = bq.load_table_from_json(rows, table_ref, job_config=job_config)
