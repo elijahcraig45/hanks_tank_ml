@@ -68,12 +68,12 @@ class DataValidator:
             if self.fix_duplicates:
                 logger.info("  Fixing game duplicates...")
                 self.bq.query(f"""
-                    CREATE OR REPLACE TABLE `{PROJECT}.{DATASET}.games` AS
-                    SELECT * EXCEPT(rn) FROM (
-                        SELECT *, ROW_NUMBER() OVER (
-                            PARTITION BY game_pk, game_date ORDER BY synced_at DESC
-                        ) rn FROM `{PROJECT}.{DATASET}.games`
-                    ) WHERE rn = 1
+                    DELETE FROM `{PROJECT}.{DATASET}.games`
+                    WHERE STRUCT(game_pk, game_date, synced_at) NOT IN (
+                        SELECT STRUCT(game_pk, game_date, MAX(synced_at))
+                        FROM `{PROJECT}.{DATASET}.games`
+                        GROUP BY game_pk, game_date
+                    )
                 """).result()
                 logger.info("  ✓ duplicates resolved")
         else:
