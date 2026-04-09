@@ -50,11 +50,10 @@ def fetch_games_on_date(bq: bigquery.Client, game_date: date) -> list[dict]:
            home_team_id, away_team_id,
            home_team_name, away_team_name,
            home_score, away_score, status,
-           CAST(game_time_utc AS STRING) AS game_time_utc,
            venue_name
     FROM `{PROJECT}.{DATASET}.games`
     WHERE game_date = '{game_date}'
-    ORDER BY game_time_utc
+    ORDER BY game_pk
     """
     return _q(bq, sql)
 
@@ -296,18 +295,6 @@ def assemble_report(
             "name": pred.get("away_starter_name"),
             "hand": pred.get("away_starter_hand"),
         }
-    elif mv7:
-        starters["home"] = {
-            "id":   _safe_int(mv7.get("home_probable_pitcher_id")),
-            "name": mv7.get("home_probable_pitcher_name"),
-            "hand": mv7.get("home_starter_hand"),
-        }
-        starters["away"] = {
-            "id":   _safe_int(mv7.get("away_probable_pitcher_id")),
-            "name": mv7.get("away_probable_pitcher_name"),
-            "hand": mv7.get("away_starter_hand"),
-        }
-
     # --- Pitcher arsenal ---
     arsenal = {}
     if mv7:
@@ -324,15 +311,15 @@ def assemble_report(
     if v8:
         for side in ("home", "away"):
             momentum[side] = {
-                "elo":           _safe_int(v8.get(f"{side}_elo_rating")),
-                "pythag_pct":    _safe_float(v8.get(f"{side}_pythagorean_win_pct")),
+                "elo":           _safe_int(v8.get(f"{side}_elo")),
+                "pythag_pct":    _safe_float(v8.get(f"{side}_pythag_season")),
                 "streak":        _streak_label(v8.get(f"{side}_current_streak")),
-                "run_diff_10g":  _safe_float(v8.get(f"{side}_avg_run_diff_10g"), 1),
-                "record_10g":    None,  # could add later
+                "run_diff_10g":  _safe_float(v8.get(f"{side}_run_diff_10g"), 1),
+                "record_10g":    None,
             }
         momentum["elo_differential"]    = _safe_int(v8.get("elo_differential"))
         momentum["h2h_win_pct_3yr"]     = _safe_float(v8.get("h2h_win_pct_3yr"))
-        momentum["h2h_game_count_3yr"]  = _safe_int(v8.get("h2h_game_count_3yr"))
+        momentum["h2h_game_count_3yr"]  = _safe_int(v8.get("h2h_games_3yr"))
         momentum["is_divisional"]       = bool(v8.get("is_divisional"))
 
     # --- Hot/cold players ---
@@ -398,7 +385,7 @@ def assemble_report(
     return {
         "game_pk":        _safe_int(game["game_pk"]),
         "game_date":      str(game["game_date"]),
-        "game_time_utc":  game.get("game_time_utc"),
+        "game_time_utc":  None,
         "venue_name":     game.get("venue_name"),
         "home_team_id":   _safe_int(game["home_team_id"]),
         "away_team_id":   _safe_int(game["away_team_id"]),
