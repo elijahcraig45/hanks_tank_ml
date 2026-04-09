@@ -727,6 +727,50 @@ class V7FeatureBuilder:
 
         try:
             row = self.bq.query(sql).to_dataframe()
+            if row.empty and has_pitcher_stats:
+                # Primary window (30 days) returned nothing — early season or new pitcher.
+                # Fall back to historical data with a wider 180-day window (last ~1 season).
+                logger.debug(
+                    "No pitcher_arsenal in 30-day window for pitcher %d — trying 180-day historical fallback",
+                    pitcher_id,
+                )
+                hist_cutoff = (game_date - timedelta(days=180)).isoformat()
+                fallback_sql = f"""
+                WITH recent_starts AS (
+                    SELECT * FROM `{PITCHER_STATS_TABLE}`
+                    WHERE pitcher = {pitcher_id}
+                      AND game_date < '{gd_str}'
+                      AND game_date >= '{hist_cutoff}'
+                      AND total_pitches >= 25
+                    QUALIFY ROW_NUMBER() OVER (PARTITION BY game_date ORDER BY 1) = 1
+                ),
+                rolling AS (
+                    SELECT
+                        pitcher,
+                        AVG(mean_fastball_velo) AS mean_velo,
+                        AVG(fastball_pct)       AS fastball_pct,
+                        AVG(breaking_pct)       AS breaking_pct,
+                        AVG(offspeed_pct)       AS offspeed_pct,
+                        AVG(k_bb_pct)           AS k_bb_pct,
+                        AVG(xwoba_allowed)      AS xwoba_allowed
+                    FROM recent_starts
+                    GROUP BY pitcher
+                )
+                SELECT pitcher, mean_velo, fastball_pct, breaking_pct,
+                       offspeed_pct, k_bb_pct, xwoba_allowed,
+                       NULL AS velo_trend
+                FROM rolling
+                """
+                try:
+                    row = self.bq.query(fallback_sql).to_dataframe()
+                    if not row.empty:
+                        logger.info(
+                            "Pitcher %d: using 180-day historical arsenal fallback (no 2026 data yet)",
+                            pitcher_id,
+                        )
+                except Exception as fb_err:
+                    logger.debug("Historical arsenal fallback failed for pid=%d: %s", pitcher_id, fb_err)
+
             if row.empty:
                 logger.debug("No pitcher_arsenal data for pitcher %d on %s", pitcher_id, gd_str)
                 return {
