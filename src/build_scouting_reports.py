@@ -1,0 +1,531 @@
+#!/usr/bin/env python3
+"""
+Daily Scouting Report Builder
+==============================
+Runs once per day after the pregame pipeline completes.
+For every game on the target date, assembles a structured scouting report from:
+  - game_predictions        (win probabilities, model signals, pitcher names)
+  - game_v8_features        (Elo, Pythagorean, streaks, H2H)
+  - matchup_v7_features     (probable pitchers, arsenal, bullpen, venue)
+  - mlb_historical_data     (player hot/cold streaks from last 14 days)
+  - news_articles           (relevant team/player headlines from last 7 days)
+
+Output: one row per game_pk in mlb_2026_season.game_scouting_reports
+The JSON report is pre-computed so the frontend never does heavy BQ work at
+page-load time — it just fetches a single row.
+
+Usage:
+    python3 build_scouting_reports.py [--date YYYY-MM-DD] [--dry-run]
+"""
+
+import argparse
+import json
+import logging
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+from google.cloud import bigquery
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+PROJECT = "hankstank"
+DATASET = "mlb_2026_season"
+HIST_DS = "mlb_historical_data"
+REPORTS_TABLE = f"{PROJECT}.{DATASET}.game_scouting_reports"
+
+
+def _q(bq: bigquery.Client, sql: str) -> list[dict]:
+    rows = list(bq.query(sql).result())
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Data fetchers
+# ---------------------------------------------------------------------------
+
+def fetch_games_on_date(bq: bigquery.Client, game_date: date) -> list[dict]:
+    sql = f"""
+    SELECT game_pk, game_date,
+           home_team_id, away_team_id,
+           home_team_name, away_team_name,
+           home_score, away_score, status,
+           CAST(game_time_utc AS STRING) AS game_time_utc,
+           venue_name
+    FROM `{PROJECT}.{DATASET}.games`
+    WHERE game_date = '{game_date}'
+    ORDER BY game_time_utc
+    """
+    return _q(bq, sql)
+
+
+def fetch_predictions(bq: bigquery.Client, game_date: date) -> dict[int, dict]:
+    sql = f"""
+    SELECT *
+    FROM `{PROJECT}.{DATASET}.game_predictions`
+    WHERE game_date = '{game_date}'
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY predicted_at DESC) = 1
+    """
+    rows = _q(bq, sql)
+    return {int(r["game_pk"]): r for r in rows}
+
+
+def fetch_v8_features(bq: bigquery.Client, game_date: date) -> dict[int, dict]:
+    sql = f"""
+    SELECT *
+    FROM `{PROJECT}.{DATASET}.game_v8_features`
+    WHERE game_date = '{game_date}'
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY computed_at DESC) = 1
+    """
+    rows = _q(bq, sql)
+    return {int(r["game_pk"]): r for r in rows}
+
+
+def fetch_matchup_features(bq: bigquery.Client, game_date: date) -> dict[int, dict]:
+    sql = f"""
+    SELECT *
+    FROM `{PROJECT}.{DATASET}.matchup_v7_features`
+    WHERE game_date = '{game_date}'
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY computed_at DESC) = 1
+    """
+    rows = _q(bq, sql)
+    return {int(r["game_pk"]): r for r in rows}
+
+
+def fetch_hot_cold_players(bq: bigquery.Client, team_ids: list[int], as_of: date) -> dict[int, list[dict]]:
+    """
+    For each team, find batters hot or cold over the last 14 days.
+    Returns {team_id: [player_entry, ...]} — players sorted by wOBA delta.
+    Uses player_game_stats from the historical dataset.
+    """
+    if not team_ids:
+        return {}
+
+    cutoff = (as_of - timedelta(days=14)).isoformat()
+    ids_str = ", ".join(str(t) for t in team_ids)
+
+    sql = f"""
+    WITH recent AS (
+        SELECT
+            player_id, player_name, team_id,
+            SUM(at_bats)  AS ab,
+            SUM(hits)     AS h,
+            SUM(home_runs) AS hr,
+            SUM(rbi)      AS rbi,
+            SUM(walks + IFNULL(hit_by_pitch, 0)) AS bb,
+            SUM(strikeouts) AS so,
+            -- wOBA numerator approximation (without full linear weights)
+            ROUND(
+                (0.69 * SUM(walks) + 0.72 * SUM(IFNULL(hit_by_pitch,0))
+                 + 0.89 * (SUM(hits) - SUM(IFNULL(doubles,0)) - SUM(IFNULL(triples,0)) - SUM(home_runs))
+                 + 1.27 * SUM(IFNULL(doubles,0))
+                 + 1.62 * SUM(IFNULL(triples,0))
+                 + 2.10 * SUM(home_runs))
+                / NULLIF(SUM(at_bats + walks + IFNULL(hit_by_pitch,0)), 0),
+            3) AS woba_14d,
+            COUNT(DISTINCT game_date) AS games_played
+        FROM `{PROJECT}.{HIST_DS}.player_game_stats`
+        WHERE team_id IN ({ids_str})
+          AND game_date BETWEEN '{cutoff}' AND '{as_of}'
+          AND at_bats > 0
+        GROUP BY player_id, player_name, team_id
+        HAVING games_played >= 4 AND ab >= 10
+    )
+    SELECT *,
+        woba_14d - 0.320 AS woba_delta
+    FROM recent
+    ORDER BY team_id, woba_delta DESC
+    """
+    try:
+        rows = _q(bq, sql)
+    except Exception as e:
+        logger.warning("hot/cold query failed (table may be empty early season): %s", e)
+        return {}
+
+    result: dict[int, list] = {}
+    for r in rows:
+        tid = int(r["team_id"])
+        result.setdefault(tid, []).append(r)
+    return result
+
+
+def fetch_team_news(bq: bigquery.Client, team_names: list[str], since_days: int = 7) -> dict[str, list[dict]]:
+    """
+    Fetch recent news articles from news_articles that mention any of the team names.
+    Returns {search_term: [articles]} grouped by team name keyword.
+    """
+    cutoff = (date.today() - timedelta(days=since_days)).isoformat()
+    # Build a LIKE clause for each team name keyword
+    keywords = []
+    for name in team_names:
+        # Use last word of team name (e.g. "Atlanta Braves" → "Braves")
+        keyword = name.split()[-1]
+        keywords.append(keyword)
+
+    # Deduplicate
+    keywords = list(dict.fromkeys(keywords))
+
+    conditions = " OR ".join(
+        f"LOWER(title) LIKE '%{k.lower()}%' OR LOWER(description) LIKE '%{k.lower()}%'"
+        for k in keywords
+    )
+
+    sql = f"""
+    SELECT title, description, url, published_at, source_name, news_type
+    FROM `{PROJECT}.{DATASET}.news_articles`
+    WHERE fetched_at >= '{cutoff}'
+      AND ({conditions})
+    ORDER BY published_at DESC
+    LIMIT 40
+    """
+    try:
+        rows = _q(bq, sql)
+    except Exception as e:
+        logger.warning("news query failed: %s", e)
+        return {}
+
+    # Group articles by which keyword they match
+    grouped: dict[str, list] = {k: [] for k in keywords}
+    for r in rows:
+        title_desc = ((r.get("title") or "") + " " + (r.get("description") or "")).lower()
+        for k in keywords:
+            if k.lower() in title_desc:
+                if len(grouped[k]) < 4:  # cap at 4 per team
+                    grouped[k].append({
+                        "title": r["title"],
+                        "description": r.get("description"),
+                        "url": r["url"],
+                        "published_at": str(r["published_at"]) if r.get("published_at") else None,
+                        "source": r.get("source_name"),
+                    })
+    return grouped
+
+
+# ---------------------------------------------------------------------------
+# Report assembly
+# ---------------------------------------------------------------------------
+
+def _safe_float(v, digits: int = 3):
+    try:
+        return round(float(v), digits) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(v):
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _streak_label(val) -> str | None:
+    if val is None:
+        return None
+    v = int(val)
+    return f"W{v}" if v > 0 else f"L{abs(v)}"
+
+
+def build_hot_cold_section(players: list[dict]) -> dict:
+    """Separate player list into hot (top 3) and cold (bottom 3)."""
+    sorted_p = sorted(players, key=lambda p: p.get("woba_delta", 0) or 0, reverse=True)
+    hot  = []
+    cold = []
+    for p in sorted_p[:3]:
+        if (p.get("woba_delta") or 0) >= 0.015:
+            hot.append({
+                "name":       p["player_name"],
+                "woba_14d":   _safe_float(p.get("woba_14d")),
+                "woba_delta": _safe_float(p.get("woba_delta")),
+                "ab":         _safe_int(p.get("ab")),
+                "hr":         _safe_int(p.get("hr")),
+                "rbi":        _safe_int(p.get("rbi")),
+                "games":      _safe_int(p.get("games_played")),
+            })
+    for p in sorted_p[-3:]:
+        if (p.get("woba_delta") or 0) <= -0.015:
+            cold.append({
+                "name":       p["player_name"],
+                "woba_14d":   _safe_float(p.get("woba_14d")),
+                "woba_delta": _safe_float(p.get("woba_delta")),
+                "ab":         _safe_int(p.get("ab")),
+                "games":      _safe_int(p.get("games_played")),
+            })
+    return {"hot": hot, "cold": cold}
+
+
+def assemble_report(
+    game: dict,
+    pred: dict | None,
+    v8: dict | None,
+    mv7: dict | None,
+    home_hot_cold: dict,
+    away_hot_cold: dict,
+    home_news: list[dict],
+    away_news: list[dict],
+) -> dict:
+    """Build the full scouting report JSON for one game."""
+
+    home_name = game.get("home_team_name", "")
+    away_name = game.get("away_team_name", "")
+    home_kw   = home_name.split()[-1]
+    away_kw   = away_name.split()[-1]
+
+    # --- Prediction section ---
+    prediction = None
+    if pred:
+        prediction = {
+            "home_win_probability": _safe_float(pred.get("home_win_probability")),
+            "away_win_probability": _safe_float(pred.get("away_win_probability")),
+            "predicted_winner":     pred.get("predicted_winner"),
+            "confidence_tier":      pred.get("confidence_tier"),
+            "model_version":        pred.get("model_version"),
+            "lineup_confirmed":     pred.get("lineup_confirmed"),
+        }
+
+    # --- Probable starters ---
+    starters = {}
+    if pred:
+        starters["home"] = {
+            "id":   _safe_int(pred.get("home_starter_id")),
+            "name": pred.get("home_starter_name"),
+            "hand": pred.get("home_starter_hand"),
+        }
+        starters["away"] = {
+            "id":   _safe_int(pred.get("away_starter_id")),
+            "name": pred.get("away_starter_name"),
+            "hand": pred.get("away_starter_hand"),
+        }
+    elif mv7:
+        starters["home"] = {
+            "id":   _safe_int(mv7.get("home_probable_pitcher_id")),
+            "name": mv7.get("home_probable_pitcher_name"),
+            "hand": mv7.get("home_starter_hand"),
+        }
+        starters["away"] = {
+            "id":   _safe_int(mv7.get("away_probable_pitcher_id")),
+            "name": mv7.get("away_probable_pitcher_name"),
+            "hand": mv7.get("away_starter_hand"),
+        }
+
+    # --- Pitcher arsenal ---
+    arsenal = {}
+    if mv7:
+        for side in ("home", "away"):
+            arsenal[side] = {
+                "mean_velo":     _safe_float(mv7.get(f"{side}_starter_mean_velo"), 1),
+                "k_bb_pct":      _safe_float(mv7.get(f"{side}_starter_k_bb_pct")),
+                "xwoba_allowed": _safe_float(mv7.get(f"{side}_starter_xwoba_allowed")),
+                "venue_era":     _safe_float(mv7.get(f"{side}_starter_venue_era"), 2),
+            }
+
+    # --- Team momentum (V8 features) ---
+    momentum = {}
+    if v8:
+        for side in ("home", "away"):
+            momentum[side] = {
+                "elo":           _safe_int(v8.get(f"{side}_elo_rating")),
+                "pythag_pct":    _safe_float(v8.get(f"{side}_pythagorean_win_pct")),
+                "streak":        _streak_label(v8.get(f"{side}_current_streak")),
+                "run_diff_10g":  _safe_float(v8.get(f"{side}_avg_run_diff_10g"), 1),
+                "record_10g":    None,  # could add later
+            }
+        momentum["elo_differential"]    = _safe_int(v8.get("elo_differential"))
+        momentum["h2h_win_pct_3yr"]     = _safe_float(v8.get("h2h_win_pct_3yr"))
+        momentum["h2h_game_count_3yr"]  = _safe_int(v8.get("h2h_game_count_3yr"))
+        momentum["is_divisional"]       = bool(v8.get("is_divisional"))
+
+    # --- Hot/cold players ---
+    hot_cold = {
+        "home": build_hot_cold_section(home_hot_cold),
+        "away": build_hot_cold_section(away_hot_cold),
+    }
+
+    # --- Bullpen ---
+    bullpen = {}
+    if mv7:
+        bullpen = {
+            "home_fatigue":        _safe_float(mv7.get("home_bullpen_fatigue_score"), 2),
+            "away_fatigue":        _safe_float(mv7.get("away_bullpen_fatigue_score"), 2),
+            "home_closer_rest":    _safe_int(mv7.get("home_closer_days_rest")),
+            "away_closer_rest":    _safe_int(mv7.get("away_closer_days_rest")),
+        }
+
+    # --- Watcher callouts (key matchup to watch) ---
+    watch_list = []
+    if mv7:
+        h2h_woba = _safe_float(mv7.get("home_h2h_woba"))
+        h2h_pa   = _safe_int(mv7.get("home_h2h_pa_total")) or 0
+        if h2h_woba and h2h_pa >= 15:
+            delta = h2h_woba - 0.320
+            direction = "familiar" if abs(delta) < 0.015 else ("dominates" if delta < -0.015 else "struggles vs")
+            watch_list.append({
+                "type": "h2h",
+                "label": f"{away_kw} lineup {direction} {starters.get('home', {}).get('name', 'home starter')} ({h2h_pa} PA, .{round(h2h_woba*1000)} wOBA)",
+            })
+        a_h2h_woba = _safe_float(mv7.get("away_h2h_woba"))
+        a_h2h_pa   = _safe_int(mv7.get("away_h2h_pa_total")) or 0
+        if a_h2h_woba and a_h2h_pa >= 15:
+            delta = a_h2h_woba - 0.320
+            direction = "familiar" if abs(delta) < 0.015 else ("dominates" if delta < -0.015 else "struggles vs")
+            watch_list.append({
+                "type": "h2h",
+                "label": f"{home_kw} lineup {direction} {starters.get('away', {}).get('name', 'away starter')} ({a_h2h_pa} PA, .{round(a_h2h_woba*1000)} wOBA)",
+            })
+
+    if v8:
+        streak_h = _safe_int(v8.get("home_current_streak"))
+        streak_a = _safe_int(v8.get("away_current_streak"))
+        for team_name, streak_val in [(home_name, streak_h), (away_name, streak_a)]:
+            if streak_val and abs(streak_val) >= 4:
+                label = f"{team_name.split()[-1]} riding a {_streak_label(streak_val)} streak"
+                watch_list.append({"type": "streak", "label": label})
+
+    # Top hot hitters from each side
+    for side_kw, hot_cold_data in [(home_kw, hot_cold["home"]), (away_kw, hot_cold["away"])]:
+        for p in hot_cold_data.get("hot", [])[:1]:
+            watch_list.append({
+                "type": "hot_player",
+                "label": f"{p['name']} 🔥 .{round((p['woba_14d'] or 0)*1000)} wOBA last 14 days",
+            })
+
+    # --- News ---
+    news = {
+        "home": home_news[:4],
+        "away": away_news[:4],
+    }
+
+    return {
+        "game_pk":        _safe_int(game["game_pk"]),
+        "game_date":      str(game["game_date"]),
+        "game_time_utc":  game.get("game_time_utc"),
+        "venue_name":     game.get("venue_name"),
+        "home_team_id":   _safe_int(game["home_team_id"]),
+        "away_team_id":   _safe_int(game["away_team_id"]),
+        "home_team_name": home_name,
+        "away_team_name": away_name,
+        "status":         game.get("status"),
+        "home_score":     _safe_int(game.get("home_score")),
+        "away_score":     _safe_int(game.get("away_score")),
+        "prediction":     prediction,
+        "starters":       starters,
+        "arsenal":        arsenal,
+        "momentum":       momentum,
+        "hot_cold":       hot_cold,
+        "bullpen":        bullpen,
+        "watch_list":     watch_list[:6],
+        "news":           news,
+        "generated_at":   datetime.utcnow().isoformat() + "Z",
+    }
+
+
+# ---------------------------------------------------------------------------
+# BQ write
+# ---------------------------------------------------------------------------
+
+def upsert_reports(bq: bigquery.Client, reports: list[dict], dry_run: bool = False) -> dict:
+    if dry_run:
+        logger.info("[DRY RUN] Would write %d reports", len(reports))
+        return {"reports_written": 0, "dry_run": True}
+
+    game_date = reports[0]["game_date"] if reports else None
+
+    # Delete existing rows for this date then insert fresh
+    if game_date:
+        delete_sql = f"""
+        DELETE FROM `{REPORTS_TABLE}`
+        WHERE game_date = '{game_date}'
+        """
+        bq.query(delete_sql).result()
+        logger.info("Cleared existing reports for %s", game_date)
+
+    rows = []
+    for r in reports:
+        rows.append({
+            "game_pk":        r["game_pk"],
+            "game_date":      r["game_date"],
+            "home_team_id":   r["home_team_id"],
+            "away_team_id":   r["away_team_id"],
+            "home_team_name": r["home_team_name"],
+            "away_team_name": r["away_team_name"],
+            "report":         json.dumps(r),
+            "generated_at":   r["generated_at"],
+        })
+
+    errors = bq.insert_rows_json(f"{REPORTS_TABLE}", rows)
+    if errors:
+        logger.error("BQ insert errors: %s", errors)
+    else:
+        logger.info("Wrote %d scouting reports to BQ for %s", len(rows), game_date)
+
+    return {"reports_written": len(rows), "game_date": game_date}
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def run(target_date: date, dry_run: bool = False) -> dict:
+    bq = bigquery.Client(project=PROJECT)
+
+    logger.info("Building scouting reports for %s", target_date)
+
+    games = fetch_games_on_date(bq, target_date)
+    if not games:
+        logger.info("No games on %s", target_date)
+        return {"reports_written": 0, "game_date": str(target_date)}
+
+    logger.info("Found %d games", len(games))
+
+    predictions  = fetch_predictions(bq, target_date)
+    v8_features  = fetch_v8_features(bq, target_date)
+    mv7_features = fetch_matchup_features(bq, target_date)
+
+    # Collect all team IDs and names
+    team_ids   = list({int(g["home_team_id"]) for g in games} | {int(g["away_team_id"]) for g in games})
+    team_names = list({g["home_team_name"] for g in games} | {g["away_team_name"] for g in games})
+
+    hot_cold_by_team = fetch_hot_cold_players(bq, team_ids, target_date)
+    news_by_keyword  = fetch_team_news(bq, team_names)
+
+    reports = []
+    for game in games:
+        gpk = int(game["game_pk"])
+        home_tid = int(game["home_team_id"])
+        away_tid = int(game["away_team_id"])
+        home_kw  = game["home_team_name"].split()[-1]
+        away_kw  = game["away_team_name"].split()[-1]
+
+        report = assemble_report(
+            game          = game,
+            pred          = predictions.get(gpk),
+            v8            = v8_features.get(gpk),
+            mv7           = mv7_features.get(gpk),
+            home_hot_cold = hot_cold_by_team.get(home_tid, []),
+            away_hot_cold = hot_cold_by_team.get(away_tid, []),
+            home_news     = news_by_keyword.get(home_kw, []),
+            away_news     = news_by_keyword.get(away_kw, []),
+        )
+        reports.append(report)
+        logger.info("  %s @ %s — %d watch callouts, %d news items",
+                    game["away_team_name"], game["home_team_name"],
+                    len(report["watch_list"]),
+                    len(report["news"]["home"]) + len(report["news"]["away"]))
+
+    result = upsert_reports(bq, reports, dry_run=dry_run)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    target = date.fromisoformat(args.date) if args.date else date.today()
+    result = run(target, dry_run=args.dry_run)
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    main()
