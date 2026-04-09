@@ -55,7 +55,7 @@ V8_GCS_PATH="models/vertex/game_outcome_2026_v8/model.pkl"
 SEASON_START="2026-03-27"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$(cd "$SCRIPT_DIR/../../src" && pwd)"
+SRC_DIR="$(cd "$SCRIPT_DIR/../../../src" && pwd)"
 REPO_DIR="$(cd "$SRC_DIR/.." && pwd)"
 
 # Parse flags

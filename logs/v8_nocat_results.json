@@ -1,0 +1,29 @@
+{
+  "version": "v8_nocat",
+  "trained_at": "2026-04-09T19:04:23.711749",
+  "n_train": 24564,
+  "n_2026_train": 136,
+  "weights": {
+    "cat": 0.5431,
+    "lgb": 0.3996,
+    "mlp": 0.0573
+  },
+  "results_2025_val": {
+    "label": "v8_nocat ensemble \u2014 2025 holdout",
+    "accuracy": 0.5756,
+    "auc": 0.5659,
+    "brier": 0.2447,
+    "log_loss": 0.6824,
+    "avg_pred": 0.5378
+  },
+  "results_2026_holdout": {
+    "label": "v8_nocat ensemble \u2014 2026 holdout",
+    "accuracy": 0.5758,
+    "auc": 0.4887,
+    "brier": 0.2503,
+    "log_loss": 0.6939,
+    "avg_pred": 0.5128
+  },
+  "vs_original_2025": 0.1173,
+  "vs_original_2026": 0.1515
+}

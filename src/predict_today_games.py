@@ -62,21 +62,29 @@ PREDICTIONS_TABLE    = f"{PROJECT}.{DATASET}.game_predictions"
 LINEUPS_TABLE        = f"{PROJECT}.{DATASET}.lineups"
 
 # ---------------------------------------------------------------------------
-# Model resolution chain: V8 → V7 → V6 → V5 → V4
-# Each model is tried in order (local path first, then GCS) until one loads.
-# V8 is the current best (57.65% overall, 65.4% at ≥60% confidence).
-# V7 is the previous production model. V4 is the final fallback.
+# Model resolution chain (highest priority first):
+#   v8_nocat_calibrated  — nocat retrain + 2026 Platt/isotonic calibration (best if available)
+#   v8_nocat             — nocat retrain on 2025+2026 data (team-ID-free)
+#   v8_calibrated        — original V8 + 2026 Platt/isotonic calibration
+#   v8_final             — original V8 ensemble (CatBoost + team IDs)
+#   v7 / v6 / v5 / v4   — legacy fallbacks
 # ---------------------------------------------------------------------------
-V8_MODEL_GCS = "models/vertex/game_outcome_2026_v8/model.pkl"
-V7_MODEL_GCS = "models/vertex/game_outcome_2026_v7/model.pkl"
-V6_MODEL_GCS = "models/vertex/game_outcome_2026_v6/model.pkl"
-V5_MODEL_GCS = "models/vertex/game_outcome_2026_v5/model.pkl"
-V4_MODEL_GCS = "models/vertex/game_outcome_2026/model.pkl"
-V8_LOCAL = _MODELS_DIR / "game_outcome_2026_v8_final.pkl"
-V7_LOCAL = _MODELS_DIR / "game_outcome_2026_v7.pkl"
-V6_LOCAL = _MODELS_DIR / "game_outcome_2026_v6.pkl"
-V5_LOCAL = _MODELS_DIR / "game_outcome_2026_v5.pkl"
-V4_LOCAL = _MODELS_DIR / "game_outcome_2026_vertex.pkl"
+V8_NOCAT_CAL_GCS  = "models/vertex/game_outcome_2026_v8_nocat_calibrated/model.pkl"
+V8_NOCAT_GCS      = "models/vertex/game_outcome_2026_v8_nocat/model.pkl"
+V8_CAL_GCS        = "models/vertex/game_outcome_2026_v8_calibrated/model.pkl"
+V8_MODEL_GCS      = "models/vertex/game_outcome_2026_v8/model.pkl"
+V7_MODEL_GCS      = "models/vertex/game_outcome_2026_v7/model.pkl"
+V6_MODEL_GCS      = "models/vertex/game_outcome_2026_v6/model.pkl"
+V5_MODEL_GCS      = "models/vertex/game_outcome_2026_v5/model.pkl"
+V4_MODEL_GCS      = "models/vertex/game_outcome_2026/model.pkl"
+V8_NOCAT_CAL_LOCAL = _MODELS_DIR / "game_outcome_2026_v8_nocat_calibrated.pkl"
+V8_NOCAT_LOCAL     = _MODELS_DIR / "game_outcome_2026_v8_nocat.pkl"
+V8_CAL_LOCAL       = _MODELS_DIR / "game_outcome_2026_v8_calibrated.pkl"
+V8_LOCAL           = _MODELS_DIR / "game_outcome_2026_v8_final.pkl"
+V7_LOCAL           = _MODELS_DIR / "game_outcome_2026_v7.pkl"
+V6_LOCAL           = _MODELS_DIR / "game_outcome_2026_v6.pkl"
+V5_LOCAL           = _MODELS_DIR / "game_outcome_2026_v5.pkl"
+V4_LOCAL           = _MODELS_DIR / "game_outcome_2026_vertex.pkl"
 
 # V8 uses updated confidence thresholds based on validation experiments:
 #   high   (≥60%): 65.4% accuracy on 11.7% of games — actionable picks
@@ -211,6 +219,12 @@ class V8EnsemblePredictor:
             if w == 0:
                 continue
             blended += w * self._proba_one(name, model, X_df)
+
+        # Apply 2026 calibrator if present (Platt or Isotonic fitted on 2026 outcomes)
+        calibrator = getattr(self, "calibrator", None)
+        if calibrator is not None:
+            blended = calibrator.predict(blended)
+
         return np.column_stack([1.0 - blended, blended])
 
 
@@ -257,10 +271,13 @@ class DailyPredictor:
           - Uses CatBoost with team ID embeddings + 85-feature V8 set
         """
         _versions = [
-            ("v8", V8_LOCAL, V8_MODEL_GCS),
-            ("v7", V7_LOCAL, V7_MODEL_GCS),
-            ("v6", V6_LOCAL, V6_MODEL_GCS),
-            ("v5", V5_LOCAL, V5_MODEL_GCS),
+            ("v8_nocat_calibrated", V8_NOCAT_CAL_LOCAL, V8_NOCAT_CAL_GCS),
+            ("v8_nocat",           V8_NOCAT_LOCAL,      V8_NOCAT_GCS),
+            ("v8_calibrated",      V8_CAL_LOCAL,        V8_CAL_GCS),
+            ("v8",                 V8_LOCAL,             V8_MODEL_GCS),
+            ("v7",                 V7_LOCAL,             V7_MODEL_GCS),
+            ("v6",                 V6_LOCAL,             V6_MODEL_GCS),
+            ("v5",                 V5_LOCAL,             V5_MODEL_GCS),
         ]
         data = None
 
@@ -277,11 +294,16 @@ class DailyPredictor:
                     bucket_obj = client.bucket(BUCKET)
                     blob = bucket_obj.blob(gcs_path)
                     data = pickle.loads(blob.download_as_bytes())
-                    # Cache locally to avoid repeated GCS downloads
-                    local_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(local_path, "wb") as f:
-                        pickle.dump(data, f)
-                    logger.info("%s model downloaded and cached locally", label)
+                    logger.info("%s model downloaded from GCS", label)
+                    # Cache locally to speed up subsequent runs (best-effort — read-only
+                    # environments like Cloud Functions will silently skip this step).
+                    try:
+                        local_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(local_path, "wb") as f:
+                            pickle.dump(data, f)
+                        logger.info("%s model cached locally at %s", label, local_path)
+                    except Exception as cache_err:
+                        logger.debug("Could not cache %s model locally (non-fatal): %s", label, cache_err)
                     break
                 except Exception as e:
                     logger.warning("%s model unavailable: %s — trying next version", label, e)
@@ -303,6 +325,12 @@ class DailyPredictor:
         # feature sets, scalers, and Optuna-tuned blend weights.
         if isinstance(data.get("models"), dict) and "weights" in data:
             ensemble = V8EnsemblePredictor(data)
+            # Attach 2026 calibrator to ensemble if present in bundle
+            if "calibrator" in data:
+                ensemble.calibrator = data["calibrator"]
+                logger.info("Calibrator attached (%s, fitted on %d 2026 games)",
+                            data.get("calibrator_type", "?"),
+                            data.get("calibrator_games", 0))
             self.model = ensemble
             self.scaler = None          # each sub-model handles its own scaling
             self.feature_names = ensemble.all_features
