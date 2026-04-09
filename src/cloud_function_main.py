@@ -24,6 +24,7 @@ Supported modes (passed in request body as JSON):
   backfill_v7         Rebuild V7 features for a historical date range
   backfill_v8         Build V8 features for a historical date range
   schedule_pregame_tasks  Enqueue Cloud Tasks for today's games
+  scouting_reports        Build/refresh scouting reports for a date
 
 Environment variables:
   GCP_PROJECT  – defaults to hankstank
@@ -148,6 +149,12 @@ def daily_pipeline(request):
         if mode == "daily" and target.weekday() == 0:
             results["steps"].append(_run_rosters(target, dry_run))
 
+        # Daily scouting reports: one JSON blob per game written to BQ.
+        # Runs in daily mode (after predictions) and on-demand.
+        if mode in ("daily", "scouting_reports"):
+            report_date = date.fromisoformat(req_json.get("date", target.isoformat()))
+            results["steps"].append(_run_scouting_reports(report_date, dry_run))
+
         # Morning schedule check: enqueue per-game Cloud Tasks for today
         if mode == "schedule_pregame_tasks":
             results["steps"].append(_schedule_pregame_tasks(target, dry_run))
@@ -181,6 +188,12 @@ def _run_matchup_features(target: date, game_pks: list, dry_run: bool) -> dict:
     else:
         result = builder.run_for_date(target)
     return {"step": "matchup_features", **result}
+
+
+def _run_scouting_reports(target: date, dry_run: bool) -> dict:
+    from build_scouting_reports import run as build_reports
+    result = build_reports(target, dry_run=dry_run)
+    return {"step": "scouting_reports", **result}
 
 
 def _run_daily_prediction(
