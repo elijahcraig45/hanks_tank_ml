@@ -16,7 +16,8 @@ Supported modes (passed in request body as JSON):
   features            Rebuild V3/V4 game_features only
   v8_features         Build V8 features for today's games only
   update_elo          Update Elo ratings from yesterday's game outcomes
-  pregame_v8          Per-game: lineups → matchup → V7 → V8 → predict (RECOMMENDED)
+  pregame_v8          Per-game: lineups → matchup → V7 → V8 → predict (RECOMMENDED V8)
+  pregame_v10         Per-game: lineups → matchup → V8 → V10 → predict (RECOMMENDED V10)
   pregame_v7          Per-game: lineups → matchup → V7 → predict
   pregame             Per-game: lineups → matchup → predict
   predict_today       Per-game prediction only (features must already exist)
@@ -85,6 +86,12 @@ def daily_pipeline(request):
         if mode in ("daily", "v8_features"):
             results["steps"].append(_run_v8_features(target, game_pks, dry_run))
 
+        # V10 features: SP quality, park factors, rest/travel, team quality from
+        # MLB API. Runs daily AFTER V8 (reads from game_v8_features). Also runs
+        # per-game in pregame_v10 mode.
+        if mode in ("daily", "v10_features"):
+            results["steps"].append(_run_v10_features(target, game_pks, dry_run))
+
         # Weekly prediction run (Friday)
         if mode == "predict" or (mode == "daily" and target.weekday() == 4):
             results["steps"].append(_run_weekly_predictions(dry_run))
@@ -106,28 +113,32 @@ def daily_pipeline(request):
         # Combined pre-game pipeline:
         #   pregame:    lineups → V5/V6 matchup → V7 features → prediction
         #   pregame_v8: lineups → V5/V6 matchup → V7 features → V8 features → prediction
-        #                                                         ^^^^^^^^^^^^
-        #               V8 features build from the game_pks in this window
-        #               ensuring Elo + rolling stats are current for this game
-        if mode in ("pregame", "pregame_v7", "pregame_v8"):
+        #   pregame_v10:lineups → matchup → V8 features → V10 features → prediction
+        #               V10 is the recommended production mode for best accuracy.
+        if mode in ("pregame", "pregame_v7", "pregame_v8", "pregame_v10"):
             results["steps"].append(_run_lineup_fetch(target, game_pks, dry_run))
             results["steps"].append(_run_matchup_features(target, game_pks, dry_run))
             if mode in ("pregame_v7", "pregame_v8"):
                 results["steps"].append(_run_v7_features(target, game_pks, dry_run))
-            if mode == "pregame_v8":
+            if mode in ("pregame_v8", "pregame_v10"):
                 results["steps"].append(_run_v8_features(target, game_pks, dry_run))
+            if mode == "pregame_v10":
+                results["steps"].append(_run_v10_features(target, game_pks, dry_run))
             results["steps"].append(_run_daily_prediction(target, game_pks, dry_run, req_json))
 
         # Weekly model training (Sundays only) — keeps training cost-efficient
-        # model_version options: v8 (recommended), v7, v6 (legacy)
+        # model_version options: v10 (recommended), v8, v7, v6 (legacy)
         if mode == "train_weekly" or (mode == "daily" and target.weekday() == 6):
-            model_version = req_json.get("model_version", "v8")
-            if model_version == "v8":
+            model_version = req_json.get("model_version", "v10")
+            if model_version in ("v10", "v8"):
                 results["steps"].append(_run_weekly_training_v8(dry_run))
             elif model_version == "v7":
                 results["steps"].append(_run_weekly_training_v7(dry_run))
             else:
                 results["steps"].append(_run_weekly_training(dry_run))
+            # On Sundays also refresh the in-season SP percentile data in GCS
+            # so the next week's predictions have up-to-date Statcast xERA ranks.
+            results["steps"].append(_refresh_sp_gcs(target.year, dry_run))
 
         # V7 backfill: recompute V7 features for a historical date range
         if mode == "backfill_v7":
@@ -140,6 +151,14 @@ def daily_pipeline(request):
         # V8 backfill: build V8 features for all games since season start
         if mode == "backfill_v8":
             results["steps"].append(_run_v8_backfill(
+                date.fromisoformat(req_json.get("start", "2026-03-27")),
+                date.fromisoformat(req_json.get("end", target.isoformat())),
+                dry_run,
+            ))
+
+        # V10 backfill: build V10 features for all games since season start
+        if mode == "backfill_v10":
+            results["steps"].append(_run_v10_backfill(
                 date.fromisoformat(req_json.get("start", "2026-03-27")),
                 date.fromisoformat(req_json.get("end", target.isoformat())),
                 dry_run,
@@ -481,6 +500,99 @@ def _run_v8_backfill(start: date, end: date, dry_run: bool) -> dict:
     builder = V8LiveFeatureBuilder(dry_run=dry_run)
     result = builder.run_backfill(start, end)
     return {"step": "v8_backfill", **result}
+
+
+def _run_v10_features(target: date, game_pks: list, dry_run: bool) -> dict:
+    """
+    Build V10 features (SP quality, park factors, rest/travel, team quality,
+    extra rolling stats) for upcoming games on target date.
+    Writes to game_v10_features table. Reads from game_v8_features + MLB API.
+
+    Called once daily (covering all scheduled games) and again per-game in
+    pregame_v10 mode to ensure the freshest SP quality data before each prediction.
+    """
+    from build_v10_features_live import V10LiveFeatureBuilder
+
+    builder = V10LiveFeatureBuilder(dry_run=dry_run)
+    if game_pks:
+        result = builder.run_for_game_pks(game_pks, target)
+    else:
+        result = builder.run_for_date(target)
+    return {"step": "v10_features", **result}
+
+
+def _run_v10_backfill(start: date, end: date, dry_run: bool) -> dict:
+    """Rebuild V10 features for a historical date range (backfill after deployment)."""
+    from build_v10_features_live import V10LiveFeatureBuilder
+
+    builder = V10LiveFeatureBuilder(dry_run=dry_run)
+    result = builder.run_backfill(start, end)
+    return {"step": "v10_backfill", **result}
+
+
+def _refresh_sp_gcs(year: int, dry_run: bool) -> dict:
+    """
+    Refresh the current-season Statcast SP percentile parquet in GCS.
+
+    Called every Sunday so xERA/K%/BB%/whiff/FBV percentile ranks stay current
+    as pitchers accumulate plate appearances mid-season. Historical years (< current
+    season) are stable and skipped.
+
+    Downloads fresh data directly from Baseball Savant's public CSV endpoint,
+    computes percentile ranks, and writes the parquet to GCS at:
+        gs://hanks_tank_data/sp_quality/statcast_sp_{year}.parquet
+    """
+    import io
+    import urllib.request
+    from datetime import date as _date
+
+    import pandas as pd
+    from google.cloud import storage
+
+    current_year = _date.today().year
+    if year < current_year:
+        return {"step": "refresh_sp_gcs", "status": "skipped (historical year)", "year": year}
+    if dry_run:
+        return {"step": "refresh_sp_gcs", "status": "skipped (dry_run)", "year": year}
+
+    try:
+        # Baseball Savant pitcher leaderboard CSV (current season, min 10 PA)
+        url = (
+            f"https://baseballsavant.mlb.com/leaderboard/expected_statistics"
+            f"?type=pitcher&year={year}&position=&team=&min=10&csv=true"
+        )
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            raw = resp.read()
+
+        df = pd.read_csv(io.BytesIO(raw))
+
+        # Compute percentile ranks for key SP quality columns
+        pct_cols = ["xera", "k_percent", "bb_percent", "whiff_percent", "fastball_avg_speed"]
+        existing = [c for c in pct_cols if c in df.columns]
+        for col in existing:
+            df[f"{col}_pct"] = df[col].rank(pct=True, ascending=(col == "bb_percent")) * 100
+
+        # Upload to GCS
+        bucket_name = "hanks_tank_data"
+        blob_path = f"sp_quality/statcast_sp_{year}.parquet"
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False)
+        buf.seek(0)
+
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+        blob.upload_from_file(buf, content_type="application/octet-stream")
+
+        return {
+            "step": "refresh_sp_gcs",
+            "status": "ok",
+            "year": year,
+            "rows": len(df),
+            "gcs_path": f"gs://{bucket_name}/{blob_path}",
+        }
+    except Exception as e:
+        return {"step": "refresh_sp_gcs", "status": "error", "error": str(e)}
 
 
 def _run_weekly_training_v8(dry_run: bool) -> dict:

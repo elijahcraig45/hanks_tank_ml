@@ -58,17 +58,22 @@ GAME_FEATURES_TABLE  = f"{PROJECT}.{DATASET}.game_features"
 MATCHUP_TABLE        = f"{PROJECT}.{DATASET}.matchup_features"
 MATCHUP_V7_TABLE     = f"{PROJECT}.{DATASET}.matchup_v7_features"
 V8_FEATURES_TABLE    = f"{PROJECT}.{DATASET}.game_v8_features"
+V10_FEATURES_TABLE   = f"{PROJECT}.{DATASET}.game_v10_features"
 PREDICTIONS_TABLE    = f"{PROJECT}.{DATASET}.game_predictions"
 LINEUPS_TABLE        = f"{PROJECT}.{DATASET}.lineups"
 
 # ---------------------------------------------------------------------------
 # Model resolution chain (highest priority first):
-#   v8_nocat_calibrated  — nocat retrain + 2026 Platt/isotonic calibration (best if available)
+#   v10                  — XGBoost V10 (SP quality + park factors + rest/travel)
+#                           61.48% on 2026 live, 64.54% at ≥64% confidence
+#   v8_nocat_calibrated  — nocat retrain + 2026 Platt/isotonic calibration
 #   v8_nocat             — nocat retrain on 2025+2026 data (team-ID-free)
 #   v8_calibrated        — original V8 + 2026 Platt/isotonic calibration
 #   v8_final             — original V8 ensemble (CatBoost + team IDs)
 #   v7 / v6 / v5 / v4   — legacy fallbacks
 # ---------------------------------------------------------------------------
+V10_MODEL_GCS     = "models/vertex/game_outcome_2026_v10/model.pkl"
+V10_LOCAL         = _MODELS_DIR / "game_outcome_2026_v10.pkl"
 V8_NOCAT_CAL_GCS  = "models/vertex/game_outcome_2026_v8_nocat_calibrated/model.pkl"
 V8_NOCAT_GCS      = "models/vertex/game_outcome_2026_v8_nocat/model.pkl"
 V8_CAL_GCS        = "models/vertex/game_outcome_2026_v8_calibrated/model.pkl"
@@ -86,11 +91,12 @@ V6_LOCAL           = _MODELS_DIR / "game_outcome_2026_v6.pkl"
 V5_LOCAL           = _MODELS_DIR / "game_outcome_2026_v5.pkl"
 V4_LOCAL           = _MODELS_DIR / "game_outcome_2026_vertex.pkl"
 
-# V8 uses updated confidence thresholds based on validation experiments:
-#   high   (≥60%): 65.4% accuracy on 11.7% of games — actionable picks
-#   medium (≥55%): 59.9% accuracy on 43% of games  — solid signal
-#   low    (<55%): essentially a coin flip            — show but flag
-CONFIDENCE_TIERS = {"high": 0.60, "medium": 0.55, "low": 0.50}
+# V10 confidence thresholds (updated from V8 — V10 is better calibrated):
+#   high   (≥64%): 64.54% accuracy on 27.7% of games — strong actionable picks
+#   medium (≥57%): 58.75% accuracy on 67.9% of games — solid signal
+#   low    (<57%): show with flag
+# V8 thresholds were high=0.60, medium=0.55 — V10 calibration shifts these.
+CONFIDENCE_TIERS = {"high": 0.64, "medium": 0.57, "low": 0.50}
 
 PREDICTIONS_SCHEMA = [
     bigquery.SchemaField("game_pk", "INTEGER"),
@@ -154,6 +160,28 @@ PREDICTIONS_SCHEMA = [
     bigquery.SchemaField("away_current_streak", "INTEGER"),
     bigquery.SchemaField("h2h_win_pct_3yr", "FLOAT"),
     bigquery.SchemaField("is_divisional", "INTEGER"),
+    # V10 SP quality (for frontend explanation cards)
+    bigquery.SchemaField("home_sp_xera", "FLOAT"),
+    bigquery.SchemaField("away_sp_xera", "FLOAT"),
+    bigquery.SchemaField("sp_xera_diff", "FLOAT"),
+    bigquery.SchemaField("sp_quality_composite_diff", "FLOAT"),
+    bigquery.SchemaField("home_sp_known", "BOOL"),
+    bigquery.SchemaField("away_sp_known", "BOOL"),
+    # V10 SP percentile ranks (0–100 scale, sourced from Baseball Savant via GCS)
+    bigquery.SchemaField("home_sp_fbv_pct", "FLOAT"),
+    bigquery.SchemaField("away_sp_fbv_pct", "FLOAT"),
+    bigquery.SchemaField("home_sp_k_pct", "FLOAT"),
+    bigquery.SchemaField("away_sp_k_pct", "FLOAT"),
+    bigquery.SchemaField("home_sp_bb_pct", "FLOAT"),
+    bigquery.SchemaField("away_sp_bb_pct", "FLOAT"),
+    bigquery.SchemaField("home_sp_whiff_pct", "FLOAT"),
+    bigquery.SchemaField("away_sp_whiff_pct", "FLOAT"),
+    # V10 park factors
+    bigquery.SchemaField("home_park_factor", "FLOAT"),
+    # V10 rest / travel
+    bigquery.SchemaField("home_days_rest", "INTEGER"),
+    bigquery.SchemaField("away_days_rest", "INTEGER"),
+    bigquery.SchemaField("series_game_number", "INTEGER"),
 ]
 
 
@@ -237,7 +265,8 @@ class DailyPredictor:
         self.scaler = None
         self.feature_names = None
         self.model_version = None
-        self._is_v8 = False  # Set to True after load_model() if V8 is found
+        self._is_v8 = False   # Set True after load_model() if V8 bundle loaded
+        self._is_v10 = False  # Set True after load_model() if V10 XGBoost loaded
         self._ensure_table()
 
     # -----------------------------------------------------------------------
@@ -271,6 +300,7 @@ class DailyPredictor:
           - Uses CatBoost with team ID embeddings + 85-feature V8 set
         """
         _versions = [
+            ("v10",               V10_LOCAL,            V10_MODEL_GCS),
             ("v8_nocat_calibrated", V8_NOCAT_CAL_LOCAL, V8_NOCAT_CAL_GCS),
             ("v8_nocat",           V8_NOCAT_LOCAL,      V8_NOCAT_GCS),
             ("v8_calibrated",      V8_CAL_LOCAL,        V8_CAL_GCS),
@@ -321,9 +351,18 @@ class DailyPredictor:
                 blob = bucket_obj.blob(V4_MODEL_GCS)
                 data = pickle.loads(blob.download_as_bytes())
 
+        # V10 is a plain XGBClassifier (not a bundle) — detect by presence of
+        # feature_names_in_ attribute. Load directly; predict_proba(X_df) works natively.
+        if hasattr(data, "predict_proba") and hasattr(data, "feature_names_in_"):
+            self.model = data
+            self.scaler = None
+            self.feature_names = list(data.feature_names_in_)
+            self.model_version = "v10"
+            self._is_v8 = False
+            self._is_v10 = True
         # V8 bundles use a different structure: multi-model ensemble with per-model
         # feature sets, scalers, and Optuna-tuned blend weights.
-        if isinstance(data.get("models"), dict) and "weights" in data:
+        elif isinstance(data.get("models"), dict) and "weights" in data:
             ensemble = V8EnsemblePredictor(data)
             # Attach 2026 calibrator to ensemble if present in bundle
             if "calibrator" in data:
@@ -491,6 +530,30 @@ class DailyPredictor:
             )
             return pd.DataFrame()
 
+    def load_v10_features(self, game_pks: list[int]) -> pd.DataFrame:
+        """
+        Load V10 features (SP quality, park factors, rest/travel, team quality,
+        extra rolling stats) from game_v10_features BQ table.
+        Populated by build_v10_features_live.py in the daily pipeline.
+        """
+        pk_list = ", ".join(str(pk) for pk in game_pks)
+        sql = f"""
+            SELECT *
+            FROM `{V10_FEATURES_TABLE}`
+            WHERE game_pk IN ({pk_list})
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY game_pk ORDER BY computed_at DESC
+            ) = 1
+        """
+        try:
+            return self.bq.query(sql).to_dataframe()
+        except Exception as e:
+            logger.warning(
+                "V10 features unavailable (game_v10_features not yet populated): %s",
+                e,
+            )
+            return pd.DataFrame()
+
     # -----------------------------------------------------------------------
     # Feature assembly
     # -----------------------------------------------------------------------
@@ -499,10 +562,12 @@ class DailyPredictor:
         matchup_row: Optional[pd.Series],
         v7_row: Optional[pd.Series] = None,
         v8_row: Optional[pd.Series] = None,
+        v10_row: Optional[pd.Series] = None,
     ) -> pd.DataFrame:
         """
-        Combine team-level, matchup, V7, and V8 features into the model input vector.
-        Priority: V8 features override V3/V4 equivalents when both are present.
+        Combine team-level, matchup, V7, V8, and V10 features into the model input vector.
+        Priority: V10 > V8 > V3/V4 when features overlap.
+        For V10 model: V10 features are the primary source, with V8 as fallback.
         Handles missing features gracefully with league-average defaults.
         """
         feat = {}
@@ -646,6 +711,19 @@ class DailyPredictor:
                 "season_stage_late": 0, "season_stage_early": 1,
             })
 
+        # V10 features — override everything else when V10 model is active.
+        # The game_v10_features table contains ALL 139 V10 model features in one row.
+        if v10_row is not None and not v10_row.empty:
+            skip_cols = {
+                "game_pk", "game_date", "home_team_id", "away_team_id", "computed_at",
+                "park_factor_known", "is_hitter_park", "is_pitcher_park",
+            }
+            for col in v10_row.index:
+                if col not in skip_cols:
+                    val = v10_row[col]
+                    if pd.notna(val):
+                        feat[col] = float(val) if not isinstance(val, (bool, np.bool_)) else int(val)
+
         # Build final feature vector aligned with model's expected features
         row = {}
         for fname in self.feature_names:
@@ -668,9 +746,12 @@ class DailyPredictor:
             if X[col].isna().any():
                 X[col] = X[col].fillna(0.0)
 
-        # V8EnsemblePredictor handles its own feature selection and scaling
-        # internally and expects a DataFrame; older models expect a numpy array.
-        if isinstance(self.model, V8EnsemblePredictor):
+        # V10: plain XGBClassifier — predict_proba accepts DataFrame directly.
+        # V8EnsemblePredictor handles its own feature selection and scaling.
+        # Older models use scaler + numpy array.
+        if self._is_v10:
+            proba = self.model.predict_proba(X)[0]
+        elif isinstance(self.model, V8EnsemblePredictor):
             proba = self.model.predict_proba(X)[0]
         elif self.scaler:
             proba = self.model.predict_proba(self.scaler.transform(X))[0]
@@ -727,7 +808,8 @@ class DailyPredictor:
         game_features_df = self.load_game_features(game_pks)
         matchup_df = self.load_matchup_features(game_pks)
         v7_df = self.load_v7_features(game_pks)
-        v8_df = self.load_v8_features(game_pks) if self._is_v8 else pd.DataFrame()
+        v8_df = self.load_v8_features(game_pks) if (self._is_v8 or self._is_v10) else pd.DataFrame()
+        v10_df = self.load_v10_features(game_pks) if self._is_v10 else pd.DataFrame()
         starter_df = self.load_lineup_starters(game_pks)
 
         pred_rows = []
@@ -762,7 +844,14 @@ class DailyPredictor:
                 if not v8_subset.empty:
                     v8_row = v8_subset.iloc[0]
 
-            feat_df = self.assemble_features(game, gf_row, mf_row, v7_row, v8_row)
+            # V10 features (SP quality, park factors, rest/travel, team quality, calendar)
+            v10_row = None
+            if not v10_df.empty and "game_pk" in v10_df.columns:
+                v10_subset = v10_df[v10_df["game_pk"] == pk]
+                if not v10_subset.empty:
+                    v10_row = v10_subset.iloc[0]
+
+            feat_df = self.assemble_features(game, gf_row, mf_row, v7_row, v8_row, v10_row)
             pred = self.predict_game(game, feat_df, mf_row)
 
             # Starter info from lineup table (prefer over schedule)
@@ -835,7 +924,8 @@ class DailyPredictor:
                 "h2h_data_available": h2h_available,
                 "game_time_utc": game.get("game_time_utc"),
                 "predicted_at": datetime.now(tz=timezone.utc).isoformat(),
-                # V7 pitcher arsenal (from matchup_v7_features)
+                # V7 pitcher arsenal (from matchup_v7_features — 2025 and earlier only)
+                # For 2026+, use V10 SP percentile fields (home_sp_fbv_pct etc.) for display instead
                 "home_starter_mean_velo": float(v7_row.get("home_starter_mean_velo")) if v7_row is not None and pd.notna(v7_row.get("home_starter_mean_velo")) else None,
                 "away_starter_mean_velo": float(v7_row.get("away_starter_mean_velo")) if v7_row is not None and pd.notna(v7_row.get("away_starter_mean_velo")) else None,
                 "home_starter_velo_norm": float(v7_row.get("home_starter_velo_norm")) if v7_row is not None and pd.notna(v7_row.get("home_starter_velo_norm")) else None,
@@ -845,6 +935,15 @@ class DailyPredictor:
                 "home_starter_xwoba_allowed": float(v7_row.get("home_starter_xwoba_allowed")) if v7_row is not None and pd.notna(v7_row.get("home_starter_xwoba_allowed")) else None,
                 "away_starter_xwoba_allowed": float(v7_row.get("away_starter_xwoba_allowed")) if v7_row is not None and pd.notna(v7_row.get("away_starter_xwoba_allowed")) else None,
                 "starter_arsenal_advantage": float(v7_row.get("starter_arsenal_advantage")) if v7_row is not None and pd.notna(v7_row.get("starter_arsenal_advantage")) else None,
+                # V10 SP percentile ranks (Baseball Savant, 0–100 scale, higher = better except bb_pct)
+                "home_sp_fbv_pct": float(v10_row.get("home_sp_fbv")) if v10_row is not None and pd.notna(v10_row.get("home_sp_fbv")) else None,
+                "away_sp_fbv_pct": float(v10_row.get("away_sp_fbv")) if v10_row is not None and pd.notna(v10_row.get("away_sp_fbv")) else None,
+                "home_sp_k_pct": float(v10_row.get("home_sp_k_pct")) if v10_row is not None and pd.notna(v10_row.get("home_sp_k_pct")) else None,
+                "away_sp_k_pct": float(v10_row.get("away_sp_k_pct")) if v10_row is not None and pd.notna(v10_row.get("away_sp_k_pct")) else None,
+                "home_sp_bb_pct": float(v10_row.get("home_sp_bb_pct")) if v10_row is not None and pd.notna(v10_row.get("home_sp_bb_pct")) else None,
+                "away_sp_bb_pct": float(v10_row.get("away_sp_bb_pct")) if v10_row is not None and pd.notna(v10_row.get("away_sp_bb_pct")) else None,
+                "home_sp_whiff_pct": float(v10_row.get("home_sp_whiff")) if v10_row is not None and pd.notna(v10_row.get("home_sp_whiff")) else None,
+                "away_sp_whiff_pct": float(v10_row.get("away_sp_whiff")) if v10_row is not None and pd.notna(v10_row.get("away_sp_whiff")) else None,
                 # V7 bullpen health
                 "home_bullpen_fatigue_score": float(v7_row.get("home_bullpen_fatigue_score")) if v7_row is not None and pd.notna(v7_row.get("home_bullpen_fatigue_score")) else None,
                 "away_bullpen_fatigue_score": float(v7_row.get("away_bullpen_fatigue_score")) if v7_row is not None and pd.notna(v7_row.get("away_bullpen_fatigue_score")) else None,
@@ -872,6 +971,17 @@ class DailyPredictor:
                 "away_current_streak": int(v8_row.get("away_current_streak")) if v8_row is not None and pd.notna(v8_row.get("away_current_streak")) else None,
                 "h2h_win_pct_3yr": float(v8_row.get("h2h_win_pct_3yr")) if v8_row is not None and pd.notna(v8_row.get("h2h_win_pct_3yr")) else None,
                 "is_divisional": int(v8_row.get("is_divisional")) if v8_row is not None and pd.notna(v8_row.get("is_divisional")) else None,
+                # V10 SP quality diagnostics
+                "home_sp_xera": float(v10_row.get("home_sp_xera")) if v10_row is not None and pd.notna(v10_row.get("home_sp_xera")) else None,
+                "away_sp_xera": float(v10_row.get("away_sp_xera")) if v10_row is not None and pd.notna(v10_row.get("away_sp_xera")) else None,
+                "sp_xera_diff": float(v10_row.get("sp_xera_diff")) if v10_row is not None and pd.notna(v10_row.get("sp_xera_diff")) else None,
+                "sp_quality_composite_diff": float(v10_row.get("sp_quality_composite_diff")) if v10_row is not None and pd.notna(v10_row.get("sp_quality_composite_diff")) else None,
+                "home_sp_known": bool(v10_row.get("home_sp_known")) if v10_row is not None and pd.notna(v10_row.get("home_sp_known")) else None,
+                "away_sp_known": bool(v10_row.get("away_sp_known")) if v10_row is not None and pd.notna(v10_row.get("away_sp_known")) else None,
+                "home_park_factor": float(v10_row.get("home_park_factor")) if v10_row is not None and pd.notna(v10_row.get("home_park_factor")) else None,
+                "home_days_rest": int(v10_row.get("home_days_rest")) if v10_row is not None and pd.notna(v10_row.get("home_days_rest")) else None,
+                "away_days_rest": int(v10_row.get("away_days_rest")) if v10_row is not None and pd.notna(v10_row.get("away_days_rest")) else None,
+                "series_game_number": int(v10_row.get("series_game_number")) if v10_row is not None and pd.notna(v10_row.get("series_game_number")) else None,
             }
             pred_rows.append(pred_row)
             logger.info(
