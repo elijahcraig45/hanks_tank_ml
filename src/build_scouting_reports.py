@@ -45,6 +45,7 @@ def _q(bq: bigquery.Client, sql: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def fetch_games_on_date(bq: bigquery.Client, game_date: date) -> list[dict]:
+    # Try games table first; fall back to game_predictions if empty (e.g. same-day before nightly sync)
     sql = f"""
     SELECT game_pk, game_date,
            home_team_id, away_team_id,
@@ -55,7 +56,25 @@ def fetch_games_on_date(bq: bigquery.Client, game_date: date) -> list[dict]:
     WHERE game_date = '{game_date}'
     ORDER BY game_pk
     """
-    return _q(bq, sql)
+    rows = _q(bq, sql)
+    if rows:
+        return rows
+
+    logger.info("games table empty for %s — falling back to game_predictions", game_date)
+    sql2 = f"""
+    SELECT DISTINCT
+        game_pk, game_date,
+        home_team_id, away_team_id,
+        home_team_name, away_team_name,
+        NULL AS home_score, NULL AS away_score,
+        'Preview' AS status,
+        NULL AS venue_name
+    FROM `{PROJECT}.{DATASET}.game_predictions`
+    WHERE game_date = '{game_date}'
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY predicted_at DESC) = 1
+    ORDER BY game_pk
+    """
+    return _q(bq, sql2)
 
 
 def fetch_predictions(bq: bigquery.Client, game_date: date) -> dict[int, dict]:
@@ -351,6 +370,219 @@ def fetch_batter_vs_team_matchups(
     return {"home": home_list, "away": away_list}
 
 
+def fetch_yearly_h2h_records(
+    bq: bigquery.Client,
+    home_tid: int,
+    away_tid: int,
+) -> list[dict]:
+    """
+    Return year-by-year H2H records between two teams (2022–2026).
+    Returns [{'year': int, 'home_wins': int, 'away_wins': int, 'total_games': int}]
+    where home/away refer to the FIXED teams (not game site).
+    """
+    sql = f"""
+    WITH results AS (
+        SELECT
+            EXTRACT(YEAR FROM game_date) AS year,
+            home_team_id,
+            away_team_id,
+            home_score,
+            away_score
+        FROM `{PROJECT}.{DATASET}.games`
+        WHERE (
+            (home_team_id = {home_tid} AND away_team_id = {away_tid})
+            OR (home_team_id = {away_tid} AND away_team_id = {home_tid})
+        )
+          AND EXTRACT(YEAR FROM game_date) >= 2022
+          AND home_score IS NOT NULL
+          AND away_score IS NOT NULL
+    )
+    SELECT
+        year,
+        COUNTIF(
+            (home_team_id = {home_tid} AND home_score > away_score)
+            OR (away_team_id = {home_tid} AND away_score > home_score)
+        ) AS team1_wins,
+        COUNTIF(
+            (home_team_id = {away_tid} AND home_score > away_score)
+            OR (away_team_id = {away_tid} AND away_score > home_score)
+        ) AS team2_wins,
+        COUNT(*) AS total_games
+    FROM results
+    GROUP BY year
+    ORDER BY year DESC
+    """
+    try:
+        rows = _q(bq, sql)
+        return [{"year": int(r["year"]), "team1_wins": int(r["team1_wins"]),
+                 "team2_wins": int(r["team2_wins"]), "total_games": int(r["total_games"])} for r in rows]
+    except Exception as e:
+        logger.warning("yearly H2H query failed: %s", e)
+        return []
+
+
+def fetch_batter_vs_pitcher(
+    bq: bigquery.Client,
+    home_pitcher_id: int | None,
+    away_pitcher_id: int | None,
+    home_tid: int,
+    away_tid: int,
+    game_date: date,
+) -> dict[str, list[dict]]:
+    """
+    Return career batter vs specific pitcher matchup data.
+    home_pitcher_id = the home team's SP (away batters face him)
+    away_pitcher_id = the away team's SP (home batters face him)
+    Returns {"home": [...], "away": [...]}  (home = home batters vs away SP)
+    """
+    pitcher_ids = [p for p in [home_pitcher_id, away_pitcher_id] if p is not None]
+    if not pitcher_ids:
+        return {"home": [], "away": []}
+
+    roster_sql = f"""
+        SELECT player_id, team_id
+        FROM (
+            SELECT player_id, team_id,
+                   ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY snapshot_date DESC) AS rn
+            FROM `{PROJECT}.{DATASET}.rosters`
+            WHERE team_id IN ({home_tid}, {away_tid})
+              AND position_type IN ('Hitter', 'Two-Way Player')
+        ) WHERE rn = 1
+    """
+
+    results = {"home": [], "away": []}
+    for pitcher_id, batting_tid, key in [
+        (away_pitcher_id, home_tid, "home"),
+        (home_pitcher_id, away_tid, "away"),
+    ]:
+        if pitcher_id is None:
+            continue
+        gd = game_date.isoformat()
+        sql = f"""
+        WITH roster AS (
+            {roster_sql}
+        ),
+        pa AS (
+            SELECT batter, MAX(player_name) AS player_name,
+                   COUNT(*) AS pa,
+                   ROUND(SUM(woba_value) / NULLIF(COUNT(*), 0), 3) AS woba,
+                   COUNTIF(events = 'home_run') AS hr,
+                   COUNTIF(events IN ('single','double','triple','home_run')) AS hits,
+                   COUNTIF(events = 'strikeout') AS k
+            FROM (
+                SELECT batter, player_name, pitcher, woba_value, events, game_date
+                FROM `{PROJECT}.{DATASET}.statcast_pitches`
+                WHERE pitcher = {pitcher_id}
+                  AND game_date < '{gd}'
+                  AND game_year = 2026
+                  AND woba_denom = 1
+                UNION ALL
+                SELECT batter, player_name, pitcher, woba_value, events, game_date
+                FROM `{PROJECT}.{HIST_DS}.statcast_pitches`
+                WHERE pitcher = {pitcher_id}
+                  AND game_date >= '2022-01-01'
+                  AND woba_denom = 1
+            )
+            GROUP BY batter
+            HAVING COUNT(*) >= 5
+        )
+        SELECT s.batter, s.player_name, s.pa, s.woba, s.hr, s.hits, s.k,
+               r.team_id
+        FROM pa s
+        JOIN roster r ON r.player_id = s.batter
+        WHERE r.team_id = {batting_tid}
+        ORDER BY ABS(s.woba - 0.320) DESC
+        LIMIT 8
+        """
+        try:
+            rows = _q(bq, sql)
+            results[key] = [{
+                "player_name": r["player_name"],
+                "pa":          int(r["pa"]),
+                "woba":        float(r["woba"]) if r["woba"] is not None else None,
+                "hr":          int(r["hr"]),
+                "hits":        int(r["hits"]),
+                "k":           int(r["k"]),
+                "k_pct":       round(int(r["k"]) / int(r["pa"]), 3) if int(r["pa"]) > 0 else None,
+            } for r in rows]
+        except Exception as e:
+            logger.warning("batter vs pitcher query failed (pitcher=%s): %s", pitcher_id, e)
+
+    return results
+
+
+def fetch_venue_batter_stats(
+    bq: bigquery.Client,
+    venue_team_abbr: str,
+    home_tid: int,
+    away_tid: int,
+    game_date: date,
+) -> dict[str, list[dict]]:
+    """
+    Return batter performance at this specific ballpark (home_team = venue team)
+    for both rosters. Returns {"home": [...], "away": [...]} top performers/struggles.
+    """
+    if not venue_team_abbr:
+        return {"home": [], "away": []}
+    gd = game_date.isoformat()
+    sql = f"""
+    WITH roster AS (
+        SELECT player_id, team_id
+        FROM (
+            SELECT player_id, team_id,
+                   ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY snapshot_date DESC) AS rn
+            FROM `{PROJECT}.{DATASET}.rosters`
+            WHERE team_id IN ({home_tid}, {away_tid})
+              AND position_type IN ('Hitter', 'Two-Way Player')
+        ) WHERE rn = 1
+    ),
+    venue_pa AS (
+        SELECT batter, MAX(player_name) AS player_name,
+               COUNT(*) AS pa,
+               ROUND(SUM(woba_value) / NULLIF(COUNT(*), 0), 3) AS woba,
+               COUNTIF(events = 'home_run') AS hr,
+               COUNTIF(events IN ('single','double','triple','home_run')) AS hits
+        FROM (
+            SELECT batter, player_name, home_team, woba_value, events, game_date
+            FROM `{PROJECT}.{DATASET}.statcast_pitches`
+            WHERE home_team = '{venue_team_abbr}'
+              AND game_date < '{gd}'
+              AND game_year = 2026
+              AND woba_denom = 1
+            UNION ALL
+            SELECT batter, player_name, home_team, woba_value, events, game_date
+            FROM `{PROJECT}.{HIST_DS}.statcast_pitches`
+            WHERE home_team = '{venue_team_abbr}'
+              AND game_date >= '2022-01-01'
+              AND woba_denom = 1
+        )
+        GROUP BY batter
+        HAVING COUNT(*) >= 8
+    )
+    SELECT vp.batter, vp.player_name, vp.pa, vp.woba, vp.hr, vp.hits, r.team_id
+    FROM venue_pa vp
+    JOIN roster r ON r.player_id = vp.batter
+    ORDER BY r.team_id, ABS(vp.woba - 0.320) DESC
+    LIMIT 20
+    """
+    try:
+        rows = _q(bq, sql)
+    except Exception as e:
+        logger.warning("venue batter stats query failed: %s", e)
+        return {"home": [], "away": []}
+
+    home_list, away_list = [], []
+    for r in rows:
+        entry = {"player_name": r["player_name"], "pa": int(r["pa"]),
+                 "woba": float(r["woba"]) if r["woba"] else None,
+                 "hr": int(r["hr"]), "hits": int(r["hits"])}
+        if int(r["team_id"]) == home_tid:
+            home_list.append(entry)
+        else:
+            away_list.append(entry)
+    return {"home": home_list[:5], "away": away_list[:5]}
+
+
 def compute_hit_streaks(
     bq: bigquery.Client,
     home_tid: int,
@@ -498,6 +730,9 @@ def assemble_report(
     away_hot_cold: dict,
     home_news: list[dict],
     away_news: list[dict],
+    yearly_h2h: list[dict] | None = None,
+    batter_vs_sp: dict | None = None,
+    venue_stats: dict | None = None,
     matchup_vs_team: dict | None = None,
     hit_streaks: dict | None = None,
 ) -> dict:
@@ -533,16 +768,26 @@ def assemble_report(
             "name": pred.get("away_starter_name"),
             "hand": pred.get("away_starter_hand"),
         }
-    # --- Pitcher arsenal ---
+    # --- Pitcher arsenal (V10 SP percentile ranks from predictions) ---
     arsenal = {}
-    if mv7:
-        for side in ("home", "away"):
-            arsenal[side] = {
+    for side in ("home", "away"):
+        base = {}
+        if mv7:
+            base = {
                 "mean_velo":     _safe_float(mv7.get(f"{side}_starter_mean_velo"), 1),
                 "k_bb_pct":      _safe_float(mv7.get(f"{side}_starter_k_bb_pct")),
                 "xwoba_allowed": _safe_float(mv7.get(f"{side}_starter_xwoba_allowed")),
                 "venue_era":     _safe_float(mv7.get(f"{side}_starter_venue_era"), 2),
             }
+        if pred:
+            # V10 percentile ranks (Baseball Savant 0-100)
+            base["xera_pct"]   = _safe_int(pred.get(f"{side}_sp_xera"))
+            base["fbv_pct"]    = _safe_int(pred.get(f"{side}_sp_fbv_pct"))
+            base["k_pct"]      = _safe_int(pred.get(f"{side}_sp_k_pct"))
+            base["bb_pct"]     = _safe_int(pred.get(f"{side}_sp_bb_pct"))
+            base["whiff_pct"]  = _safe_int(pred.get(f"{side}_sp_whiff_pct"))
+            base["sp_known"]   = pred.get(f"{side}_sp_known")
+        arsenal[side] = base
 
     # --- Team momentum (V8 features) ---
     momentum = {}
@@ -638,9 +883,12 @@ def assemble_report(
         "momentum":       momentum,
         "hot_cold":       hot_cold,
         "bullpen":        bullpen,
-        "watch_list":     watch_list[:6],
-        "news":           news,
-        "matchup_vs_team": matchup_vs_team or {"home": [], "away": []},
+        "watch_list":       watch_list[:6],
+        "news":             news,
+        "matchup_vs_team":  matchup_vs_team or {"home": [], "away": []},
+        "h2h_yearly":       yearly_h2h or [],
+        "batter_vs_sp":     batter_vs_sp or {"home": [], "away": []},
+        "venue_stats":      venue_stats or {"home": [], "away": []},
         "fun_facts":      generate_fun_facts(
             matchup     = matchup_vs_team or {},
             hit_streaks = hit_streaks or {},
@@ -743,6 +991,12 @@ def run(target_date: date, dry_run: bool = False) -> dict:
         home_abbr = team_abbrevs.get(home_tid, "")
         away_abbr = team_abbrevs.get(away_tid, "")
 
+        pred_row = predictions.get(gpk)
+        home_sp_id = int(pred_row.get("home_starter_id") or 0) if pred_row else None
+        away_sp_id = int(pred_row.get("away_starter_id") or 0) if pred_row else None
+        home_sp_id = home_sp_id or None
+        away_sp_id = away_sp_id or None
+
         matchup_vs_team = fetch_batter_vs_team_matchups(
             bq, home_abbr, away_abbr, home_tid, away_tid, target_date,
         ) if home_abbr and away_abbr else {"home": [], "away": []}
@@ -751,9 +1005,19 @@ def run(target_date: date, dry_run: bool = False) -> dict:
             bq, home_tid, away_tid, home_abbr, away_abbr, target_date,
         ) if home_abbr and away_abbr else {}
 
+        yearly_h2h = fetch_yearly_h2h_records(bq, home_tid, away_tid)
+
+        batter_vs_sp = fetch_batter_vs_pitcher(
+            bq, home_sp_id, away_sp_id, home_tid, away_tid, target_date
+        )
+
+        venue_stats = fetch_venue_batter_stats(
+            bq, home_abbr, home_tid, away_tid, target_date
+        ) if home_abbr else {"home": [], "away": []}
+
         report = assemble_report(
             game             = game,
-            pred             = predictions.get(gpk),
+            pred             = pred_row,
             v8               = v8_features.get(gpk),
             mv7              = mv7_features.get(gpk),
             home_hot_cold    = hot_cold_by_team.get(home_tid, []),
@@ -762,6 +1026,9 @@ def run(target_date: date, dry_run: bool = False) -> dict:
             away_news        = news_by_keyword.get(away_kw, []),
             matchup_vs_team  = matchup_vs_team,
             hit_streaks      = hit_streaks,
+            yearly_h2h       = yearly_h2h,
+            batter_vs_sp     = batter_vs_sp,
+            venue_stats      = venue_stats,
         )
         reports.append(report)
         logger.info("  %s @ %s — %d watch callouts, %d fun facts, %d news items",
