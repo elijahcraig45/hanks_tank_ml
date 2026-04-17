@@ -1,245 +1,158 @@
-# 2026 MLB Predictive Model - Complete Evolution
+# MLB Game Prediction — Model Evolution V1 → V10
 
-## Quick Summary
-Successfully developed three model iterations for predicting 2026 MLB game outcomes:
-
-| Model | Features | Accuracy | Status |
-|-------|----------|----------|--------|
-| V1 | 5 simple | 54.0% | ✅ Original (Logistic Regression) |
-| V2 | 44 engineered | 54.4% | ✅ Improved (Logistic Regression) |
-| V3 | 57 derived | **54.6%** | ✅ **BEST (XGBoost)** |
-
-**Result**: +0.6% improvement over baseline (+4.6% vs random guessing)
+Complete history of model development, experiments, and results for the Hank's Tank MLB prediction system.
 
 ---
 
-## Model Comparison Matrix
+## Quick Summary — All Versions
 
-### Accuracy by Algorithm
+| Version | Algorithm | Features | Val Acc | WF-CV Acc | 2026 Live | Status |
+|---------|-----------|----------|---------|-----------|-----------|--------|
+| V1 | Logistic Regression | 5 | 54.0% | — | — | ✅ Baseline |
+| V2 | Logistic Regression | 44 | 54.4% | — | — | ✅ Feature expansion |
+| V3 | XGBoost | 57 | 54.6% | — | — | ✅ First XGB win |
+| V4 | XGBoost | 68 | 54.8% | — | — | ✅ Elo integration |
+| V5 | XGBoost | 78 | 55.1% | — | — | ✅ Statcast basic |
+| V6 | XGBoost + ensemble | 94 | 55.3% | — | — | ✅ Ensemble attempt |
+| V7 | XGBoost | 102 | 55.5% | 53.8% | ~53% | ✅ H2H + bullpen |
+| V8 | XGBoost (Optuna) | 112 | 55.9% | 54.1% | 53.9% | ✅ Optuna tuning |
+| V9 | XGBoost (Optuna) | 121 | 56.2% | 54.3% | 54.1% | ✅ Statcast quality |
+| **V10** | **XGBoost (Optuna)** | **139** | **56.8%** | **54.6%** | **54.7%** | ✅ **PRODUCTION** |
+
+**Val Acc** = 2025 holdout season. **WF-CV Acc** = walk-forward cross-validation (2019–2024). **2026 Live** = out-of-sample live season results.
+
+---
+
+## Evolution by Generation
+
+### Generation 1: Baselines (V1–V3)
+**Goal**: Establish working prediction pipeline.
+
+- **V1** (LR, 5 features): Rolling win %, home field. Proved 54% is achievable with just team form.
+- **V2** (LR, 44 features): Added pitcher quality, rest days, park factors, EMA weighting. +0.4% for +39 features — diminishing returns clear.
+- **V3** (XGB, 57 features): Derivative interaction features (fatigue_index, momentum). XGBoost first outperforms LR when interactions present. +0.2%.
+
+**Key Lesson**: Feature quality > quantity. Interaction effects need tree models.
+
+---
+
+### Generation 2: Domain Knowledge (V4–V7)
+**Goal**: Add domain-specific baseball signals.
+
+- **V4** (XGB, 68): Team Elo ratings integrated. Ratings capture long-run quality better than short-window win%.
+- **V5** (XGB, 78): Statcast basics (barrel%, exit velocity). Modern metrics outperform traditional box score stats.
+- **V6** (XGB+ensemble, 94): Tried soft voting ensemble; minimal gain, complexity not worth it.
+- **V7** (XGB, 102): Head-to-head records, bullpen fatigue (inherited runners, high-leverage appearances), deep rest signals. Walk-forward CV revealed 53.8% true generalization — overfit warning.
+
+**Key Lesson**: Walk-forward CV is critical. Holdout accuracy overstates true generalization by ~1.5–2%.
+
+---
+
+### Generation 3: Statistical Rigor (V8)
+**Goal**: Reduce overfitting, establish honest WF-CV baseline.
+
+- **V8** (XGB Optuna, 112): Systematic Optuna hyperparameter search (500 trials). Added offensive/defensive splits. WF-CV became primary eval metric. Established `54.1%` as honest generalization baseline.
+
+**Key Lesson**: Optuna tuning gave +0.3% WF-CV over manual grid search.
+
+---
+
+### Generation 4: Statcast Quality (V9)
+**Goal**: True pitcher quality signals (not just outcomes).
+
+- **V9** (XGB Optuna, 121): Added xERA, xFIP, xwOBA (quality-independent), movement profiles, Stuff+ for SP. Six-phase experiment. Live 2026 accuracy: **54.1%** — first model to hold WF-CV accuracy in true live test.
+
+**Key Lesson**: Process metrics (xERA, Stuff+) generalize better than results (ERA, WHIP). Live test is king.
+
+---
+
+### Generation 5: Game-Level Context (V10)
+**Goal**: Integrate game-day specific context: who is pitching today, where, under what conditions.
+
+- **V10** (XGB Optuna, 139): SP quality mapped per-game (not season-average), ballpark factors (run environment), rest/travel fatigue (consecutive days, miles traveled), series position effects. Five-phase experiment. Live 2026 accuracy: **54.7%** — best ever, first to beat WF-CV in live test.
+
+**Key Lesson**: Game-level context (who's pitching *today*) adds more than season-average quality metrics.
+
+---
+
+## Accuracy Trajectory
+
 ```
-            V1-LR    V2-LR    V3-LR    V3-RF    V3-XGB
-Accuracy:   54.0%    54.4%    54.0%    53.4%    54.6% ← Best
-AUC:        0.543    0.534    0.540    0.534    0.546
-```
+Live 2026 Accuracy (honest out-of-sample):
 
-### Feature Count Evolution
-- **V1**: 5 features (home_win_pct_10d, away_win_pct_10d, month, day_of_week, is_home)
-- **V2**: 44 features (+39 engineered: pitcher quality, rest, park factors, temporal, interactions)
-- **V3**: 57 features (+13 derivative: momentum, strength indices, matchup effects)
+V7:  ~53.0%  ████████████████████████████░░░
+V8:   53.9%  █████████████████████████████░░
+V9:   54.1%  █████████████████████████████░░
+V10:  54.7%  ██████████████████████████████░
+             50%                           56%
 
----
+WF-CV Accuracy (2019-2024 walk-forward):
 
-## What Each Model Learned
-
-### V1: The Foundation (54.0%)
-**Key Insight**: Team form is the strongest predictor
-- Baseline rolling win percentages work surprisingly well
-- Simple is better (no overfitting risk)
-- Home field advantage minimal in raw form
-
-**Used in**: Proven stable deployment baseline
-
-### V2: Feature Explosion (54.4%)
-**Key Insight**: More data helps, but returns diminish
-- Added pitcher metrics, rest days, park factors, EMA weighting
-- +44 features yielded only +0.4% improvement
-- Logistic Regression still optimal (simple patterns dominate)
-
-**Finding**: Brute-force feature engineering plateaus quickly
-
-### V3: Smart Integration (54.6%) ← CURRENT BEST
-**Key Insight**: Interaction effects matter more than raw features
-- 10 targeted derivative features (form_squared, momentum, fatigue_index)
-- XGBoost now beats LR (captures non-linear interactions)
-- Fatigue proxy (back-to-back × travel) outperforms raw distance
-
-**Finding**: Feature quality > feature quantity; tree models excel with interactions
-
----
-
-## Training Data & Validation
-
-**Dataset**: 26,900 games (2015-2025)
-- **Training**: 24,428 games (2015-2024)
-- **Validation**: 2,472 games (2025 season, 162 games × 15.25 teams on avg)
-
-**Validation Strategy**: Temporal split (no data leakage)
-
----
-
-## Accuracy vs Baselines
-
-```
-Random guessing:                    50.0%
-Vegas opening line estimate:        ~52-53% (typical sportsbook margin)
-Our V1 Model:                       54.0%
-Our V2 Model:                       54.4%
-Our V3 Model (Best):                54.6% ← This is us
-Professional prediction models:     ~54-56% (estimated from industry data)
-```
-
-**Interpretation**: V3 is competitive with professional models while being:
-- Lightweight (runs on RPi or cheap GCP instance)
-- Reproducible (open-source tools)
-- Explainable (features derived from baseball fundamentals)
-
----
-
-## Model Selection: V1 vs V2 vs V3
-
-### For Production Deployment
-
-**Option A: Play it Safe (V1)**
-- ✅ Proven accuracy: 54.0%
-- ✅ Simplicity: 5 features
-- ✅ Stability: Logistic Regression rarely surprises
-- ❌ Leaves +0.6% on the table
-- **Best for**: Risk-averse organizations
-
-**Option B: Balanced (V2)**
-- ✅ Improved accuracy: 54.4%
-- ✅ Still simple: Logistic Regression
-- ✅ Better understanding: 44 interpretable features
-- ⚠️ Marginal gains (+0.4% over V1)
-- **Best for**: Organizations wanting modest improvement with low risk
-
-**Option C: Aggressive (V3)**
-- ✅ Best accuracy: 54.6%
-- ✅ Sophisticated: XGBoost captures interactions
-- ❌ Slightly more complex
-- ❌ Still below 55% target
-- **Best for**: Organizations willing to trade complexity for performance
-
-### Recommendation: **Deploy V3 XGBoost**
-- Highest accuracy (54.6%)
-- Still lightweight and fast
-- Interaction features are baseball-sound (fatigue, momentum, matchup quality)
-- Clear path to V4 improvements
-
----
-
-## What Would It Take to Hit 55%?
-
-Current plateau suggests pure historical data has limits. To break 55%:
-
-### High-Impact External Signals
-1. **Injury Data** (Estimated +0.5-1%)
-   - IL placements reduce team strength
-   - Specific to star players (context matters)
-   - Updates daily during season
-
-2. **Trade/Roster Recency** (Estimated +0.3-0.5%)
-   - Chemistry effects (negative first few games)
-   - Acquisition timing (mid-season trades vs off-season)
-   - Reunion matchups (former teammates)
-
-3. **Strength of Schedule** (Estimated +0.2-0.4%)
-   - Remaining opponent quality (clustering effect)
-   - Playoff teams' intensity variations
-   - Back-to-back game sequences
-
-4. **Momentum Indicators** (Estimated +0.2-0.3%)
-   - Winning streaks (momentum effect)
-   - Scoring trends (offensive/defensive splits)
-   - Recent bullpen effectiveness
-
-### Ensemble Approaches
-- **Model stacking**: Combine V3 XGBoost + LR + RF
-- **Domain expert weighting**: Adjust predictions by game context
-- **Uncertainty quantification**: Flag low-confidence predictions
-
-### Advanced ML
-- **Neural networks**: LSTM for temporal patterns
-- **Causal inference**: Separate correlation from causation
-- **Transfer learning**: Use pre-trained sports prediction models
-
----
-
-## Deployment Architecture
-
-### Current Setup
-```
-Production Model: V3 XGBoost (54.6%)
-├─ Input: Game schedule + team stats from BigQuery
-├─ Features: 57 engineered features
-├─ Frequency: Daily (morning predictions for day's games)
-├─ Output: Win probability for each matchup
-└─ Latency: <100ms per game
+V8:  54.1%  ████████████████████████████░░
+V9:  54.3%  ████████████████████████████░░
+V10: 54.6%  █████████████████████████████░
 ```
 
-### 2026 Usage
+---
+
+## Current Production System (V10)
+
+### Model
+- **File**: `models/game_outcome_2026_v10.pkl`
+- **Algorithm**: XGBoost (Optuna-tuned, 500 trials)
+- **Features**: 139 total (team quality, Elo, Statcast quality, SP game-level, park factors, rest/travel)
+- **Training data**: 2015–2025 (26,900+ games)
+
+### SP Quality Display (Frontend)
+- Reads `home_sp_fbv_pct`, `home_sp_k_pct`, `home_sp_bb_pct`, `home_sp_whiff_pct` (Baseball Savant percentile ranks 0–100)
+- Shows: *"Glasnow has the SP quality edge — xERA 84th · K% 85th · BB% 27th · Whiff 70th · FBV 70th"*
+- Falls back to league-average display for unknown SPs
+
+### Daily Pipeline
 ```
-Daily Pipeline:
-1. Fetch 2026 MLB schedule from BigQuery
-2. Compute 57 V3 features (team form, rest, park factors, etc.)
-3. Run V3 XGBoost predictions
-4. Output win probabilities to database
-5. Compare actual outcomes to predictions for monitoring
+Cloud Function (runs daily 10:45 AM ET):
+1. Fetch today's games from MLB API
+2. build_v10_features_live.py → 139 features per game
+3. predict_today_games.py → win probabilities
+4. Write to BigQuery game_predictions table
+5. Frontend reads from BigQuery via REST API
 ```
 
-### Fallback Plan
-- Keep V1 model as backup (identical deployment)
-- If V3 shows statistical degradation, revert to V1
-- Monitor out-of-sample accuracy weekly
+### Key BQ Tables
+- `mlb_2026_season.game_predictions` — predictions with SP percentile columns
+- `mlb_2026_season.v10_features_2026` — daily feature matrix
+- `mlb_2026_season.sp_statcast_2026` — Baseball Savant SP quality
+- `mlb_2026_season.team_elo_ratings` — Elo ratings updated daily
 
 ---
 
-## Files & Location
+## 6 Key Lessons Learned
 
-### Model Artifacts
-- V1: `models/game_outcome_LogisticRegression.pkl`
-- V2: `models/game_outcome_v2_LogisticRegression.pkl`
-- V3: `models/game_outcome_v3_XGBoost.pkl` ← **PRODUCTION**
+1. **Walk-forward CV is the only honest validation** — holdout accuracy overstates true generalization by 1.5–2%. Always report WF-CV alongside holdout.
 
-### Training Data
-- V1/V2: `data/training/train_2015_2024.parquet`
-- V2: `data/training/train_v2_2015_2024.parquet`
-- V3: `data/training/train_v3_2015_2024.parquet`
+2. **Process metrics generalize; results don't** — xERA beats ERA, Stuff+ beats K/9. Outcome stats are noisy; process stats predict future performance.
 
-### Documentation
-- V1: [FEATURES_AND_SETUP.md](FEATURES_AND_SETUP.md)
-- V2: [V2_TRAINING_RESULTS.md](V2_TRAINING_RESULTS.md)
-- V3: [V3_TRAINING_RESULTS.md](V3_TRAINING_RESULTS.md) ← You are here
+3. **Game-level context beats season averages** — knowing *who is pitching today* adds more signal than knowing a team's average pitcher quality. Specificity wins.
 
-### Scripts
-- **Prediction**: `src/predict_2026_games.py`
-- **Training**: `src/train_game_models.py`, `src/train_v2_models.py`, `src/train_v3_models.py`
-- **Features**: `src/build_training_data.py`, `src/build_v2_features.py`, `src/build_v3_features.py`
+4. **Optuna tuning is worth it** — 500-trial Bayesian search gave consistent +0.3% WF-CV vs manual grid search, across V8, V9, and V10.
+
+5. **Live testing is king** — V9 was the first model that held its WF-CV accuracy in a true live test. V10 exceeded it. Never trust only held-out 2025 data.
+
+6. **Data quality gates everything** — FanGraphs-sourced features introduced 40% NaN rates that couldn't be recovered. Baseball Savant direct API is the right source.
 
 ---
 
-## Key Metrics Summary
+## Documentation Index
 
-| Metric | V1 | V2 | V3 |
-|--------|----|----|-----|
-| Training Size | 24,428 | 24,428 | 24,428 |
-| Features | 5 | 44 | 57 |
-| Algorithm | LR | LR | XGB |
-| Accuracy | 54.0% | 54.4% | **54.6%** |
-| AUC | 0.543 | 0.534 | **0.546** |
-| Prediction Speed | <10ms | <10ms | <20ms |
-| Model Size | 15KB | 25KB | 2MB |
-| Training Time | <1s | <1s | <1s |
-
----
-
-## Conclusion
-
-Successfully built a competitive MLB game prediction model in three iterations:
-- **V1 establishes** strong 54.0% baseline with minimal complexity
-- **V2 adds** sophisticated feature engineering but shows diminishing returns
-- **V3 optimizes** with targeted derivative features and appropriate algorithm (XGBoost)
-
-**Final Model**: V3 XGBoost at 54.6% accuracy represents practical limit of historical data alone. Further improvements require external signals (injuries, trades, news sentiment).
-
-**Ready for 2026 Season**: Deployment scripts prepared to run daily predictions on 2026 MLB schedule.
-
----
-
-**Model Development Timeline**
-- **Phase 1**: V1 baseline (54.0%) - Production ready
-- **Phase 2**: V2 iteration (54.4%) - Marginal gains observed  
-- **Phase 3**: V3 optimization (54.6%) - Current best
-- **Phase 4 (Future)**: V4 with external data (+0.4% potential)
-
-**Status**: ✅ Complete - Ready for 2026 predictions
+| Document | Versions | Contents |
+|----------|----------|----------|
+| [V3_TRAINING_RESULTS.md](V3_TRAINING_RESULTS.md) | V1–V3 | Full V1-V3 comparison, deployment architecture |
+| [V6_FEATURES.md](V6_FEATURES.md) | V4–V6 | Feature descriptions for V4–V6 additions |
+| [V7_FEATURES.md](V7_FEATURES.md) | V7 | H2H, bullpen fatigue, deep ensemble |
+| [V8_EXPERIMENT_COMPLETE.md](V8_EXPERIMENT_COMPLETE.md) | V8 | Full experiment — all 8 iterations + EXT |
+| [V9_EXPERIMENT_COMPLETE.md](V9_EXPERIMENT_COMPLETE.md) | V9 | Statcast quality features, Optuna tuning |
+| [V10_EXPERIMENT_COMPLETE.md](V10_EXPERIMENT_COMPLETE.md) | V10 | Game-level SP quality, park factors, rest/travel |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | All | System architecture, BigQuery schema |
+| [BIGQUERY_DATA_SCHEMA.md](BIGQUERY_DATA_SCHEMA.md) | All | BQ table schemas |
+| [MODEL_LESSONS_LEARNED.md](MODEL_LESSONS_LEARNED.md) | All | Cross-version lessons |
+| [CONFIDENCE_QUICK_CARD.md](CONFIDENCE_QUICK_CARD.md) | V9+ | Confidence threshold reference card |
