@@ -1,22 +1,63 @@
-# Hank's Tank ML — MLB Game Prediction Pipeline
+# Hank's Tank ML
 
-> **Production endpoint:** Cloud Function `mlb-2026-daily-pipeline` (us-central1)  
-> **Part of:** [hanks_tank](../hanks_tank) · [hanks_tank_backend](../hanks_tank_backend) · **hanks_tank_ml** ←
+> **Primary production function:** `mlb-2026-daily-pipeline` (`us-central1`)  
+> **Companion repos:** [hanks_tank](../hanks_tank) · [hanks_tank_backend](../hanks_tank_backend)
 
-End-to-end MLB game outcome prediction system. Trains an ensemble of gradient boosting and neural-network models on 11 seasons of historical data (2015–2024), then runs daily inference for every scheduled game and writes predictions to BigQuery for the frontend to consume.
+This repo owns the machine-learning and scheduled data-pipeline side of Hank's Tank. It trains MLB game-outcome models, builds daily feature sets, generates prediction rows and scouting reports, and writes the resulting artifacts into BigQuery for the backend and frontend to consume.
 
-**Best result — V8 Ensemble (live in production, 2026 season):**
+## Current project state
 
-| Metric | Value |
+- **Best published benchmark:** V8 ensemble at **57.65% accuracy** on a 1,243-game 2025 holdout
+- **Current live pipeline:** production daily pipeline plus newer V10 feature/scouting enrichment work
+- **Primary warehouse outputs:** `game_predictions`, `game_scouting_reports`, `game_v10_features`, `games`, `statcast_pitches`
+
+## GCP footprint
+
+### BigQuery
+
+The project currently writes to two datasets in the `hankstank` GCP project:
+
+- `mlb_2026_season` for current-season operational tables
+- `mlb_historical_data` for historical warehouse tables
+
+Current-season tables are partitioned and clustered where it matters most, including:
+
+- `games`
+- `game_predictions`
+- `game_scouting_reports`
+- `game_v10_features`
+- `statcast_pitches`
+
+### Cloud Functions and jobs
+
+The active production entry point is a **Gen2 Cloud Function**:
+
+| Resource | Current deployed details |
 |---|---|
-| Accuracy (2025 holdout, 1,243 games) | **57.65%** |
-| AUC-ROC | 0.613 |
-| Models | CatBoost (home) + CatBoost (away) + LightGBM + MLP |
-| Features | 89 engineered features |
+| Function | `mlb-2026-daily-pipeline` |
+| Region | `us-central1` |
+| Runtime | Python 3.12 |
+| Memory | 1024 MB |
+| Timeout | 540 seconds |
+| Max instances | 3 |
 
----
+Older helper functions were removed from the live GCP project during cleanup. The deprecated `cloud_functions/` directory remains only as historical reference.
 
-## 📈 Model Evolution
+### Cloud Scheduler
+
+Key scheduler jobs currently driving the project include:
+
+| Job | Purpose |
+|---|---|
+| `mlb-2026-daily` | Daily collection/validation/feature pipeline |
+| `mlb-2026-validate` | Daily validation pass |
+| `mlb-2026-weekly-predict` | Weekly forward predictions |
+| `mlb-2026-v7-features-daily` | Daily V7 feature refresh |
+| `mlb-schedule-pregame-tasks` | Pregame task enqueueing via backend endpoint |
+
+An older paused Cloud Run scheduler path was removed during cleanup, and the active schedulers now consistently use `America/New_York` for business-facing run times.
+
+## Model evolution
 
 | Version | Algorithm | Features | Accuracy | Notes |
 |---|---|---:|---:|---|
@@ -26,172 +67,65 @@ End-to-end MLB game outcome prediction system. Trains an ensemble of gradient bo
 | V4 | Stacked Ensemble | 57 | 54.9% | Experimental |
 | V5 | CatBoost | 57 | 55.1% | Better categoricals |
 | V6 | CatBoost + arsenal | 68 | 55.8% | Pitcher arsenal splits |
-| V7 | CatBoost + bullpen/moon/venue | 78 | 56.4% | ⭐ Previous production |
-| **V8** | **CatBoost×2 + LGB + MLP** | **89** | **57.65%** | **✅ Current production** |
+| V7 | CatBoost + bullpen/moon/venue | 78 | 56.4% | Previous production |
+| V8 | CatBoost x2 + LightGBM + MLP | 89 | 57.65% | Best published holdout |
+| V10 | XGBoost SP-quality enrichment | ongoing | ongoing | Starter-quality and scouting enrichment work |
 
-Detailed experiment write-ups: [`docs/`](docs/)
+Detailed experiment notes live in [`docs/`](docs/) and [`research/`](research/).
 
----
+## Pipeline outline
 
-## 🏗️ Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│           Daily Pipeline (Cloud Function Gen2)           │
-│                                                          │
-│  1. Fetch today's schedule  ← MLB Stats API              │
-│  2. Load Elo ratings        ← BigQuery elo_ratings       │
-│  3. Load team features      ← BigQuery team_features     │
-│  4. Build 89 features per game                           │
-│  5. Run V8 ensemble inference                            │
-│     ├ CatBoost (home-focused)                            │
-│     ├ CatBoost (away-focused)                            │
-│     ├ LightGBM                                           │
-│     └ MLP (PyTorch)                                      │
-│  6. Soft-vote → win probability + confidence tier        │
-│  7. Write predictions → BigQuery game_predictions        │
-└──────────────────────────────────────────────────────────┘
-         │                                  ↑
-Cloud Scheduler (6 AM ET daily)        V8 model artifacts (GCS)
+```text
+1. Fetch schedule and live context
+2. Refresh or read current-season warehouse tables
+3. Build matchup and model features
+4. Run ensemble inference
+5. Build per-game scouting reports
+6. Write predictions and report payloads to BigQuery
+7. Let the backend/frontend consume those tables
 ```
 
----
+## Local development
 
-## 🤖 Feature Groups (V8, 89 features)
+1. Install dependencies:
+   ```bash
+   python -m pip install -r requirements.txt
+   ```
+2. Authenticate to GCP:
+   ```bash
+   gcloud auth application-default login
+   ```
+3. Set environment variables:
+   ```bash
+   set GCP_PROJECT=hankstank
+   set BIGQUERY_DATASET=mlb_2026_season
+   ```
+4. Run the pipeline locally:
+   ```bash
+   python src/daily_pipeline.py --date 2026-04-20
+   ```
 
-| Group | Count | Examples |
-|---|---:|---|
-| Elo ratings | 4 | elo_home, elo_away, elo_differential, elo_home_win_prob |
-| Pythagorean W% | 4 | home/away_pythag_season, pythag_differential |
-| Recent form (L10) | 8 | home/away_run_diff_10g, run_diff_7g, run_diff_3g |
-| Win/loss streaks | 2 | home/away_current_streak |
-| Head-to-head | 3 | h2h_win_pct_3yr, h2h_game_count_3yr |
-| Pitcher arsenal | 20 | avg_fastball_velo, strikeout_rate, woba_allowed, xFIP … |
-| Bullpen | 6 | home/away_bullpen_era, fatigue, saves_pct … |
-| Venue / park | 8 | venue_era, altitude, park_factor_hr … |
-| Lineup wOBA | 6 | home/away_lineup_woba_vs_hand … |
-| Schedule | 4 | days_rest, is_divisional, is_home … |
-| Moon phase | 1 | moon_phase |
-| Misc / flags | 23 | game_time, temp, wind, pitcher ERA/WHIP … |
+## Validation
 
----
-
-## 🛠️ Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Language | Python 3.12 |
-| Gradient boosting | CatBoost 1.2, LightGBM 4.x |
-| Neural network | PyTorch 2.x (MLP) |
-| Hyperparameter tuning | Optuna |
-| Data processing | pandas, NumPy, pyarrow |
-| Data warehouse | Google BigQuery (`mlb_2026_season` dataset) |
-| Model storage | Google Cloud Storage (`gs://hankstank-models/`) |
-| Serving | Cloud Functions Gen2 (2 GB RAM, 2 vCPU, 540s timeout) |
-| Scheduling | Cloud Scheduler (6 AM ET) |
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
+This repo now includes a GitHub Actions workflow that installs dependencies and compiles the Python source tree to catch import/syntax regressions early. For local validation:
 
 ```bash
-pip install -r requirements.txt
-
-# Authenticate to GCP
-gcloud auth application-default login
-export GCP_PROJECT=hankstank
-export BIGQUERY_DATASET=mlb_2026_season
+python -m compileall src scripts cloud_functions
 ```
 
-### Run Pipeline Locally
+## Repository structure
 
-```bash
-python src/daily_pipeline.py --date $(date +%Y-%m-%d)
-```
-
-### Train a New Model Version
-
-```bash
-# Build training data
-python src/build_v8_features.py
-
-# Train ensemble
-python src/train_v8_models.py
-
-# Evaluate on 2025 holdout
-python scripts/evaluate_model.py --model v8 --holdout 2025
-```
-
-### Deploy Cloud Function
-
-```bash
-gcloud functions deploy mlb-2026-daily-pipeline \
-  --gen2 --region=us-central1 --runtime=python312 \
-  --source=src/ --entry-point=daily_pipeline \
-  --memory=2048MB --cpu=2 --timeout=540s \
-  --service-account=hankstank@hankstank.iam.gserviceaccount.com \
-  --set-env-vars="GCP_PROJECT=hankstank,BIGQUERY_DATASET=mlb_2026_season" \
-  --trigger-http --allow-unauthenticated
-```
-
----
-
-## 📁 Repository Structure
-
-```
+```text
 hanks_tank_ml/
 ├── src/
-│   ├── daily_pipeline.py       # Cloud Function entry point
-│   ├── build_v8_features.py    # Feature engineering (V8, 89 features)
-│   ├── train_v8_models.py      # Ensemble training (CB×2 + LGB + MLP)
-│   ├── elo_system.py           # Elo rating engine (seeded from 2015)
-│   ├── inference.py            # Batch inference + BQ write
-│   └── ...
 ├── scripts/
-│   ├── seed_elo.py             # Bootstrap Elo from 2015 historical data
-│   ├── backfill_features.py    # Backfill team_features_2026 table
-│   └── evaluate_model.py       # Holdout accuracy / AUC report
 ├── docs/
-│   ├── V8_FEATURES.md          # Full V8 feature documentation
-│   ├── V8_EXPERIMENT_COMPLETE.md
-│   ├── MODEL_EVOLUTION_COMPLETE.md
-│   ├── BIGQUERY_DATA_SCHEMA.md
-│   └── CONFIDENCE_QUICK_CARD.md
-├── notebooks/                  # EDA and prototyping
-├── data/training/              # Parquet training datasets
-├── cloud_functions/            # Legacy CF scaffolding
+├── research/
+├── notebooks/
+├── cloud_functions/
 └── requirements.txt
 ```
 
----
+## License
 
-## 📊 BigQuery Schema (key table)
-
-```sql
--- mlb_2026_season.game_predictions
-SELECT
-  game_pk, game_date, home_team_name, away_team_name,
-  home_win_probability, away_win_probability,
-  predicted_winner, confidence_tier,
-  model_version, model_accuracy, lineup_confirmed,
-  -- V8 signals
-  elo_home, elo_away, elo_differential, elo_home_win_prob,
-  home_pythag_season, away_pythag_season,
-  home_run_diff_10g, away_run_diff_10g,
-  home_current_streak, away_current_streak,
-  h2h_win_pct_3yr, is_divisional,
-  -- V7 features (retained)
-  home_bullpen_era, away_bullpen_era, moon_phase,
-  home_starter_arsenal_score, away_starter_arsenal_score
-FROM `hankstank.mlb_2026_season.game_predictions`
-WHERE game_date = CURRENT_DATE()
-ORDER BY game_date DESC;
-```
-
----
-
-## 📄 License
-
-MIT — see [LICENSE](../hanks_tank/LICENSE)
+MIT

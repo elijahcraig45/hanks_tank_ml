@@ -1,6 +1,8 @@
 # DEPRECATED — Legacy Cloud Functions Directory
 
 > **This directory is superseded.** Do not modify or deploy these files.
+> 
+> **Live status:** the old standalone Gen1 helper functions were removed from GCP during cleanup. This directory remains only as historical reference.
 
 ## What happened
 
@@ -14,8 +16,8 @@ It contained four separate HTTP-triggered Cloud Functions:
 | `rebuild_v7_features` | ✅ Was functional | Correct but now subsumed by `src/cloud_function_main.py` |
 | `predict_today_games` | ❌ Dead code | Returns hardcoded placeholder `{"predictions_generated": 0}` — never wired up |
 
-`setup_scheduler.sh` in this directory also creates scheduler jobs pointing at the **old**
-top-level function names which no longer match the deployed entry point.
+`setup_scheduler.sh` in this directory has been replaced with a stub because the old
+top-level function names no longer match the deployed entry point.
 
 ## What replaced it
 
@@ -30,8 +32,8 @@ Scheduler setup: `scripts/gcp/2026_season/deploy_v8.sh --only-scheduler`
 - Audit trail: leaving the files shows exactly what the old architecture looked like
 - Reference: the `rebuild_v7_features` import pattern in `daily_updates.py` was
   the model for how `src/cloud_function_main.py` imports V7/V8 builders
-- Safety: the `setup_scheduler.sh` failure mode is `|| echo "Job may already exist"` 
-  so re-running it won't break production, but it should not be run
+- Safety: the old scheduler script was replaced with a hard stop so this directory
+  cannot accidentally recreate obsolete jobs
 
 ## Migration notes
 

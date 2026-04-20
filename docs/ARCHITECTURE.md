@@ -287,8 +287,8 @@ match the deployed entry point (`daily_pipeline` in `src/cloud_function_main.py`
 useful. The statcast and prediction functions were effectively no-ops.
 
 **Fix:** Added `DEPRECATED.md` to `cloud_functions/` explaining what was replaced and
-why. Added deprecation headers to `main.py` and `daily_updates.py`. No code deleted
-(retained as audit history).
+why. Added deprecation headers to `main.py` and `daily_updates.py`, replaced the old
+scheduler script with a hard stop, and removed the obsolete helper functions from GCP.
 
 **Files changed:** `cloud_functions/DEPRECATED.md` (new), `cloud_functions/main.py`,
 `cloud_functions/daily_updates.py`

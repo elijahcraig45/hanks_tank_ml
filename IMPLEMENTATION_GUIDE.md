@@ -1,5 +1,7 @@
 # Unified Data Architecture: Implementation Complete
 
+> **Legacy implementation note:** This guide captures an earlier multi-function rollout plan. The current production path is the unified `mlb-2026-daily-pipeline` deployment under `scripts/gcp/2026_season/`. Treat the function-by-function steps below as historical reference unless you are intentionally working on legacy helper functions.
+
 ## ✅ Architecture Summary
 
 You now have a **unified data approach** for combining historical (2015-2025) and 2026 season data using BigQuery UNION queries. This eliminates separate code paths and automatically falls back to historical data when 2026 data is incomplete.
@@ -58,9 +60,9 @@ Creates 4 HTTP Cloud Functions with DELETE-before-INSERT pattern:
 - ✅ Has placeholder comments for actual data fetch implementations
 
 ### 3. **Cloud Scheduler Orchestration** ✅ DONE
-**File:** [cloud_functions/setup_scheduler.sh](cloud_functions/setup_scheduler.sh)
+**Current path:** `scripts/gcp/2026_season/`
 
-Bash script creates 4 scheduled Cloud Function triggers with proper UTC times and error handling.
+The old `cloud_functions/setup_scheduler.sh` path is deprecated and intentionally blocked.
 
 ### 4. **Comprehensive Architecture Documentation** ✅ DONE
 **File:** [UNIFIED_DATA_ARCHITECTURE.md](UNIFIED_DATA_ARCHITECTURE.md)
@@ -89,30 +91,15 @@ Documents:
 
 ## 🔧 Implementation Steps (What You Need to Do)
 
-### Step 1: Deploy Cloud Functions (5 minutes)
+### Step 1: Deploy Cloud Functions (legacy reference)
 ```bash
-# Deploy each Cloud Function
-gcloud functions deploy update-statcast-2026 \
-  --runtime python311 --trigger-http --entry-point update_statcast_2026 \
-  --project hankstank
-
-gcloud functions deploy update-pitcher-stats-2026 \
-  --runtime python311 --trigger-http --entry-point update_pitcher_stats_2026 \
-  --project hankstank
-
-gcloud functions deploy rebuild-v7-features \
-  --runtime python311 --trigger-http --entry-point rebuild_v7_features \
-  --project hankstank
-
-gcloud functions deploy predict-today-games \
-  --runtime python311 --trigger-http --entry-point predict_today_games \
-  --project hankstank
+# Legacy standalone helper functions were removed from the live project.
+# Current production uses the unified mlb-2026-daily-pipeline deployment.
 ```
 
-### Step 2: Deploy Cloud Scheduler Jobs (2 minutes)
+### Step 2: Deploy Cloud Scheduler Jobs
 ```bash
-cd cloud_functions/
-bash setup_scheduler.sh
+# Use the current unified deploy scripts under scripts/gcp/2026_season/
 ```
 
 ### Step 3: Implement Data Fetch Logic (30-60 minutes)
@@ -132,14 +119,13 @@ Update `cloud_functions/daily_updates.py` functions with actual data fetch imple
 
 ### Step 4: Test End-to-End (10 minutes)
 ```bash
-# Manually trigger Cloud Functions
-gcloud scheduler jobs run fetch-statcast-2026-daily --project=hankstank
-gcloud scheduler jobs run fetch-pitcher-stats-2026-daily --project=hankstank
-gcloud scheduler jobs run rebuild-v7-features-daily --project=hankstank
+# Current production path: trigger the unified scheduler jobs
+gcloud scheduler jobs run mlb-2026-daily --location=us-central1 --project=hankstank
+gcloud scheduler jobs run mlb-2026-validate --location=us-central1 --project=hankstank
+gcloud scheduler jobs run mlb-2026-v7-features-daily --location=us-central1 --project=hankstank
 
 # Check logs
-gcloud functions logs read update_statcast_2026 --limit 50 --project=hankstank
-gcloud functions logs read rebuild_v7_features --limit 50 --project=hankstank
+gcloud functions logs read mlb-2026-daily-pipeline --limit 50 --region=us-central1 --project=hankstank
 
 # Verify data populated
 bq query --project_id=hankstank "
@@ -187,7 +173,7 @@ Apply same UNION pattern to all other stats tables mentioned in [UNIFIED_DATA_AR
 
 ### Created:
 - ✅ `cloud_functions/daily_updates.py` - 4 HTTP Cloud Functions (statcast, pitcher_stats, v7_features, predictions)
-- ✅ `cloud_functions/setup_scheduler.sh` - Scheduler job setup script
+- ✅ Current scheduler management lives under `scripts/gcp/2026_season/`
 - ✅ `cloud_functions/requirements.txt` - Python dependencies (already exists, comprehensive)
 
 ## 🎯 Success Criteria
@@ -283,7 +269,7 @@ gcloud projects add-iam-policy-binding hankstank \
 - [Unified Data Architecture Design](UNIFIED_DATA_ARCHITECTURE.md)
 - [V7 Feature Builder Code](src/build_v7_features.py#L595)
 - [Cloud Functions Deployment](cloud_functions/daily_updates.py)
-- [Scheduler Setup Script](cloud_functions/setup_scheduler.sh)
+- [Deprecated Cloud Functions Notes](cloud_functions/DEPRECATED.md)
 
 ---
 
