@@ -73,6 +73,50 @@ An older paused Cloud Run scheduler path was removed during cleanup, and the act
 
 Detailed experiment notes live in [`docs/`](docs/) and [`research/`](research/).
 
+## Live confidence calibration snapshot
+
+As of **2026-04-20**, the latest-settled BigQuery read on `mlb_2026_season.game_predictions`
+joined to final scores in `mlb_2026_season.games` showed the following for the current live
+pipeline:
+
+| Scope | Games | Accuracy | Avg max win prob |
+|---|---:|---:|---:|
+| All latest production predictions | 189 | 49.21% | 56.49% |
+| Latest `v10` predictions only | 45 | 46.67% | 57.87% |
+
+The current `v10` confidence tiers in `src/predict_today_games.py` are:
+
+- `high`: `>= 0.64`
+- `medium`: `>= 0.57`
+- `low`: `< 0.57`
+
+Current settled `v10` bucket performance:
+
+| Tier | Rule | Games | Accuracy |
+|---|---|---:|---:|
+| High | `>= 64%` | 7 | 71.43% |
+| Medium | `57% - 63.99%` | 15 | 60.00% |
+| Low | `< 57%` | 23 | 30.43% |
+
+### Provisional `very_high` recommendation
+
+For later calibration work, the best current candidate is a **`very_high`** label at
+`>= 0.67` max win probability **for `v10` only**.
+
+| Proposed cutoff | Games | Accuracy |
+|---|---:|---:|
+| `>= 64%` | 7 | 71.43% |
+| `>= 65%` | 6 | 66.67% |
+| `>= 66%` | 6 | 66.67% |
+| `>= 67%` | 3 | 100.00% |
+| `>= 68%` | 2 | 100.00% |
+| `>= 70%` | 1 | 100.00% |
+
+This is intentionally documented as **provisional**, not production-ready calibration:
+the hit rate jumps sharply at `>= 67%`, but the settled sample is still too small to treat
+as stable. If the live `v10` sample continues to grow without regression, `>= 0.67` is the
+best first cutoff to revisit for a true `very_high` bucket.
+
 ## Pipeline outline
 
 ```text

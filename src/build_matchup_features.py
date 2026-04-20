@@ -47,7 +47,7 @@ Usage:
 import argparse
 import logging
 import warnings
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from typing import Optional
 
 import numpy as np
@@ -75,6 +75,7 @@ SEASON_STATCAST = f"{PROJECT}.{SEASON_DATASET}.statcast_pitches"
 # Minimum PA threshold for reliable split statistics
 MIN_PA_SPLITS = 20
 MIN_PA_H2H = 5
+PROJECTED_LINEUP_LOOKBACK_DAYS = 14
 
 MATCHUP_SCHEMA = [
     bigquery.SchemaField("game_pk", "INTEGER"),
@@ -163,6 +164,29 @@ class MatchupFeatureBuilder:
             WHERE game_pk IN ({pk_list})
               AND is_starter = TRUE
             ORDER BY game_pk, team_type, batting_order NULLS LAST
+        """
+        return self.bq.query(sql).to_dataframe()
+
+    def load_recent_confirmed_lineups(
+        self, team_ids: list[int], target_date: date
+    ) -> pd.DataFrame:
+        if not team_ids:
+            return pd.DataFrame()
+
+        start_date = target_date - timedelta(days=PROJECTED_LINEUP_LOOKBACK_DAYS)
+        team_list = ", ".join(str(team_id) for team_id in sorted(set(team_ids)))
+        sql = f"""
+            SELECT
+                game_pk, game_date, team_id, team_type,
+                player_id, player_name, batting_order, position,
+                bat_side, pitch_hand, is_starter, is_probable_pitcher,
+                lineup_confirmed
+            FROM `{LINEUPS_TABLE}`
+            WHERE team_id IN ({team_list})
+              AND game_date >= DATE('{start_date.isoformat()}')
+              AND game_date < DATE('{target_date.isoformat()}')
+              AND lineup_confirmed = TRUE
+            ORDER BY game_date DESC, team_id, batting_order NULLS LAST
         """
         return self.bq.query(sql).to_dataframe()
 
@@ -659,6 +683,219 @@ class MatchupFeatureBuilder:
             "h2h_hr_rate": None,
         }
 
+    def _project_team_lineup_rows(
+        self,
+        game: dict,
+        team_type: str,
+        target_date: date,
+        current_team_rows: pd.DataFrame,
+        recent_team_rows: pd.DataFrame,
+    ) -> list[dict]:
+        existing_batters = current_team_rows[
+            current_team_rows["batting_order"].notna()
+        ] if not current_team_rows.empty else pd.DataFrame()
+        if len(existing_batters) >= 8:
+            return []
+
+        recent_batters = recent_team_rows[
+            recent_team_rows["batting_order"].notna()
+            & (recent_team_rows["position"] != "P")
+        ].copy()
+        if recent_batters.empty:
+            return []
+
+        if not current_team_rows.empty:
+            current_candidates = set(
+                current_team_rows[
+                    current_team_rows["position"] != "P"
+                ]["player_id"].dropna().astype(int).tolist()
+            )
+            filtered = recent_batters[recent_batters["player_id"].isin(current_candidates)]
+            if filtered["player_id"].nunique() >= 6:
+                recent_batters = filtered
+
+        recent_batters["game_date"] = pd.to_datetime(recent_batters["game_date"]).dt.date
+        recent_batters["recency_weight"] = recent_batters["game_date"].apply(
+            lambda game_date_value: 1.0 / max((target_date - game_date_value).days, 1)
+        )
+
+        overall = (
+            recent_batters.groupby("player_id")
+            .agg(
+                recent_score=("recency_weight", "sum"),
+                starts=("game_pk", "nunique"),
+                avg_order=("batting_order", "mean"),
+                last_game_date=("game_date", "max"),
+            )
+            .reset_index()
+            .sort_values(
+                ["recent_score", "starts", "last_game_date", "avg_order"],
+                ascending=[False, False, False, True],
+            )
+        )
+        if overall.empty:
+            return []
+
+        order_scores = (
+            recent_batters.groupby(["player_id", "batting_order"])
+            .agg(order_score=("recency_weight", "sum"))
+            .reset_index()
+        )
+
+        metadata_source = pd.concat(
+            [
+                current_team_rows,
+                recent_team_rows,
+            ],
+            ignore_index=True,
+        )
+        metadata_source = metadata_source.dropna(subset=["player_id"]).copy()
+        if metadata_source.empty:
+            return []
+
+        if "game_date" in metadata_source.columns:
+            metadata_source["game_date"] = pd.to_datetime(metadata_source["game_date"]).dt.date
+            metadata_source = metadata_source.sort_values("game_date")
+        latest_meta = metadata_source.groupby("player_id").tail(1).set_index("player_id")
+
+        selected_by_order: dict[int, int] = {}
+        selected_player_ids: set[int] = set()
+
+        for batting_order in range(1, 10):
+            order_candidates = order_scores[
+                (order_scores["batting_order"] == batting_order)
+                & (~order_scores["player_id"].isin(selected_player_ids))
+            ].merge(
+                overall[["player_id", "recent_score", "starts"]],
+                on="player_id",
+                how="left",
+            ).sort_values(
+                ["order_score", "recent_score", "starts"],
+                ascending=[False, False, False],
+            )
+
+            if order_candidates.empty:
+                continue
+
+            selected_player_id = int(order_candidates.iloc[0]["player_id"])
+            selected_by_order[batting_order] = selected_player_id
+            selected_player_ids.add(selected_player_id)
+
+        remaining_orders = [order for order in range(1, 10) if order not in selected_by_order]
+        remaining_players = overall[
+            ~overall["player_id"].isin(selected_player_ids)
+        ].sort_values(
+            ["recent_score", "starts", "avg_order"],
+            ascending=[False, False, True],
+        )
+
+        for batting_order, (_, candidate_row) in zip(remaining_orders, remaining_players.iterrows()):
+            selected_player_id = int(candidate_row["player_id"])
+            selected_by_order[batting_order] = selected_player_id
+            selected_player_ids.add(selected_player_id)
+
+        if len(selected_by_order) < 9:
+            return []
+
+        projected_rows = []
+        team_id = game.get(f"{team_type}_team_id")
+        for batting_order in range(1, 10):
+            player_id = selected_by_order[batting_order]
+            if player_id not in latest_meta.index:
+                continue
+
+            player_meta = latest_meta.loc[player_id]
+            projected_rows.append({
+                "game_pk": game["game_pk"],
+                "game_date": game["game_date"],
+                "team_id": team_id,
+                "team_type": team_type,
+                "player_id": int(player_id),
+                "player_name": player_meta.get("player_name", ""),
+                "batting_order": batting_order,
+                "position": player_meta.get("position", ""),
+                "bat_side": player_meta.get("bat_side", ""),
+                "pitch_hand": player_meta.get("pitch_hand", ""),
+                "is_starter": True,
+                "is_probable_pitcher": False,
+                "lineup_confirmed": False,
+            })
+
+        probable_pitcher_id = game.get(f"{team_type}_probable_pitcher_id")
+        if probable_pitcher_id:
+            probable_pitcher_id = int(probable_pitcher_id)
+            probable_source = metadata_source[
+                metadata_source["player_id"] == probable_pitcher_id
+            ]
+            probable_meta = probable_source.tail(1).iloc[0] if not probable_source.empty else None
+            projected_rows.append({
+                "game_pk": game["game_pk"],
+                "game_date": game["game_date"],
+                "team_id": team_id,
+                "team_type": team_type,
+                "player_id": probable_pitcher_id,
+                "player_name": (
+                    probable_meta.get("player_name", "")
+                    if probable_meta is not None
+                    else game.get(f"{team_type}_probable_pitcher", "")
+                ),
+                "batting_order": None,
+                "position": "P",
+                "bat_side": probable_meta.get("bat_side", "") if probable_meta is not None else "",
+                "pitch_hand": probable_meta.get("pitch_hand", "") if probable_meta is not None else "",
+                "is_starter": True,
+                "is_probable_pitcher": True,
+                "lineup_confirmed": False,
+            })
+
+        return projected_rows
+
+    def build_projected_lineups(
+        self,
+        games: list[dict],
+        lineups_df: pd.DataFrame,
+        target_date: date,
+    ) -> pd.DataFrame:
+        team_ids = [
+            team_id
+            for game in games
+            for team_id in (game.get("home_team_id"), game.get("away_team_id"))
+            if team_id
+        ]
+        recent_lineups_df = self.load_recent_confirmed_lineups(team_ids, target_date)
+        if recent_lineups_df.empty:
+            return pd.DataFrame()
+
+        projected_rows: list[dict] = []
+        for game in games:
+            game_lineups = lineups_df[lineups_df["game_pk"] == game["game_pk"]] if not lineups_df.empty else pd.DataFrame()
+            for team_type in ("home", "away"):
+                current_team_rows = game_lineups[game_lineups["team_type"] == team_type] if not game_lineups.empty else pd.DataFrame()
+                recent_team_rows = recent_lineups_df[
+                    (recent_lineups_df["team_id"] == game.get(f"{team_type}_team_id"))
+                    & (recent_lineups_df["team_type"] == team_type)
+                ]
+                projected_rows.extend(
+                    self._project_team_lineup_rows(
+                        game,
+                        team_type,
+                        target_date,
+                        current_team_rows,
+                        recent_team_rows,
+                    )
+                )
+
+        if not projected_rows:
+            return pd.DataFrame()
+
+        projected_df = pd.DataFrame(projected_rows)
+        logger.info(
+            "Projected %d lineup rows across %d games",
+            len(projected_df),
+            projected_df["game_pk"].nunique(),
+        )
+        return projected_df
+
     # -----------------------------------------------------------------------
     # Composite matchup advantage
     # -----------------------------------------------------------------------
@@ -765,6 +1002,22 @@ class MatchupFeatureBuilder:
             if not away_starter_row.empty and pd.notna(away_starter_row["pitch_hand"].iloc[0])
             else None
         )
+
+        if home_starter_hand is None and not game_pitcher_splits.empty and home_starter_id is not None:
+            home_pitcher_hand = game_pitcher_splits[
+                game_pitcher_splits["pitcher"] == home_starter_id
+            ]
+            if not home_pitcher_hand.empty:
+                hand = home_pitcher_hand["p_throws"].iloc[0]
+                home_starter_hand = str(hand) if pd.notna(hand) else None
+
+        if away_starter_hand is None and not game_pitcher_splits.empty and away_starter_id is not None:
+            away_pitcher_hand = game_pitcher_splits[
+                game_pitcher_splits["pitcher"] == away_starter_id
+            ]
+            if not away_pitcher_hand.empty:
+                hand = away_pitcher_hand["p_throws"].iloc[0]
+                away_starter_hand = str(hand) if pd.notna(hand) else None
 
         # Filtering statcast to relevant players
         game_batter_ids = (
@@ -902,6 +1155,11 @@ class MatchupFeatureBuilder:
 
     def _run_for_games(self, games: list[dict], game_pks: list[int]) -> dict:
         lineups_df = self.load_lineups(game_pks)
+        target_date = date.fromisoformat(games[0]["game_date"]) if games else date.today()
+        projected_lineups_df = self.build_projected_lineups(games, lineups_df, target_date)
+        if not projected_lineups_df.empty:
+            lineups_df = pd.concat([lineups_df, projected_lineups_df], ignore_index=True)
+
         if lineups_df.empty:
             logger.warning("No lineup data found for games %s — did lineups fetch run?", game_pks)
             return {"games": len(games), "rows_written": 0, "warning": "no_lineups"}
