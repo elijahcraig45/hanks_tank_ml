@@ -16,10 +16,10 @@ Supported modes (passed in request body as JSON):
   features            Rebuild V3/V4 game_features only
   v8_features         Build V8 features for today's games only
   update_elo          Update Elo ratings from yesterday's game outcomes
-  pregame_v8          Per-game: lineups → matchup → V7 → V8 → predict (RECOMMENDED V8)
-  pregame_v10         Per-game: lineups → matchup → V8 → V10 → predict (RECOMMENDED V10)
-  pregame_v7          Per-game: lineups → matchup → V7 → predict
-  pregame             Per-game: lineups → matchup → predict
+  pregame_v8          Per-game: lineups → matchup → V7 → V8 → predict → report (RECOMMENDED V8)
+  pregame_v10         Per-game: lineups → matchup → V7 → V8 → V10 → predict → report (RECOMMENDED V10)
+  pregame_v7          Per-game: lineups → matchup → V7 → predict → report
+  pregame             Per-game: lineups → matchup → predict → report
   predict_today       Per-game prediction only (features must already exist)
   train_weekly        Run V8 (or v7/v6) weekly retraining — Sundays
   backfill_v7         Rebuild V7 features for a historical date range
@@ -111,20 +111,21 @@ def daily_pipeline(request):
             results["steps"].append(_run_daily_prediction(target, game_pks, dry_run, req_json))
 
         # Combined pre-game pipeline:
-        #   pregame:    lineups → V5/V6 matchup → V7 features → prediction
-        #   pregame_v8: lineups → V5/V6 matchup → V7 features → V8 features → prediction
-        #   pregame_v10:lineups → matchup → V8 features → V10 features → prediction
+        #   pregame:    lineups → V5/V6 matchup → V7 features → prediction → scouting report
+        #   pregame_v8: lineups → V5/V6 matchup → V7 features → V8 features → prediction → scouting report
+        #   pregame_v10:lineups → matchup → V7 → V8 → V10 → prediction → scouting report
         #               V10 is the recommended production mode for best accuracy.
         if mode in ("pregame", "pregame_v7", "pregame_v8", "pregame_v10"):
             results["steps"].append(_run_lineup_fetch(target, game_pks, dry_run))
             results["steps"].append(_run_matchup_features(target, game_pks, dry_run))
-            if mode in ("pregame_v7", "pregame_v8"):
+            if mode in ("pregame_v7", "pregame_v8", "pregame_v10"):
                 results["steps"].append(_run_v7_features(target, game_pks, dry_run))
             if mode in ("pregame_v8", "pregame_v10"):
                 results["steps"].append(_run_v8_features(target, game_pks, dry_run))
             if mode == "pregame_v10":
                 results["steps"].append(_run_v10_features(target, game_pks, dry_run))
             results["steps"].append(_run_daily_prediction(target, game_pks, dry_run, req_json))
+            results["steps"].append(_run_scouting_reports(target, dry_run))
 
         # Weekly model training (Sundays only) — keeps training cost-efficient
         # model_version options: v10 (recommended), v8, v7, v6 (legacy)
