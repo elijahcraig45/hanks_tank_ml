@@ -1,5 +1,7 @@
 # Unified Data Architecture: Historical + 2026 Season
 
+> **Legacy scheduler note:** The scheduler sequence documented here describes an older multi-function orchestration model. Current production uses the unified `mlb-2026-daily-pipeline` entry point plus the active scheduler set documented in the top-level README.
+
 ## Overview
 
 This document describes the unified approach for combining historical (2015-2025) and 2026 season data across all key statistics tables. Rather than maintaining separate code paths or duplicate tables, we use BigQuery UNION queries to seamlessly access both datasets with automatic fallback to historical data when current season data is incomplete.
@@ -148,7 +150,7 @@ def update_pitcher_stats_2026(request):
     }
 ```
 
-## Cloud Scheduler Orchestration
+## Cloud Scheduler Orchestration (legacy sequence)
 
 Daily update jobs run in sequence to ensure data dependencies are met:
 
@@ -193,10 +195,9 @@ Daily update jobs run in sequence to ensure data dependencies are met:
   - `rebuild_v7_features()` - call V7 builder
   - `predict_today_games()` - call prediction engine
 
-### 3. **cloud_functions/setup_scheduler.sh** (NEW)
-- Bash script to deploy Cloud Scheduler jobs via gcloud CLI
-- Creates 4 scheduled HTTP triggers (times listed above)
-- Updates Cloud Function environments/settings
+### 3. **cloud_functions/setup_scheduler.sh** (legacy stub)
+- Retained only to hard-stop obsolete scheduler recreation
+- Production scheduler management now lives under `scripts/gcp/2026_season/`
 
 ### 4. **cloud_functions/requirements.txt** (NEW)
 - Dependencies for Cloud Function runtimes
@@ -310,7 +311,7 @@ Expected result: Should return 0 rows (or very few edge cases like same pitcher 
 # Cloud Function Orchestration (Cloud Scheduler triggers):
 CLOUD_SCHEDULER_JOBS = [
     {
-        "name": "fetch-statcast-2026-daily",
+        "name": "fetch-statcast-2026-daily (legacy)",
         "schedule": "0 6 * * *",  # 6 AM UTC
         "timezone": "UTC",
         "http_target": "https://region-project.cloudfunctions.net/update_statcast_2026",
@@ -324,7 +325,7 @@ CLOUD_SCHEDULER_JOBS = [
         "description": "Rebuild V7 matchup features after data updates",
     },
     {
-        "name": "predict-today-games",
+        "name": "predict-today-games (legacy)",
         "schedule": "0 12 * * *",  # 12 PM UTC (after lineups confirmed)
         "timezone": "UTC",
         "http_target": "https://region-project.cloudfunctions.net/predict_today_games",
