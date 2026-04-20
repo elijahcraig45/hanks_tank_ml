@@ -286,6 +286,58 @@ class V7FeatureBuilder:
                 self.bq.query(ddl).result()
                 logger.info("Created %s", MATCHUP_V7_TABLE)
 
+    def _load_games_df(self, target: date, game_pks: Optional[list[int]] = None) -> pd.DataFrame:
+        """Load games for a date, falling back to latest predictions when the live games table is empty."""
+        target_str = target.isoformat()
+        game_filter = ""
+        if game_pks:
+            joined_game_pks = ", ".join(str(int(pk)) for pk in game_pks)
+            game_filter = f" AND game_pk IN ({joined_game_pks})"
+
+        games_sql = f"""
+        SELECT game_pk, home_team_id, away_team_id, venue_id
+        FROM `{PROJECT}.{SEASON_DS}.games`
+        WHERE game_date = '{target_str}'{game_filter}
+        """
+        games_df = self.bq.query(games_sql).to_dataframe()
+        if not games_df.empty:
+            return games_df
+
+        logger.info(
+            "Games table empty for %s%s; falling back to latest predictions",
+            target,
+            f" and game_pks {game_pks}" if game_pks else "",
+        )
+        fallback_sql = f"""
+        WITH latest_predictions AS (
+            SELECT
+                game_pk,
+                home_team_id,
+                away_team_id,
+                CAST(NULL AS INT64) AS venue_id,
+                ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY predicted_at DESC) AS row_num
+            FROM `{PROJECT}.{SEASON_DS}.game_predictions`
+            WHERE game_date = '{target_str}'{game_filter}
+        )
+        SELECT game_pk, home_team_id, away_team_id, venue_id
+        FROM latest_predictions
+        WHERE row_num = 1
+        """
+        return self.bq.query(fallback_sql).to_dataframe()
+
+    def _table_exists(self, table_name: str) -> bool:
+        try:
+            self.bq.get_table(table_name)
+            return True
+        except Exception:
+            return False
+
+    def _run_for_games_df(self, games_df: pd.DataFrame, target: date) -> dict:
+        if games_df.empty:
+            logger.info("No games found for %s", target)
+            return {"status": "ok", "games_processed": 0}
+        return self._finalize_rows(self._build_rows(games_df, target), target)
+
     # -----------------------------------------------------------------------
     # Group A: Bullpen health
     # -----------------------------------------------------------------------
@@ -293,7 +345,7 @@ class V7FeatureBuilder:
     def _bullpen_health_query(self, team_id: int, game_date: date) -> dict:
         """
         Pull relief pitcher usage for team_id in the 7 days before game_date.
-        Uses pitcher_game_stats where is_starter = FALSE (or inferred by low pitch count).
+        Historical pitcher_game_stats uses team_type, so infer relief appearances by shorter outings.
         """
         cutoff = (game_date - timedelta(days=BULLPEN_LOOKBACK_DAYS)).isoformat()
         gd_str = game_date.isoformat()
@@ -316,7 +368,7 @@ class V7FeatureBuilder:
                     pg.game_pk,
                     g.game_date,
                     pg.total_pitches,
-                    pg.innings_pitched
+                    pg.total_pitches / 16.0 AS innings_pitched
                 FROM `{PITCHER_STATS_TABLE}` pg
                 JOIN (
                     SELECT game_pk, CAST(game_date AS DATE) as game_date, home_team_id, away_team_id
@@ -325,9 +377,12 @@ class V7FeatureBuilder:
                       AND CAST(game_date AS DATE) < '{gd_str}'
                 ) g ON pg.game_pk = g.game_pk
                 WHERE
-                    (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
-                    AND pg.team_id = {team_id}
-                    AND COALESCE(pg.is_starter, FALSE) = FALSE
+                    (
+                        (g.home_team_id = {team_id} AND pg.team_type = 'home')
+                        OR
+                        (g.away_team_id = {team_id} AND pg.team_type = 'away')
+                    )
+                    AND pg.total_pitches <= 55
                     AND pg.total_pitches > 0
                 UNION ALL
                 -- 2026 relief usage from statcast_pitches
@@ -343,9 +398,12 @@ class V7FeatureBuilder:
                 WHERE
                     CAST(sc.game_date AS DATE) >= '{cutoff}'
                     AND CAST(sc.game_date AS DATE) < '{gd_str}'
-                    AND (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
-                    AND sc.pitcher_team_id = {team_id}
-                    AND COALESCE(sc.is_pitcher_starter, FALSE) = FALSE
+                    AND (
+                        (g.home_team_id = {team_id} AND sc.inning_topbot = 'Top')
+                        OR
+                        (g.away_team_id = {team_id} AND sc.inning_topbot = 'Bot')
+                    )
+                    AND sc.inning > 1
                 GROUP BY sc.pitcher, sc.game_pk, CAST(sc.game_date AS DATE)
             )
         ),
@@ -371,7 +429,7 @@ class V7FeatureBuilder:
                     * (1.0 - 0.1 * DATE_DIFF(DATE '{gd_str}', ru.game_date, DAY))
                 ) / 100.0,
             0.0)                                                             AS fatigue_score,
-            COALESCE(cc.days_rest, 7)                                        AS closer_days_rest,
+            COALESCE(MAX(cc.days_rest), 7)                                   AS closer_days_rest,
             -- Depth: how many distinct relievers threw ≤ 2 days ago (available)
             COALESCE(
                 COUNT(DISTINCT CASE
@@ -617,30 +675,31 @@ class V7FeatureBuilder:
         cutoff = (game_date - timedelta(days=cutoff_days)).isoformat()
         gd_str = game_date.isoformat()
 
-        # Try pitcher_game_stats first
-        try:
-            self.bq.get_table(PITCHER_STATS_TABLE)
-            has_pitcher_stats = True
-        except Exception:
-            has_pitcher_stats = False
+        has_pitcher_stats = self._table_exists(PITCHER_STATS_TABLE)
+        has_season_pitcher_stats = self._table_exists(PITCHER_STATS_SEASON)
 
         if has_pitcher_stats:
-            # Query pitcher_game_stats (Union historical + 2026)
-            sql = f"""
-            WITH recent_starts AS (
-                SELECT *
-                FROM (
+            stats_sources = [f"""
                     SELECT * FROM `{PITCHER_STATS_TABLE}`
                     WHERE pitcher = {pitcher_id}
                       AND game_date < '{gd_str}'
                       AND game_date >= '{cutoff}'
                       AND total_pitches >= 25
-                    UNION ALL
+            """]
+            if has_season_pitcher_stats:
+                stats_sources.append(f"""
                     SELECT * FROM `{PITCHER_STATS_SEASON}`
                     WHERE pitcher = {pitcher_id}
                       AND game_date < '{gd_str}'
                       AND game_date >= '{cutoff}'
                       AND total_pitches >= 25
+                """)
+
+            sql = f"""
+            WITH recent_starts AS (
+                SELECT *
+                FROM (
+                    {" UNION ALL ".join(stats_sources)}
                 ) combined
                 QUALIFY ROW_NUMBER() OVER (PARTITION BY game_date ORDER BY 1) = 1
             ),
@@ -870,8 +929,8 @@ class V7FeatureBuilder:
         """
         sql = f"""
         SELECT
-            COALESCE(l_h.player_id, NULL) AS home_starter_id,
-            COALESCE(l_a.player_id, NULL) AS away_starter_id,
+            COALESCE(l_h.player_id, gp.home_starter_id, NULL) AS home_starter_id,
+            COALESCE(l_a.player_id, gp.away_starter_id, NULL) AS away_starter_id,
             g.venue_id
         FROM (
             SELECT game_pk, venue_id, home_team_id, away_team_id
@@ -881,6 +940,11 @@ class V7FeatureBuilder:
             SELECT game_pk, venue_id, home_team_id, away_team_id
             FROM `{GAMES_HIST_TABLE}`
             WHERE game_pk = {game_pk}
+            UNION ALL
+            SELECT game_pk, CAST(NULL AS INT64) AS venue_id, home_team_id, away_team_id
+            FROM `{PROJECT}.{SEASON_DS}.game_predictions`
+            WHERE game_pk = {game_pk}
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY predicted_at DESC) = 1
         ) g
         LEFT JOIN (
             SELECT game_pk, player_id FROM `{LINEUPS_TABLE}`
@@ -892,6 +956,12 @@ class V7FeatureBuilder:
             WHERE game_pk = {game_pk} AND team_type = 'away' AND is_probable_pitcher = true
             QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY fetched_at DESC) = 1
         ) l_a ON l_a.game_pk = g.game_pk
+        LEFT JOIN (
+            SELECT game_pk, home_starter_id, away_starter_id
+            FROM `{PROJECT}.{SEASON_DS}.game_predictions`
+            WHERE game_pk = {game_pk}
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY predicted_at DESC) = 1
+        ) gp ON gp.game_pk = g.game_pk
         LIMIT 1
         """
         try:
@@ -900,9 +970,9 @@ class V7FeatureBuilder:
                 return None, None, None, None
             
             r = row.iloc[0]
-            h_sp = int(r["home_starter_id"]) if r["home_starter_id"] is not None else None
-            a_sp = int(r["away_starter_id"]) if r["away_starter_id"] is not None else None
-            vid  = int(r["venue_id"]) if r["venue_id"] is not None else None
+            h_sp = int(r["home_starter_id"]) if pd.notna(r["home_starter_id"]) else None
+            a_sp = int(r["away_starter_id"]) if pd.notna(r["away_starter_id"]) else None
+            vid  = int(r["venue_id"]) if pd.notna(r["venue_id"]) else None
             
             # If either starter not found in lineups, try to infer from statcast
             if h_sp is None or a_sp is None:
@@ -928,36 +998,48 @@ class V7FeatureBuilder:
         """Build V7 features for all upcoming/completed games on target date."""
         logger.info("Building V7 features for %s", target)
 
-        # Pull game list for the date
         try:
-            games_sql = f"""
-            SELECT game_pk, home_team_id, away_team_id, venue_id
-            FROM `{PROJECT}.{SEASON_DS}.games`
-            WHERE game_date = '{target.isoformat()}'
-            """
-            games_df = self.bq.query(games_sql).to_dataframe()
+            games_df = self._load_games_df(target)
         except Exception as e:
             logger.error("Could not load games for %s: %s", target, e)
             return {"status": "error", "error": str(e)}
 
+        return self._run_for_games_df(games_df, target)
+
+    def run_for_game_pks(self, game_pks: list[int], target: date) -> dict:
+        """Build V7 features for specific game PKs."""
+        logger.info("Building V7 features for %s and game_pks=%s", target, game_pks)
+        try:
+            games_df = self._load_games_df(target, game_pks)
+        except Exception as e:
+            logger.error("Could not load games for %s and game_pks=%s: %s", target, game_pks, e)
+            return {"status": "error", "error": str(e)}
+
+        return self._finalize_rows_from_games_df(games_df, target, game_pks)
+
+    def _finalize_rows_from_games_df(
+        self,
+        games_df: pd.DataFrame,
+        target: date,
+        game_pks: Optional[list[int]] = None,
+    ) -> dict:
+        return self._finalize_rows(self._build_rows(games_df, target), target, game_pks)
+
+    def _build_rows(self, games_df: pd.DataFrame, target: date) -> list[dict]:
         if games_df.empty:
-            logger.info("No games found for %s", target)
-            return {"status": "ok", "games_processed": 0}
+            return []
 
         rows = []
         for _, game in games_df.iterrows():
             game_pk   = int(game["game_pk"])
             h_team    = int(game["home_team_id"])
             a_team    = int(game["away_team_id"])
-            venue_id  = int(game["venue_id"]) if game["venue_id"] is not None else None
+            venue_id  = int(game["venue_id"]) if pd.notna(game["venue_id"]) else None
             g_hour    = 23.0  # Default to ~7 PM ET (23:00 UTC)
 
-            # Group A: bullpen health
             h_bp = self._bullpen_health_query(h_team, target)
             a_bp = self._bullpen_health_query(a_team, target)
 
-            # Group B: moon + circadian
-            # Fetch park run factor from V6 table if available
             try:
                 park_sql = f"""
                 SELECT home_park_run_factor
@@ -974,7 +1056,6 @@ class V7FeatureBuilder:
                 target, h_team, a_team, g_hour, park_run_factor=park_rf
             )
 
-            # Group C: pitcher venue splits
             h_sp, a_sp, _, _ = self._get_starters_and_venue(game_pk, target)
             if venue_id and h_sp:
                 h_venue = self._pitcher_venue_splits(h_sp, venue_id, target)
@@ -985,7 +1066,6 @@ class V7FeatureBuilder:
             else:
                 a_venue = self._neutral_pitcher_venue()
 
-            # Pitcher arsenal: use pitcher_game_stats (includes historical + 2026 when available)
             h_arsenal = self._pitcher_arsenal_from_game_stats(h_sp, target)
             a_arsenal = self._pitcher_arsenal_from_game_stats(a_sp, target)
             arsenal_adv = None
@@ -997,61 +1077,58 @@ class V7FeatureBuilder:
                 3
             ))
 
-            row = {
+            rows.append({
                 "game_pk": game_pk,
-                "game_date": target,  # Keep as date object for BigQuery
+                "game_date": target,
                 "home_team_id": h_team,
                 "away_team_id": a_team,
-                "computed_at": datetime.now(timezone.utc),  # BigQuery TIMESTAMP type
-                # Bullpen
-                "home_bullpen_pitches_7d":    h_bp["bullpen_pitches_7d"],
-                "away_bullpen_pitches_7d":    a_bp["bullpen_pitches_7d"],
-                "home_bullpen_games_7d":      h_bp["bullpen_games_7d"],
-                "away_bullpen_games_7d":      a_bp["bullpen_games_7d"],
-                "home_bullpen_ip_7d":         h_bp["bullpen_ip_7d"],
-                "away_bullpen_ip_7d":         a_bp["bullpen_ip_7d"],
+                "computed_at": datetime.now(timezone.utc),
+                "home_bullpen_pitches_7d": h_bp["bullpen_pitches_7d"],
+                "away_bullpen_pitches_7d": a_bp["bullpen_pitches_7d"],
+                "home_bullpen_games_7d": h_bp["bullpen_games_7d"],
+                "away_bullpen_games_7d": a_bp["bullpen_games_7d"],
+                "home_bullpen_ip_7d": h_bp["bullpen_ip_7d"],
+                "away_bullpen_ip_7d": a_bp["bullpen_ip_7d"],
                 "home_bullpen_fatigue_score": h_bp["bullpen_fatigue_score"],
                 "away_bullpen_fatigue_score": a_bp["bullpen_fatigue_score"],
-                "home_closer_days_rest":      h_bp["closer_days_rest"],
-                "away_closer_days_rest":      a_bp["closer_days_rest"],
-                "home_bullpen_depth_score":   h_bp["bullpen_depth_score"],
-                "away_bullpen_depth_score":   a_bp["bullpen_depth_score"],
+                "home_closer_days_rest": h_bp["closer_days_rest"],
+                "away_closer_days_rest": a_bp["closer_days_rest"],
+                "home_bullpen_depth_score": h_bp["bullpen_depth_score"],
+                "away_bullpen_depth_score": a_bp["bullpen_depth_score"],
                 "bullpen_fatigue_differential": float(round(
                     a_bp["bullpen_fatigue_score"] - h_bp["bullpen_fatigue_score"], 4
                 )),
-                # Moon / circadian
                 **temporal,
-                # Pitcher venue
-                "home_starter_venue_era":     h_venue["venue_era"],
-                "home_starter_venue_whip":    h_venue["venue_whip"],
-                "home_starter_venue_k9":      h_venue["venue_k9"],
+                "home_starter_venue_era": h_venue["venue_era"],
+                "home_starter_venue_whip": h_venue["venue_whip"],
+                "home_starter_venue_k9": h_venue["venue_k9"],
                 "home_starter_venue_pa_total": h_venue["venue_pa_total"],
-                "away_starter_venue_era":     a_venue["venue_era"],
-                "away_starter_venue_whip":    a_venue["venue_whip"],
-                "away_starter_venue_k9":      a_venue["venue_k9"],
+                "away_starter_venue_era": a_venue["venue_era"],
+                "away_starter_venue_whip": a_venue["venue_whip"],
+                "away_starter_venue_k9": a_venue["venue_k9"],
                 "away_starter_venue_pa_total": a_venue["venue_pa_total"],
                 "starter_venue_era_differential": era_diff,
-                # Pitcher arsenal from 2026 statcast
-                "home_starter_mean_velo":     h_arsenal["mean_velo"],
-                "away_starter_mean_velo":     a_arsenal["mean_velo"],
-                "home_starter_velo_norm":     h_arsenal["velo_norm"],
-                "away_starter_velo_norm":     a_arsenal["velo_norm"],
-                "home_starter_k_bb_pct":      h_arsenal["k_bb_pct"],
-                "away_starter_k_bb_pct":      a_arsenal["k_bb_pct"],
+                "home_starter_mean_velo": h_arsenal["mean_velo"],
+                "away_starter_mean_velo": a_arsenal["mean_velo"],
+                "home_starter_velo_norm": h_arsenal["velo_norm"],
+                "away_starter_velo_norm": a_arsenal["velo_norm"],
+                "home_starter_k_bb_pct": h_arsenal["k_bb_pct"],
+                "away_starter_k_bb_pct": a_arsenal["k_bb_pct"],
                 "home_starter_xwoba_allowed": h_arsenal["xwoba_allowed"],
                 "away_starter_xwoba_allowed": a_arsenal["xwoba_allowed"],
-                "home_starter_fastball_pct":  h_arsenal["fastball_pct"],
-                "away_starter_fastball_pct":  a_arsenal["fastball_pct"],
-                "home_starter_breaking_pct":  h_arsenal["breaking_pct"],
-                "away_starter_breaking_pct":  a_arsenal["breaking_pct"],
-                "home_starter_offspeed_pct":  h_arsenal["offspeed_pct"],
-                "away_starter_offspeed_pct":  a_arsenal["offspeed_pct"],
-                "home_starter_velo_trend":    h_arsenal["velo_trend"],
-                "away_starter_velo_trend":    a_arsenal["velo_trend"],
-                "starter_arsenal_advantage":  arsenal_adv,
-            }
-            rows.append(row)
+                "home_starter_fastball_pct": h_arsenal["fastball_pct"],
+                "away_starter_fastball_pct": a_arsenal["fastball_pct"],
+                "home_starter_breaking_pct": h_arsenal["breaking_pct"],
+                "away_starter_breaking_pct": a_arsenal["breaking_pct"],
+                "home_starter_offspeed_pct": h_arsenal["offspeed_pct"],
+                "away_starter_offspeed_pct": a_arsenal["offspeed_pct"],
+                "home_starter_velo_trend": h_arsenal["velo_trend"],
+                "away_starter_velo_trend": a_arsenal["velo_trend"],
+                "starter_arsenal_advantage": arsenal_adv,
+            })
+        return rows
 
+    def _finalize_rows(self, rows: list[dict], target: date, game_pks: Optional[list[int]] = None) -> dict:
         if not rows:
             return {"status": "ok", "games_processed": 0}
 
@@ -1061,13 +1138,20 @@ class V7FeatureBuilder:
             logger.info(result_df.to_string())
             return {"status": "dry_run", "games_processed": len(result_df)}
 
-        # Upsert into BQ: delete old rows for this date, then append new ones
         try:
             target_str = target.isoformat()
-            delete_sql = f"""
-            DELETE FROM `{MATCHUP_V7_TABLE}`
-            WHERE DATE(game_date) = '{target_str}'
-            """
+            if game_pks:
+                joined_game_pks = ", ".join(str(int(pk)) for pk in game_pks)
+                delete_sql = f"""
+                DELETE FROM `{MATCHUP_V7_TABLE}`
+                WHERE DATE(game_date) = '{target_str}'
+                  AND game_pk IN ({joined_game_pks})
+                """
+            else:
+                delete_sql = f"""
+                DELETE FROM `{MATCHUP_V7_TABLE}`
+                WHERE DATE(game_date) = '{target_str}'
+                """
             self.bq.query(delete_sql).result()
             logger.info("Deleted existing V7 features for %s", target)
         except Exception as e:
@@ -1080,18 +1164,6 @@ class V7FeatureBuilder:
         self.bq.load_table_from_dataframe(result_df, MATCHUP_V7_TABLE, job_config=job_config).result()
         logger.info("Wrote %d V7 feature rows for %s", len(result_df), target)
         return {"status": "ok", "games_processed": len(result_df)}
-
-    def run_for_game_pks(self, game_pks: list[int], target: date) -> dict:
-        """Build V7 features for specific game PKs."""
-        total = 0
-        for pk in game_pks:
-            try:
-                # Build for full date but could optimise to single-game; simpler this way
-                r = self.run_for_date(target)
-                total += r.get("games_processed", 0)
-            except Exception as e:
-                logger.error("Failed for game_pk %d: %s", pk, e)
-        return {"status": "ok", "games_processed": total}
 
 
 # ---------------------------------------------------------------------------
