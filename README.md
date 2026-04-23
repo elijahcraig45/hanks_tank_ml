@@ -41,6 +41,9 @@ The active production entry point is a **Gen2 Cloud Function**:
 | Timeout | 540 seconds |
 | Max instances | 3 |
 
+The deployed function entry point is `src/main.py`, which re-exports `daily_pipeline` from
+`src/cloud_function_main.py`.
+
 Older helper functions were removed from the live GCP project during cleanup. The deprecated `cloud_functions/` directory remains only as historical reference.
 
 ### Cloud Scheduler
@@ -144,10 +147,13 @@ best first cutoff to revisit for a true `very_high` bucket.
    set GCP_PROJECT=hankstank
    set BIGQUERY_DATASET=mlb_2026_season
    ```
-4. Run the pipeline locally:
+4. Run the collection pipeline locally:
    ```bash
-   python src/daily_pipeline.py --date 2026-04-20
+   python src/season_2026_pipeline.py --date 2026-04-20
    ```
+5. If you need to inspect the HTTP-triggered production entry point locally, start from
+   `src/cloud_function_main.py` / `src/main.py` rather than the deprecated `cloud_functions/`
+   directory.
 
 ## Validation
 
