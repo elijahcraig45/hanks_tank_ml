@@ -293,99 +293,36 @@ def _run_v7_backfill(start: date, end: date, dry_run: bool) -> dict:
 
 def _schedule_pregame_tasks(target: date, dry_run: bool) -> dict:
     """
-    Morning job: inspect today's game schedule and enqueue Cloud Tasks
-    for each game's pre-game pipeline (~90 minutes before first pitch).
-    Called by cron at ~10 AM ET / 14:00 UTC each day.
+    Morning job: delegate lineup scheduling to the backend so a single
+    source of truth controls multi-checkpoint lineup refresh cadence.
     """
     import os
     import requests
-    import urllib3
-    from datetime import datetime, timezone, timedelta
+    BACKEND_URL = os.environ.get("BACKEND_URL", "https://hankstank.uc.r.appspot.com")
+    schedule_url = f"{BACKEND_URL}/api/lineup/schedule-today"
 
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    if dry_run:
+        return {
+            "step": "schedule_pregame_tasks",
+            "date": target.isoformat(),
+            "dry_run": True,
+            "delegated_to": schedule_url,
+        }
 
-    MLB_API = "https://statsapi.mlb.com/api/v1"
-    BACKEND_URL = os.environ.get(
-        "BACKEND_URL",
-        "https://hankstank.uc.r.appspot.com"
-    )
-
-    # Fetch today's schedule
     resp = requests.get(
-        f"{MLB_API}/schedule",
-        params={"date": target.isoformat(), "sportId": 1,
-                "hydrate": "team", "gameType": "R,F,D,L,W"},
+        schedule_url,
+        params={"date": target.isoformat()},
         headers={"User-Agent": "HanksTank/2.0"},
         timeout=30,
-        verify=False,
     )
     resp.raise_for_status()
     data = resp.json()
 
-    tasks_scheduled = []
-    now_utc = datetime.now(tz=timezone.utc)
-
-    for day in data.get("dates", []):
-        for g in day.get("games", []):
-            game_pk = g["gamePk"]
-            game_datetime_str = g.get("gameDate", "")
-            try:
-                game_time = datetime.fromisoformat(game_datetime_str.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-
-            # Schedule pre-game task for 90 minutes before first pitch
-            trigger_time = game_time - timedelta(minutes=90)
-
-            if trigger_time <= now_utc:
-                # Game is too soon or already started — run immediately if < 30 min past
-                if now_utc - trigger_time < timedelta(minutes=30):
-                    trigger_time = now_utc + timedelta(seconds=30)
-                else:
-                    logger.info("Skipping task for game %s — trigger time already passed", game_pk)
-                    continue
-
-            delay_seconds = max(0, int((trigger_time - now_utc).total_seconds()))
-
-            if not dry_run:
-                # POST to backend scheduler endpoint which creates the Cloud Task
-                try:
-                    task_resp = requests.post(
-                        f"{BACKEND_URL}/api/lineup/schedule-task",
-                        json={
-                            "game_pks": [game_pk],
-                            "game_date": target.isoformat(),
-                            "delay_seconds": delay_seconds,
-                        },
-                        headers={"Content-Type": "application/json"},
-                        timeout=15,
-                    )
-                    if task_resp.ok:
-                        tasks_scheduled.append({
-                            "game_pk": game_pk,
-                            "trigger_time": trigger_time.isoformat(),
-                            "delay_seconds": delay_seconds,
-                        })
-                    else:
-                        logger.warning(
-                            "Failed to schedule task for game %s: %s",
-                            game_pk, task_resp.text
-                        )
-                except Exception as task_err:
-                    logger.error("Error scheduling task for game %s: %s", game_pk, task_err)
-            else:
-                tasks_scheduled.append({
-                    "game_pk": game_pk,
-                    "trigger_time": trigger_time.isoformat(),
-                    "delay_seconds": delay_seconds,
-                    "dry_run": True,
-                })
-
-    logger.info("Scheduled %d pre-game tasks for %s", len(tasks_scheduled), target)
+    logger.info("Delegated lineup scheduling for %s", target.isoformat())
     return {
         "step": "schedule_pregame_tasks",
-        "tasks_scheduled": len(tasks_scheduled),
-        "tasks": tasks_scheduled,
+        "date": target.isoformat(),
+        "scheduled": data,
     }
 
 

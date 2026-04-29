@@ -264,6 +264,7 @@ class DailyPredictor:
         self.model = None
         self.scaler = None
         self.feature_names = None
+        self.fill_values = {}
         self.model_version = None
         self._is_v8 = False   # Set True after load_model() if V8 bundle loaded
         self._is_v10 = False  # Set True after load_model() if V10 XGBoost loaded
@@ -351,18 +352,41 @@ class DailyPredictor:
                 blob = bucket_obj.blob(V4_MODEL_GCS)
                 data = pickle.loads(blob.download_as_bytes())
 
+        # Deployment-ready V10 payload: dict with model + feature metadata + fill values.
+        if (
+            isinstance(data, dict)
+            and "model" in data
+            and (
+                str(data.get("version", "")).lower() == "v10"
+                or "v10" in str(data.get("model_name", "")).lower()
+            )
+        ):
+            self.model = data["model"]
+            self.scaler = None
+            self.feature_names = data.get("features") or list(
+                getattr(self.model, "feature_names_in_", [])
+            )
+            self.fill_values = data.get("fill_values", {})
+            self.model_version = data.get("version", "v10")
+            self._is_v8 = False
+            self._is_v10 = True
         # V10 is a plain XGBClassifier (not a bundle) — detect by presence of
         # feature_names_in_ attribute. Load directly; predict_proba(X_df) works natively.
-        if hasattr(data, "predict_proba") and hasattr(data, "feature_names_in_"):
+        elif hasattr(data, "predict_proba") and hasattr(data, "feature_names_in_"):
             self.model = data
             self.scaler = None
             self.feature_names = list(data.feature_names_in_)
+            self.fill_values = (
+                getattr(data, "fill_values", {})
+                or getattr(data, "copilot_fill_values", {})
+                or {}
+            )
             self.model_version = "v10"
             self._is_v8 = False
             self._is_v10 = True
         # V8 bundles use a different structure: multi-model ensemble with per-model
         # feature sets, scalers, and Optuna-tuned blend weights.
-        elif isinstance(data.get("models"), dict) and "weights" in data:
+        elif isinstance(data, dict) and isinstance(data.get("models"), dict) and "weights" in data:
             ensemble = V8EnsemblePredictor(data)
             # Attach 2026 calibrator to ensemble if present in bundle
             if "calibrator" in data:
@@ -373,24 +397,31 @@ class DailyPredictor:
             self.model = ensemble
             self.scaler = None          # each sub-model handles its own scaling
             self.feature_names = ensemble.all_features
+            self.fill_values = data.get("fill_values", {})
             self.model_version = data.get("version", "v8_final")
             self._is_v8 = True
         else:
             self.model = data["model"]
             self.scaler = data.get("scaler")
             self.feature_names = data["features"]
+            self.fill_values = data.get("fill_values", {})
             self.model_version = data.get("model_name", "v4_fallback")
             self._is_v8 = (
                 self.model_version.startswith("V8")
                 or "v8" in self.model_version.lower()
             )
         logger.info(
-            "Model loaded: %s (%d features) | V8 mode: %s",
-            self.model_version, len(self.feature_names), self._is_v8,
+            "Model loaded: %s (%d features) | V8 mode: %s | V10 mode: %s",
+            self.model_version, len(self.feature_names), self._is_v8, self._is_v10,
         )    # -----------------------------------------------------------------------
     # Data loading
     # -----------------------------------------------------------------------
-    def fetch_schedule(self, target_date: date, game_pks: Optional[list[int]] = None) -> list[dict]:
+    def fetch_schedule(
+        self,
+        target_date: date,
+        game_pks: Optional[list[int]] = None,
+        include_final: bool = False,
+    ) -> list[dict]:
         """Fetch today's scheduled games from MLB API."""
         url = f"{MLB_API}/schedule"
         params = {
@@ -410,7 +441,7 @@ class DailyPredictor:
                 pk = g["gamePk"]
                 if game_pks and pk not in game_pks:
                     continue
-                if g.get("status", {}).get("abstractGameState") == "Final":
+                if not include_final and g.get("status", {}).get("abstractGameState") == "Final":
                     continue
 
                 game_datetime_str = g.get("gameDate", "")
@@ -712,7 +743,7 @@ class DailyPredictor:
             })
 
         # V10 features — override everything else when V10 model is active.
-        # The game_v10_features table contains ALL 139 V10 model features in one row.
+        # The game_v10_features table contains the full live V10 feature row.
         if v10_row is not None and not v10_row.empty:
             skip_cols = {
                 "game_pk", "game_date", "home_team_id", "away_team_id", "computed_at",
@@ -744,7 +775,7 @@ class DailyPredictor:
         X = feat_df.copy()
         for col in X.columns:
             if X[col].isna().any():
-                X[col] = X[col].fillna(0.0)
+                X[col] = X[col].fillna(self.fill_values.get(col, 0.0))
 
         # V10: plain XGBClassifier — predict_proba accepts DataFrame directly.
         # V8EnsemblePredictor handles its own feature selection and scaling.
@@ -785,19 +816,22 @@ class DailyPredictor:
     # -----------------------------------------------------------------------
     # Orchestrate
     # -----------------------------------------------------------------------
-    def run_for_date(self, target_date: date) -> dict:
+    def run_for_date(self, target_date: date, include_final: bool = False) -> dict:
         """Predict all games on a given date."""
-        games = self.fetch_schedule(target_date)
+        games = self.fetch_schedule(target_date, include_final=include_final)
         if not games:
-            logger.info("No upcoming games on %s", target_date)
+            logger.info("No %sgames on %s", "scheduled " if not include_final else "", target_date)
             return {"games_predicted": 0}
         return self._run(games, target_date)
 
     def run_for_game_pks(
-        self, game_pks: list[int], game_date: Optional[date] = None
+        self,
+        game_pks: list[int],
+        game_date: Optional[date] = None,
+        include_final: bool = False,
     ) -> dict:
         target_date = game_date or date.today()
-        games = self.fetch_schedule(target_date, game_pks)
+        games = self.fetch_schedule(target_date, game_pks, include_final=include_final)
         return self._run(games, target_date)
 
     def _run(self, games: list[dict], target_date: date) -> dict:
@@ -1052,6 +1086,8 @@ def main():
     parser.add_argument("--date", help="Target date YYYY-MM-DD (default: today)")
     parser.add_argument("--game-pk", help="Comma-separated game PKs")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--include-final", action="store_true",
+                        help="Include completed/final games (for historical backfills)")
     parser.add_argument("--fallback-v4", action="store_true",
                         help="Force use of V4 model (before V5 is trained)")
     args = parser.parse_args()
@@ -1061,10 +1097,10 @@ def main():
     if args.game_pk:
         pks = [int(pk.strip()) for pk in args.game_pk.split(",")]
         target = date.fromisoformat(args.date) if args.date else date.today()
-        result = predictor.run_for_game_pks(pks, target)
+        result = predictor.run_for_game_pks(pks, target, include_final=args.include_final)
     else:
         target = date.fromisoformat(args.date) if args.date else date.today()
-        result = predictor.run_for_date(target)
+        result = predictor.run_for_date(target, include_final=args.include_final)
 
     logger.info("Result: %s", result)
 
