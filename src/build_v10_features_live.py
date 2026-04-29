@@ -2,7 +2,7 @@
 """
 V10 Live Feature Builder — BigQuery-Native Implementation
 
-Extends V8 features with the three new V10 feature groups that drove a
+Extends V8 features with the core V10 groups that drove a
 +6.71% accuracy gain on 2026 live data (61.48% vs 54.77% for V8):
 
   1. SP Quality (18 features)  — game-level starting pitcher Statcast percentile
@@ -27,7 +27,7 @@ Data sources:
   - MLB Stats API /schedule               (probable pitchers, venue, series context)
   - statcast_sp_pct_{year}.parquet        (SP Statcast percentile ranks, local or GCS)
 
-Output: mlb_2026_season.game_v10_features  (one row per game_pk, 139 features)
+Output: mlb_2026_season.game_v10_features  (one row per game_pk, expanded V10 feature set)
 
 Usage:
     python build_v10_features_live.py                      # today
@@ -70,6 +70,7 @@ HIST_GAMES     = f"{PROJECT}.{HIST_DATASET}.games_historical"
 SEASON_GAMES   = f"{PROJECT}.{SEASON_DATASET}.games"
 V8_TABLE       = f"{PROJECT}.{SEASON_DATASET}.game_v8_features"
 V10_TABLE      = f"{PROJECT}.{SEASON_DATASET}.game_v10_features"
+MATCHUP_TABLE  = f"{PROJECT}.{SEASON_DATASET}.matchup_features"
 ELO_TABLE      = f"{PROJECT}.{SEASON_DATASET}.team_elo_ratings"
 MLB_API        = "https://statsapi.mlb.com/api/v1"
 
@@ -174,6 +175,19 @@ V10_FEATURES_SCHEMA = [
     # --- H2H (from V8) ---
     _float("home_h2h_win_pct_season"), _int("home_h2h_games_season"),
     _float("home_h2h_win_pct_3yr"),
+    # --- Matchup / lineup quality (new V10 upgrade) ---
+    _int("lineup_confirmed"),
+    _float("home_lineup_woba_vs_hand"), _float("away_lineup_woba_vs_hand"),
+    _float("lineup_woba_differential"),
+    _float("home_lineup_k_pct_vs_hand"), _float("away_lineup_k_pct_vs_hand"),
+    _float("lineup_k_pct_differential"),
+    _float("home_top3_woba_vs_hand"), _float("away_top3_woba_vs_hand"),
+    _float("home_middle4_woba_vs_hand"), _float("away_middle4_woba_vs_hand"),
+    _float("home_bottom2_woba_vs_hand"), _float("away_bottom2_woba_vs_hand"),
+    _float("home_pct_same_hand"), _float("away_pct_same_hand"),
+    _float("home_h2h_woba"), _float("away_h2h_woba"),
+    _float("h2h_woba_differential"),
+    _float("matchup_advantage_home"),
     # --- Team quality (MLB API) ---
     _float("home_fg_era"), _float("away_fg_era"),
     _float("home_fg_whip"), _float("away_fg_whip"),
@@ -220,7 +234,7 @@ V10_FEATURES_SCHEMA = [
     _ts("computed_at"),
 ]
 
-# The exact 139 feature columns the XGBoost V10 model expects (ordered)
+# Canonical V10 feature list for live/train parity.
 V10_MODEL_FEATURES = [
     "home_elo", "away_elo", "elo_differential", "elo_home_win_prob", "elo_win_prob_differential",
     "home_pythag_season", "away_pythag_season", "home_pythag_last30", "away_pythag_last30",
@@ -239,6 +253,15 @@ V10_MODEL_FEATURES = [
     "home_current_streak", "away_current_streak", "home_streak_direction", "away_streak_direction",
     "streak_differential",
     "home_h2h_win_pct_season", "home_h2h_games_season", "home_h2h_win_pct_3yr",
+    "lineup_confirmed",
+    "home_lineup_woba_vs_hand", "away_lineup_woba_vs_hand", "lineup_woba_differential",
+    "home_lineup_k_pct_vs_hand", "away_lineup_k_pct_vs_hand", "lineup_k_pct_differential",
+    "home_top3_woba_vs_hand", "away_top3_woba_vs_hand",
+    "home_middle4_woba_vs_hand", "away_middle4_woba_vs_hand",
+    "home_bottom2_woba_vs_hand", "away_bottom2_woba_vs_hand",
+    "home_pct_same_hand", "away_pct_same_hand",
+    "home_h2h_woba", "away_h2h_woba", "h2h_woba_differential",
+    "matchup_advantage_home",
     "home_fg_era", "away_fg_era", "home_fg_whip", "away_fg_whip",
     "home_fg_k9", "away_fg_k9", "home_fg_bb9", "away_fg_bb9",
     "home_fg_xfip", "away_fg_xfip",
@@ -270,7 +293,7 @@ SEASON_GAMES_TOTAL = 162
 
 class V10LiveFeatureBuilder:
     """
-    Computes all 139 V10 model features for upcoming games.
+    Computes the live V10 feature set for upcoming games.
 
     Combines features from multiple sources:
       - BQ game_v8_features: Elo, Pythagorean, most rolling stats, streaks, H2H
@@ -297,7 +320,19 @@ class V10LiveFeatureBuilder:
         )
         tbl.clustering_fields = ["game_pk"]
         try:
-            self.bq.get_table(V10_TABLE)
+            existing = self.bq.get_table(V10_TABLE)
+            existing_names = {field.name for field in existing.schema}
+            missing_fields = [
+                field for field in V10_FEATURES_SCHEMA if field.name not in existing_names
+            ]
+            if missing_fields and not self.dry_run:
+                existing.schema = [*existing.schema, *missing_fields]
+                self.bq.update_table(existing, ["schema"])
+                logger.info(
+                    "Extended %s schema with %d new columns",
+                    V10_TABLE,
+                    len(missing_fields),
+                )
         except Exception:
             if not self.dry_run:
                 self.bq.create_table(tbl, exists_ok=True)
@@ -306,15 +341,20 @@ class V10LiveFeatureBuilder:
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
-    def run_for_date(self, target_date: date) -> dict:
-        games = self._fetch_schedule(target_date)
+    def run_for_date(self, target_date: date, include_final: bool = False) -> dict:
+        games = self._fetch_schedule(target_date, include_final=include_final)
         if not games:
             logger.info("No upcoming games on %s", target_date)
             return {"games_processed": 0, "date": target_date.isoformat()}
         return self._build_and_write(games, target_date)
 
-    def run_for_game_pks(self, game_pks: List[int], target_date: date) -> dict:
-        games = self._fetch_schedule(target_date, game_pks)
+    def run_for_game_pks(
+        self,
+        game_pks: List[int],
+        target_date: date,
+        include_final: bool = False,
+    ) -> dict:
+        games = self._fetch_schedule(target_date, game_pks, include_final=include_final)
         if not games:
             return {"games_processed": 0, "date": target_date.isoformat()}
         return self._build_and_write(games, target_date)
@@ -427,6 +467,20 @@ class V10LiveFeatureBuilder:
             return self.bq.query(sql).to_dataframe()
         except Exception as e:
             logger.warning("V8 features unavailable: %s — using neutral defaults", e)
+            return pd.DataFrame()
+
+    def _load_matchup_features(self, game_pks: List[int]) -> pd.DataFrame:
+        pk_list = ", ".join(str(pk) for pk in game_pks)
+        sql = f"""
+            SELECT *
+            FROM `{MATCHUP_TABLE}`
+            WHERE game_pk IN ({pk_list})
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY computed_at DESC) = 1
+        """
+        try:
+            return self.bq.query(sql).to_dataframe()
+        except Exception as e:
+            logger.warning("Matchup features unavailable: %s — using neutral defaults", e)
             return pd.DataFrame()
 
     def _load_elo_direct(self) -> Dict[int, float]:
@@ -813,6 +867,7 @@ class V10LiveFeatureBuilder:
 
         # Load all data sources
         v8_df        = self._load_v8_features(game_pks)
+        matchup_df   = self._load_matchup_features(game_pks)
         # If V8 features are absent (e.g., V10 ran before V8 today), fall back
         # to Elo ratings table so predictions have real team-strength context.
         elo_direct   = self._load_elo_direct() if v8_df.empty else {}
@@ -832,7 +887,7 @@ class V10LiveFeatureBuilder:
         rows = []
         for game in games:
             row = self._assemble_row(
-                game, v8_df, team_rolling, team_quality, sp_lookup,
+                game, v8_df, matchup_df, team_rolling, team_quality, sp_lookup,
                 team_game_count, target_date, season, elo_direct
             )
             rows.append(row)
@@ -846,6 +901,7 @@ class V10LiveFeatureBuilder:
         self,
         game: dict,
         v8_df: pd.DataFrame,
+        matchup_df: pd.DataFrame,
         team_rolling: Dict,
         team_quality: Dict,
         sp_lookup: Dict,
@@ -878,6 +934,26 @@ class V10LiveFeatureBuilder:
                 val = v8_row[col]
                 if pd.notna(val):
                     return int(val)
+            return default
+
+        matchup_row = None
+        if not matchup_df.empty and "game_pk" in matchup_df.columns:
+            sub = matchup_df[matchup_df["game_pk"] == pk]
+            if not sub.empty:
+                matchup_row = sub.iloc[0]
+
+        def matchup(col, default=0.0):
+            if matchup_row is not None and col in matchup_row.index:
+                val = matchup_row[col]
+                if pd.notna(val):
+                    return float(val)
+            return default
+
+        def matchupi(col, default=0):
+            if matchup_row is not None and col in matchup_row.index:
+                val = matchup_row[col]
+                if pd.notna(val):
+                    return int(bool(val))
             return default
 
         # --- Rolling stats from game history ---
@@ -916,6 +992,25 @@ class V10LiveFeatureBuilder:
         away_gp = team_game_count.get(atid, 0)
         avg_gp  = (home_gp + away_gp) / 2 if (home_gp + away_gp) > 0 else 5
         season_pct = float(np.clip(avg_gp / SEASON_GAMES_TOTAL, 0.0, 1.0))
+
+        home_lineup_woba = matchup("home_lineup_woba_vs_hand", 0.320)
+        away_lineup_woba = matchup("away_lineup_woba_vs_hand", 0.320)
+        home_lineup_k_pct = matchup("home_lineup_k_pct_vs_hand", 0.220)
+        away_lineup_k_pct = matchup("away_lineup_k_pct_vs_hand", 0.220)
+        home_top3_woba = matchup("home_top3_woba_vs_hand", home_lineup_woba)
+        away_top3_woba = matchup("away_top3_woba_vs_hand", away_lineup_woba)
+        home_middle4_woba = matchup("home_middle4_woba_vs_hand", home_lineup_woba)
+        away_middle4_woba = matchup("away_middle4_woba_vs_hand", away_lineup_woba)
+        home_bottom2_woba = matchup("home_bottom2_woba_vs_hand", home_lineup_woba)
+        away_bottom2_woba = matchup("away_bottom2_woba_vs_hand", away_lineup_woba)
+        home_pct_same_hand = matchup("home_pct_same_hand", 0.50)
+        away_pct_same_hand = matchup("away_pct_same_hand", 0.50)
+        home_h2h_woba = matchup("home_h2h_woba", home_lineup_woba)
+        away_h2h_woba = matchup("away_h2h_woba", away_lineup_woba)
+        matchup_advantage_home = matchup(
+            "matchup_advantage_home",
+            home_lineup_woba - away_lineup_woba,
+        )
 
         # Series context
         series_game_number = int(game.get("series_game_number", 1))
@@ -998,6 +1093,26 @@ class V10LiveFeatureBuilder:
             "home_h2h_win_pct_season": v8("h2h_win_pct_season", 0.5),
             "home_h2h_games_season":   v8i("h2h_games_3yr", 0),  # best available from V8
             "home_h2h_win_pct_3yr":    v8("h2h_win_pct_3yr", 0.5),
+            # Matchup / lineup quality
+            "lineup_confirmed": matchupi("lineup_confirmed", 0),
+            "home_lineup_woba_vs_hand": home_lineup_woba,
+            "away_lineup_woba_vs_hand": away_lineup_woba,
+            "lineup_woba_differential": home_lineup_woba - away_lineup_woba,
+            "home_lineup_k_pct_vs_hand": home_lineup_k_pct,
+            "away_lineup_k_pct_vs_hand": away_lineup_k_pct,
+            "lineup_k_pct_differential": away_lineup_k_pct - home_lineup_k_pct,
+            "home_top3_woba_vs_hand": home_top3_woba,
+            "away_top3_woba_vs_hand": away_top3_woba,
+            "home_middle4_woba_vs_hand": home_middle4_woba,
+            "away_middle4_woba_vs_hand": away_middle4_woba,
+            "home_bottom2_woba_vs_hand": home_bottom2_woba,
+            "away_bottom2_woba_vs_hand": away_bottom2_woba,
+            "home_pct_same_hand": home_pct_same_hand,
+            "away_pct_same_hand": away_pct_same_hand,
+            "home_h2h_woba": home_h2h_woba,
+            "away_h2h_woba": away_h2h_woba,
+            "h2h_woba_differential": home_h2h_woba - away_h2h_woba,
+            "matchup_advantage_home": matchup_advantage_home,
             # Team quality (from MLB API)
             "home_fg_era":      hq.get("fg_era", 4.20),
             "away_fg_era":      aq.get("fg_era", 4.20),
@@ -1165,6 +1280,8 @@ def main():
     parser.add_argument("--start", help="Backfill start date (YYYY-MM-DD)")
     parser.add_argument("--end",   help="Backfill end date (YYYY-MM-DD, default: today)")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--include-final", action="store_true",
+                        help="Include completed/final games (for historical backfills)")
     args = parser.parse_args()
 
     builder = V10LiveFeatureBuilder(dry_run=args.dry_run)
@@ -1176,10 +1293,10 @@ def main():
     elif args.game_pk:
         pks = [int(pk.strip()) for pk in args.game_pk.split(",")]
         target = date.fromisoformat(args.date) if args.date else date.today()
-        result = builder.run_for_game_pks(pks, target)
+        result = builder.run_for_game_pks(pks, target, include_final=args.include_final)
     else:
         target = date.fromisoformat(args.date) if args.date else date.today()
-        result = builder.run_for_date(target)
+        result = builder.run_for_date(target, include_final=args.include_final)
 
     logger.info("Result: %s", result)
 
