@@ -342,7 +342,9 @@ def build_top25(season: int = 2025, n_boot: int = 200, C: float = DEFAULT_C,
         record.setdefault(w, [0, 0])[0] += 1
         record.setdefault(l, [0, 0])[1] += 1
 
-    top = strengths.head(26)  # 26 so #25 has a "beat the next team" comparison
+    # Full board: the page shows a top-25 by default and expands to the rest.
+    # The +1 lookahead below still gives every row a "beats the next team" figure.
+    top = strengths
     rows = []
     for rank, (team, rating) in enumerate(top.items(), start=1):
         nxt = top.iloc[rank] if rank < len(top) else None
@@ -372,7 +374,9 @@ def build_top25(season: int = 2025, n_boot: int = 200, C: float = DEFAULT_C,
         "week": effective_week,
         "prior_weight": round(prior_weight(effective_week), 3) if prior is not None else 0.0,
     }
-    return pd.DataFrame(rows).head(25), meta
+    # Keep every FBS team, not just 25 — the page shows a top-25 by default and
+    # lets you expand to the full board, and tiering needs the whole distribution.
+    return pd.DataFrame(rows), meta
 
 
 def transitivity_check(season: int = 2025, C: float = DEFAULT_C) -> dict:
