@@ -184,3 +184,94 @@ def baselines(feats: pd.DataFrame, division: str, season: int) -> dict:
         "always_home": float(s["home_won"].mean()),
         "elo_only": float((elo_pred == s["home_won"]).mean()),
     }
+
+
+def predict_week(season: int, week: int) -> pd.DataFrame:
+    """Predict a scheduled (not yet played) week for both divisions.
+
+    Mirrors the NFL path: team state is built from every completed game, the unplayed
+    slate is appended so it inherits that state without contributing to it, and each
+    division is predicted by a model trained only on its own division's history.
+    """
+    from espn_data import fetch_scheduled
+
+    played = load_games()
+    upcoming = fetch_scheduled(season, week)
+    if upcoming.empty:
+        logger.warning("no scheduled games for %d week %d", season, week)
+        return pd.DataFrame()
+
+    # Drop any that already finished — those belong to the backfill path.
+    upcoming = upcoming[upcoming["home_won"].isna()].copy()
+    if upcoming.empty:
+        logger.info("every %d wk%d game already final", season, week)
+        return pd.DataFrame()
+
+    upcoming["game_date"] = pd.to_datetime(upcoming["game_date"])
+    combined = pd.concat([played, upcoming], ignore_index=True)
+    feats = build(combined)
+
+    cols = cfb_feature_columns(feats)
+    out = []
+    for division in ("fbs", "fcs"):
+        train = feats[(feats["division"] == division) & feats["home_won"].notna()]
+        target = feats[(feats["division"] == division) & feats["home_won"].isna()
+                       & (feats["season"] == season) & (feats["week"] == week)]
+        if len(train) < 300 or target.empty:
+            continue
+
+        model = build_xgb()
+        model.fit(train[cols].fillna(0.0).values, train["home_won"].astype(int).values)
+        proba = model.predict_proba(target[cols].fillna(0.0).values)[:, 1]
+
+        out.append(pd.DataFrame({
+            "game_id": target["game_id"].values,
+            "season": target["season"].values,
+            "week": target["week"].values,
+            "division": division,
+            "game_date": pd.to_datetime(target["game_date"].values),
+            "home_team_id": target["home_team"].values,
+            "away_team_id": target["away_team"].values,
+            "home_team_name": target["home_team_name"].values,
+            "away_team_name": target["away_team_name"].values,
+            "home_win_probability": proba,
+            "away_win_probability": 1 - proba,
+            "predicted_winner": np.where(proba > 0.5, target["home_team_name"].values,
+                                         target["away_team_name"].values),
+            "confidence_tier": [confidence_tier(p) for p in proba],
+            "model_version": MODEL_VERSION,
+            "predicted_at": datetime.now(timezone.utc),
+            "elo_differential": target["elo_differential"].values,
+            "elo_home_win_prob": target["elo_home_win_prob"].values,
+            "pythag_differential": target["pythag_differential"].values,
+            "home_point_diff_3g": target["home_point_diff_3g"].values,
+            "away_point_diff_3g": target["away_point_diff_3g"].values,
+            "home_current_streak": target["home_current_streak"].values,
+            "away_current_streak": target["away_current_streak"].values,
+            "is_divisional": target["is_divisional"].values,
+            "cross_division": target["cross_division"].values,
+            "neutral_site": target["neutral_site"].values,
+            "home_won": None,
+            "actual_winner": None,
+            "prediction_correct": None,
+        }))
+        logger.info("%s %d wk%d: %d predictions", division, season, week, len(out[-1]))
+
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
+
+
+def next_unplayed_week(season: int, max_week: int = 21) -> int | None:
+    """Earliest week in the season that still has games without a result.
+
+    Lets the weekly scheduler fire a bare {"mode": "predict_next"} instead of hardcoding
+    a week number that would go stale after seven days.
+    """
+    from espn_data import fetch_scheduled
+
+    for week in range(1, max_week + 1):
+        slate = fetch_scheduled(season, week)
+        if slate.empty:
+            continue
+        if slate["home_won"].isna().any():
+            return week
+    return None

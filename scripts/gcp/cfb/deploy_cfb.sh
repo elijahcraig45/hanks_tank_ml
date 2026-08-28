@@ -120,7 +120,7 @@ echo "  ✓ cfb-weekly-ingest (Sun 6:00 AM ET)"
 
 # Tuesday 6 AM ET — predict the coming Saturday, both divisions.
 _sched "cfb-weekly-predict" "0 6 * 8-12,1 2" \
-    '{"mode":"predict_week"}' "CFB: predict upcoming week for FBS and FCS"
+    '{"mode":"predict_next"}' "CFB: predict the next unplayed week, FBS and FCS"
 echo "  ✓ cfb-weekly-predict (Tue 6:00 AM ET)"
 
 echo ""

@@ -55,7 +55,42 @@ def cfb_pipeline(request):
                 partition_field="game_date", cluster_fields=["season", "division"],
             )
 
-        elif mode in ("predict_week", "backfill"):
+        elif mode in ("predict_week", "predict_next"):
+            import cfb_config
+            import pandas as pd
+            from backfill_cfb import ensure_datasets, load
+            from pipeline import next_unplayed_week, predict_week
+
+            season = int(req.get("season", cfb_config.CTX.season))
+            week = req.get("week")
+            if week is None:
+                week = next_unplayed_week(season)
+                if week is None:
+                    result["steps"]["predicted"] = 0
+                    result["status"] = "ok"
+                    result["note"] = "no unplayed weeks remaining"
+                    return (result, 200)
+
+            rows = predict_week(season, int(week))
+            if not rows.empty:
+                ensure_datasets()
+                # Replace this week's slice so re-runs are idempotent.
+                from google.cloud import bigquery
+                c = bigquery.Client(project=cfb_config.CTX.project)
+                try:
+                    c.query(
+                        f"DELETE FROM `{cfb_config.CTX.project}."
+                        f"{cfb_config.CTX.season_dataset}.game_predictions` "
+                        f"WHERE season={season} AND week={int(week)} "
+                        f"AND prediction_correct IS NULL"
+                    ).result()
+                except Exception:
+                    pass
+                load(rows, cfb_config.CTX.season_dataset, "game_predictions",
+                     write_disposition="WRITE_APPEND")
+                result["steps"]["predicted"] = len(rows)
+
+        elif mode == "backfill":
             import cfb_config
             import pandas as pd
             from backfill_cfb import ensure_datasets, load

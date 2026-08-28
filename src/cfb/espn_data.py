@@ -82,7 +82,12 @@ def _fetch_week(season: int, week: int, group: int, seasontype: int) -> list[dic
 
 
 def _parse_event(ev: dict, season: int, week: int, division: str,
-                 seasontype: int) -> dict | None:
+                 seasontype: int, require_completed: bool = True) -> dict | None:
+    """Parse one ESPN event.
+
+    With require_completed=False, scheduled-but-unplayed games are returned with null
+    scores and home_won — that is what the weekly prediction path consumes.
+    """
     try:
         comp = ev["competitions"][0]
         teams = comp["competitors"]
@@ -91,11 +96,19 @@ def _parse_event(ev: dict, season: int, week: int, division: str,
 
         # ESPN puts status on the event; some payloads repeat it on the competition.
         status = ev.get("status") or comp.get("status") or {}
-        if not status.get("type", {}).get("completed"):
+        completed = bool(status.get("type", {}).get("completed"))
+
+        if require_completed and not completed:
             return None
-        hs, as_ = int(home.get("score")), int(away.get("score"))
-        if hs == as_:
-            return None  # overtime makes ties vanishingly rare, but guard anyway
+
+        if completed:
+            hs, as_ = int(home.get("score")), int(away.get("score"))
+            if hs == as_:
+                return None  # overtime makes ties vanishingly rare, but guard anyway
+            home_won = int(hs > as_)
+            result = hs - as_
+        else:
+            hs = as_ = home_won = result = None
 
         return {
             "game_id": str(ev["id"]),
@@ -110,8 +123,8 @@ def _parse_event(ev: dict, season: int, week: int, division: str,
             "away_team_name": away["team"].get("displayName"),
             "home_score": hs,
             "away_score": as_,
-            "home_won": int(hs > as_),
-            "result": hs - as_,
+            "home_won": home_won,
+            "result": result,
             "neutral_site": int(bool(comp.get("neutralSite"))),
             "conference_game": int(bool(comp.get("conferenceCompetition"))),
             "home_conference_id": (home["team"].get("conferenceId")),
@@ -180,7 +193,10 @@ def fetch_history(first_season: int = FIRST_SEASON, last_season: int = 2025,
     if combined.empty:
         return combined
 
-    combined = combined.drop_duplicates(subset=["game_id"], keep="last")
+    # FBS-vs-FCS games appear in BOTH group feeds. Divisions are iterated
+    # fbs-first and we keep the first sighting, so a cross-division game is
+    # tagged fbs rather than being relabelled by whichever feed ran last.
+    combined = combined.drop_duplicates(subset=["game_id"], keep="first")
     combined = combined.sort_values(["season", "week", "game_date"]).reset_index(drop=True)
     combined.to_parquet(GAMES_CACHE, index=False)
     logger.info("cfb games cached: %d rows, %d seasons",
@@ -192,3 +208,37 @@ def load_games() -> pd.DataFrame:
     if GAMES_CACHE.exists():
         return pd.read_parquet(GAMES_CACHE)
     return fetch_history()
+
+
+def fetch_scheduled(season: int, week: int,
+                    divisions: tuple[str, ...] = ("fbs", "fcs")) -> pd.DataFrame:
+    """Scheduled games for one week, played or not.
+
+    The prediction path needs the slate before it happens; fetch_history only keeps
+    completed games because it feeds the training set.
+    """
+    rows = []
+    for division in divisions:
+        group = DIVISION_GROUPS[division]
+        for seasontype, offset in ((REGULAR_SEASON, 0), (POSTSEASON, MAX_REGULAR_WEEK)):
+            wk = week - offset
+            if wk < 1 or (seasontype == REGULAR_SEASON and week > MAX_REGULAR_WEEK):
+                continue
+            try:
+                events = _fetch_week(season, wk, group, seasontype)
+            except Exception as exc:
+                logger.warning("%s %d wk%d failed: %s", division, season, week, exc)
+                continue
+            for ev in events:
+                parsed = _parse_event(ev, season, week, division, seasontype,
+                                      require_completed=False)
+                if parsed:
+                    rows.append(parsed)
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        # See fetch_history: cross-division games show up in both feeds; fbs is
+        # iterated first and wins the tag.
+        df = df.drop_duplicates(subset=["game_id"], keep="first")
+    logger.info("scheduled %d %d wk%d: %d games", season, season, week, len(df))
+    return df
