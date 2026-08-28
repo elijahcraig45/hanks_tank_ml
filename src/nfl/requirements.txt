@@ -1,0 +1,22 @@
+# NFL Cloud Function dependencies — deliberately NOT the MLB requirements.
+# The function deploys with --source=src/nfl so this is the whole image: no pybaseball,
+# no MLB-StatsAPI, no catboost, no ephem. Keeps cold start off the MLB function's path.
+#
+# Pinned for the same reason the MLB side is: the weekly job trains a model, and an
+# unpinned resolver can silently shift predictions between deploys.
+
+functions-framework==3.*
+
+google-cloud-bigquery==3.39.0
+db-dtypes==1.5.0
+
+# nflreadpy, not nfl_data_py: nfl_data_py 0.3.3 pins a pandas too old to build on
+# Python 3.12+. nflreadpy is the nflverse team's current package and is polars-native.
+nflreadpy==0.1.5
+polars==1.*
+
+pandas==2.3.3
+numpy==2.4.0
+pyarrow==22.0.0
+scikit-learn==1.8.0
+xgboost==3.1.3
