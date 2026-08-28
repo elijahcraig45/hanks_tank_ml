@@ -56,14 +56,15 @@ def ensure_datasets() -> None:
 
 def load(df: pd.DataFrame, dataset: str, table: str,
          partition_field: str | None = None,
-         cluster_fields: list[str] | None = None) -> int:
+         cluster_fields: list[str] | None = None,
+         write_disposition: str = "WRITE_TRUNCATE") -> int:
     from google.cloud import bigquery
 
     if df.empty:
         logger.warning("%s.%s: nothing to load", dataset, table)
         return 0
 
-    cfg = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE", autodetect=True)
+    cfg = bigquery.LoadJobConfig(write_disposition=write_disposition, autodetect=True)
     if partition_field:
         cfg.time_partitioning = bigquery.TimePartitioning(field=partition_field)
     if cluster_fields:
