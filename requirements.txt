@@ -17,6 +17,10 @@ functions-framework>=3.0.0
 pandas==2.3.3
 numpy==2.4.0
 scikit-learn==1.8.0
+# Pinned explicitly rather than leaning on scikit-learn to pull it in: the
+# Bradley-Terry power rankings build a sparse design matrix with scipy.sparse,
+# so it is a direct dependency now and an unpinned transitive one could shift.
+scipy==1.16.3
 xgboost==3.1.3
 lightgbm==4.6.0
 catboost==1.2.10

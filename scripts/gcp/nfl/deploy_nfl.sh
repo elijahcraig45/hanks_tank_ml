@@ -28,7 +28,12 @@ SERVICE_ACCOUNT="$PROJECT@appspot.gserviceaccount.com"
 SCHEDULER_TZ="America/New_York"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$(cd "$SCRIPT_DIR/../../../src/nfl" && pwd)"
+NFL_DIR="$(cd "$SCRIPT_DIR/../../../src/nfl" && pwd)"
+ROOT_SRC="$(cd "$SCRIPT_DIR/../../../src" && pwd)"
+# Staged rather than deployed straight from src/nfl: the rankings and stats packages
+# now ride along, and they live beside src/nfl rather than inside it. Copying into
+# src/nfl would put shared code under one sport's directory.
+SRC_DIR=""
 
 DRY_RUN=false
 ONLY_SCHEDULER=false
@@ -43,7 +48,7 @@ echo "=============================================="
 echo " NFL Weekly Pipeline — deploy"
 echo " Project:  $PROJECT"
 echo " Function: $FUNCTION_NAME"
-echo " Source:   $SRC_DIR   (NFL only — no MLB code)"
+echo " Source:   staged from $NFL_DIR + shared rankings/stats (no MLB code)"
 [ "$DRY_RUN" = true ] && echo " MODE:     DRY RUN"
 echo "=============================================="
 
@@ -56,6 +61,19 @@ gcloud config set project "$PROJECT" --quiet
 if [ "$ONLY_SCHEDULER" = false ]; then
     echo ""
     echo "▸ Deploying Cloud Function..."
+    SRC_DIR="$(mktemp -d)/nfl"
+    mkdir -p "$SRC_DIR"
+    cp "$NFL_DIR"/*.py "$NFL_DIR/requirements.txt" "$SRC_DIR"/
+    # Kept as packages: they import each other by package path, which flattening breaks.
+    cp -R "$ROOT_SRC/rankings" "$ROOT_SRC/stats" "$SRC_DIR"/
+    cp "$ROOT_SRC/rankings/http.py" "$SRC_DIR/http_transport.py"
+    # The Bradley-Terry fit builds a sparse design matrix.
+    grep -q '^scipy' "$SRC_DIR/requirements.txt" || echo 'scipy==1.16.3' >> "$SRC_DIR/requirements.txt"
+
+    echo ""
+    echo "▸ Staged source: $SRC_DIR"
+    ls "$SRC_DIR" | sed 's/^/    /'
+
     _dry gcloud functions deploy "$FUNCTION_NAME" \
         --gen2 \
         --region="$REGION" \
@@ -113,6 +131,9 @@ _sched "nfl-weekly-score" "0 7 * 9-12,1,2 2" \
 echo "  ✓ nfl-weekly-score (Tue 7:00 AM ET)"
 
 # Wednesday 6 AM ET — predict the upcoming slate.
+# Rankings and player stats refresh inside the Tuesday ingest rather than on their own
+# jobs — they are derived from the games it loads, so chaining makes the ordering
+# structural instead of a race between cron entries.
 _sched "nfl-weekly-predict" "0 6 * 9-12,1,2 3" \
     '{"mode":"predict_week"}' \
     "NFL: predict the next unplayed week"
