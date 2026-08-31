@@ -30,6 +30,7 @@ SCHEDULER_TZ="America/New_York"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CFB_DIR="$(cd "$SCRIPT_DIR/../../../src/cfb" && pwd)"
 NFL_DIR="$(cd "$SCRIPT_DIR/../../../src/nfl" && pwd)"
+SRC_DIR="$(cd "$SCRIPT_DIR/../../../src" && pwd)"
 
 DRY_RUN=false
 ONLY_SCHEDULER=false
@@ -62,6 +63,11 @@ if [ "$ONLY_SCHEDULER" = false ]; then
     # staged tree that name belongs to CFB, which defines the same constants. CFB
     # passes EloParams explicitly anyway, so the defaults are never what's used.
     cp "$CFB_DIR/cfb_config.py" "$STAGE/config.py"
+    # Power rankings and stats stay real packages in the staged tree: they import each
+    # other by package path (`from rankings import core`), which flattening would break.
+    cp -R "$SRC_DIR/rankings" "$SRC_DIR/stats" "$STAGE"/
+    # rankings.http is also reachable flat, for anything staged without the package.
+    cp "$SRC_DIR/rankings/http.py" "$STAGE/http_transport.py"
 
     cat > "$STAGE/requirements.txt" <<'EOF'
 functions-framework==3.*
@@ -73,6 +79,8 @@ pyarrow==22.0.0
 scikit-learn==1.8.0
 xgboost==3.1.3
 requests==2.32.5
+# Bradley-Terry power rankings build a sparse design matrix.
+scipy==1.16.3
 EOF
 
     echo ""
@@ -122,6 +130,11 @@ echo "  ✓ cfb-weekly-ingest (Sun 6:00 AM ET)"
 _sched "cfb-weekly-predict" "0 6 * 8-12,1 2" \
     '{"mode":"predict_next"}' "CFB: predict the next unplayed week, FBS and FCS"
 echo "  ✓ cfb-weekly-predict (Tue 6:00 AM ET)"
+
+# Rankings and stats are refreshed inside the Sunday ingest, not on their own jobs:
+# they are derived from the games it loads, so chaining them makes the ordering
+# structural instead of a race between two cron entries.
+echo "  · rankings + stats refresh inside cfb-weekly-ingest"
 
 echo ""
 echo "=============================================="

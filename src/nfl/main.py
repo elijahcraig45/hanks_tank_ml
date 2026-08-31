@@ -6,10 +6,17 @@ the code that predicts MLB games daily, and the NFL image must not carry pybaseb
 MLB-StatsAPI, or catboost.
 
 Modes (POST body {"mode": ...}):
-  ingest        refresh schedules + EPA into nfl_historical
+  ingest        refresh schedules + EPA, then refresh rankings and player stats
+  rankings      rebuild the Bradley-Terry board only
+  stats         rebuild player season stats and league leaders only
   predict_week  predict a scheduled week (defaults to the next unplayed week)
   score         recompute results for completed games and update predictions
   backfill      re-run a whole season week by week
+
+The derived steps hang off `ingest` rather than taking Scheduler jobs of their own:
+they only make sense after the week's games land, so chaining them in one invocation
+makes that ordering structural rather than a race between cron entries. Both are
+non-fatal — a failed leaderboard must not cost us the ingest everything else needs.
 
 Cadence note: NFL is week-shaped, not date-shaped. Results settle Thursday->Monday, so
 ingest runs Tuesday and predictions run Wednesday.
@@ -44,6 +51,31 @@ def _next_unplayed_week() -> tuple[int, int]:
     return int(row["season"]), int(row["week"])
 
 
+
+def _refresh_rankings(season: int, steps: dict) -> None:
+    """Rebuild and publish the power-ranking board. Never fatal."""
+    try:
+        from rankings.build import build_board, write_bq
+
+        table, meta = build_board("nfl", season, n_boot=200)
+        steps["rankings"] = write_bq(table, meta)
+    except Exception as exc:
+        logger.error("rankings refresh failed: %s", exc)
+        steps["rankings"] = {"error": str(exc)[:200]}
+
+
+def _refresh_stats(season: int, steps: dict) -> None:
+    """Rebuild player season stats and league leaders. Never fatal."""
+    try:
+        from stats.build import build as build_stats, write_bq as write_stats
+
+        tables = build_stats("nfl", season)
+        steps["stats"] = write_stats("nfl", season, tables)
+    except Exception as exc:
+        logger.error("stats refresh failed: %s", exc)
+        steps["stats"] = {"error": str(exc)[:200]}
+
+
 @functions_framework.http
 def nfl_pipeline(request):
     try:
@@ -65,6 +97,21 @@ def nfl_pipeline(request):
             result["steps"]["games"] = backfill_games()
             result["steps"]["teams"] = backfill_teams()
             result["steps"]["epa"] = backfill_epa()
+
+            # Derived from the games that just landed, so they belong in this call.
+            season = int(req.get("season", CTX.season))
+            _refresh_rankings(season, result["steps"])
+            _refresh_stats(season, result["steps"])
+
+        elif mode == "rankings":
+            from config import CTX
+
+            _refresh_rankings(int(req.get("season", CTX.season)), result["steps"])
+
+        elif mode == "stats":
+            from config import CTX
+
+            _refresh_stats(int(req.get("season", CTX.season)), result["steps"])
 
         elif mode == "predict_week":
             from bq_io import ensure_dataset, upsert_week
