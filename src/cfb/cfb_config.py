@@ -18,7 +18,28 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Locally this file is src/<sport>/config.py, so the repo root is two levels up. In the
+# deployed Cloud Function the tree is flattened to /workspace, which has only one
+# parent, and parents[2] raised IndexError — the reason every scheduled run failed on
+# import. Fall back to the module's own directory when the tree is shallower.
+_HERE = Path(__file__).resolve()
+REPO_ROOT = _HERE.parents[2] if len(_HERE.parents) > 2 else _HERE.parent
+
+
+def _writable_base(preferred: Path) -> Path:
+    """A directory we can actually write to.
+
+    /workspace is read-only in Cloud Functions, so a cache rooted there fails at import
+    time. /tmp is the writable scratch space there and a fine cache anywhere.
+    """
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+        probe = preferred / ".write_test"
+        probe.touch()
+        probe.unlink()
+        return preferred
+    except OSError:
+        return Path("/tmp")
 
 
 @dataclass(frozen=True)
@@ -40,7 +61,7 @@ class CfbContext:
 
 CTX = CfbContext.from_env()
 
-DATA_DIR = REPO_ROOT / "data" / "cfb"
+DATA_DIR = _writable_base(REPO_ROOT / "data") / "cfb"
 RAW_CACHE = DATA_DIR / "raw"
 
 # ESPN's public scoreboard API — no key required, unlike CollegeFootballData.

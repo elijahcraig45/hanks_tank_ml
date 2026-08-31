@@ -24,7 +24,10 @@ from cfb_config import DIVISION_GROUPS, ESPN_BASE, FIRST_SEASON, RAW_CACHE
 
 logger = logging.getLogger(__name__)
 
-GAMES_CACHE = RAW_CACHE / "cfb_games.parquet"
+# v2: adds the `cross_division` column. The v1 cache stored one row per game, which
+# discards the both-feeds signal that flag is derived from, so it cannot be upgraded
+# in place — a missing v2 file simply triggers a refetch.
+GAMES_CACHE = RAW_CACHE / "cfb_games_v2.parquet"
 
 REGULAR_SEASON, POSTSEASON = 2, 3
 MAX_REGULAR_WEEK = 16
@@ -79,6 +82,67 @@ def _fetch_week(season: int, week: int, group: int, seasontype: int) -> list[dic
         "groups": group, "limit": 400,
     }
     return _get_json(f"{ESPN_BASE}/scoreboard", params).get("events", [])
+
+
+def tag_cross_division(df: pd.DataFrame) -> pd.DataFrame:
+    """Flag FBS-vs-FCS games, then reduce to one row per game.
+
+    A game's `division` is the feed it was fetched from, not a property of either
+    team. ESPN lists a cross-division game in BOTH the FBS and FCS feeds and only
+    ever lists a same-division game in one, so "appears under two divisions" is an
+    exact test for cross-division — and it costs no extra requests.
+
+    Must run before de-duplication: dropping the second sighting is what destroys
+    the signal.
+    """
+    if df.empty:
+        return df
+    feeds = df.groupby("game_id")["division"].nunique()
+    cross = set(feeds[feeds > 1].index)
+    out = df.drop_duplicates(subset=["game_id"], keep="first").copy()
+    out["cross_division"] = out["game_id"].isin(cross).astype(int)
+    return out
+
+
+def resolve_team_divisions(games: pd.DataFrame) -> dict[str, str]:
+    """Map each team to its OWN division.
+
+    Naively reading `division` off a team's games is wrong: in a cross-division game
+    both sides carry the feed's tag, so an FCS team that only ever played up gets
+    recorded as FBS. (That is how Mississippi Valley State ended up tagged FBS for
+    2026.)
+
+    Only same-division games identify a team directly, so seed from those. Anyone left
+    is a team whose entire schedule was cross-division; each of those games has exactly
+    one FBS side and one FCS side, so a known opponent settles it. Iterate because one
+    such team can be another's only evidence.
+    """
+    if games.empty:
+        return {}
+
+    OPPOSITE = {"fbs": "fcs", "fcs": "fbs"}
+    div: dict[str, str] = {}
+
+    same = games[games.get("cross_division", 0) == 0]
+    for r in same.itertuples(index=False):
+        div[r.home_team] = r.division
+        div[r.away_team] = r.division
+
+    crossed = games[games.get("cross_division", 0) == 1]
+    for _ in range(3):
+        settled = 0
+        for r in crossed.itertuples(index=False):
+            home, away = div.get(r.home_team), div.get(r.away_team)
+            if home and not away:
+                div[r.away_team] = OPPOSITE[home]
+                settled += 1
+            elif away and not home:
+                div[r.home_team] = OPPOSITE[away]
+                settled += 1
+        if not settled:
+            break
+
+    return div
 
 
 def _parse_event(ev: dict, season: int, week: int, division: str,
@@ -193,10 +257,10 @@ def fetch_history(first_season: int = FIRST_SEASON, last_season: int = 2025,
     if combined.empty:
         return combined
 
-    # FBS-vs-FCS games appear in BOTH group feeds. Divisions are iterated
-    # fbs-first and we keep the first sighting, so a cross-division game is
-    # tagged fbs rather than being relabelled by whichever feed ran last.
-    combined = combined.drop_duplicates(subset=["game_id"], keep="first")
+    # FBS-vs-FCS games appear in BOTH group feeds. Tag them from that fact before
+    # de-duplicating, then keep the fbs-first sighting so the stored `division` is
+    # stable.
+    combined = tag_cross_division(combined)
     combined = combined.sort_values(["season", "week", "game_date"]).reset_index(drop=True)
     combined.to_parquet(GAMES_CACHE, index=False)
     logger.info("cfb games cached: %d rows, %d seasons",
@@ -237,8 +301,8 @@ def fetch_scheduled(season: int, week: int,
 
     df = pd.DataFrame(rows)
     if not df.empty:
-        # See fetch_history: cross-division games show up in both feeds; fbs is
-        # iterated first and wins the tag.
-        df = df.drop_duplicates(subset=["game_id"], keep="first")
+        # See fetch_history: both feeds carry a cross-division game, which is what
+        # identifies it.
+        df = tag_cross_division(df)
     logger.info("scheduled %d %d wk%d: %d games", season, season, week, len(df))
     return df

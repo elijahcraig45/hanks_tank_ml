@@ -26,6 +26,7 @@ Supported modes (passed in request body as JSON):
   backfill_v8         Build V8 features for a historical date range
   schedule_pregame_tasks  Enqueue Cloud Tasks for today's games
   scouting_reports        Build/refresh scouting reports for a date
+  power_rankings          Rebuild the Bradley-Terry MLB power-ranking board
 
 Environment variables:
   GCP_PROJECT  – defaults to hankstank
@@ -41,6 +42,38 @@ import functions_framework
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+
+
+def _run_power_rankings(dry_run: bool) -> dict:
+    """Rebuild the MLB power-ranking board.
+
+    Same Bradley-Terry engine the football boards use. Runs daily off the back of the
+    collection step, and is deliberately non-fatal: this board is a reading surface, and
+    losing it must never take down the predictions the site is actually built on.
+
+    Note the ratings barely separate baseball teams (measured walk-forward, team
+    strength moves log loss from 0.6931 to only 0.6808), which is why the published
+    board leads with bootstrap rank ranges rather than a confident 1-30 order.
+    """
+    step = {"step": "power_rankings"}
+    if dry_run:
+        step["status"] = "skipped (dry run)"
+        return step
+
+    try:
+        from rankings.build import build_board, write_bq
+
+        season = int(os.environ.get("MLB_SEASON", date.today().year))
+        table, meta = build_board("mlb", season, n_boot=200)
+        step.update(write_bq(table, meta))
+        step["status"] = "ok"
+        step["teams"] = len(table)
+    except Exception as exc:
+        logger.error("power rankings refresh failed: %s", exc)
+        step["status"] = "error"
+        step["error"] = str(exc)[:200]
+    return step
 
 
 @functions_framework.http
@@ -91,6 +124,12 @@ def daily_pipeline(request):
         # per-game in pregame_v10 mode.
         if mode in ("daily", "v10_features"):
             results["steps"].append(_run_v10_features(target, game_pks, dry_run))
+
+        # Power rankings: refit from the games just collected. Cheap (30 teams) and
+        # non-fatal, so it rides along with the daily run instead of taking its own
+        # Scheduler job.
+        if mode in ("daily", "power_rankings"):
+            results["steps"].append(_run_power_rankings(dry_run))
 
         # Weekly prediction run (Friday)
         if mode == "predict" or (mode == "daily" and target.weekday() == 4):
