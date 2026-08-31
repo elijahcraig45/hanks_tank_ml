@@ -6,7 +6,8 @@ imports from src/nfl (features.py, train_nfl_models.py) into a temp source dir �
 image carries no MLB code and no nflverse dependency.
 
 Modes (POST body {"mode": ...}):
-  ingest        refresh FBS + FCS games from ESPN, then refresh rankings and stats
+  ingest        refresh games from ESPN, score last week's picks, then rankings + stats
+  score         fill in results for predictions whose games have now been played
   rankings      rebuild the Bradley-Terry board only
   stats         rebuild team season stats and league leaders only
   predict_week  predict a scheduled week for both divisions
@@ -35,6 +36,46 @@ logger = logging.getLogger(__name__)
 
 DIVISIONS = ("fbs", "fcs")
 
+
+
+
+def _score_predictions(steps: dict) -> None:
+    """Fill in the outcome columns for predictions whose games have since finished.
+
+    Without this the loop never closes: predict_week writes a row per upcoming game
+    with prediction_correct NULL, the games get played, and nothing ever goes back to
+    record whether the pick was right. The diagnostics page reads exactly those columns,
+    so an unscored week is an invisible week.
+
+    Written as an UPDATE-in-place rather than a rewrite so the original prediction — and
+    the timestamp proving it was made before kickoff — survives untouched.
+    """
+    try:
+        import cfb_config
+        from google.cloud import bigquery
+
+        client = bigquery.Client(project=cfb_config.CTX.project)
+        preds = (f"{cfb_config.CTX.project}."
+                 f"{cfb_config.CTX.season_dataset}.game_predictions")
+        games = f"{cfb_config.CTX.project}.{cfb_config.CTX.hist_dataset}.games"
+
+        job = client.query(f"""
+            UPDATE `{preds}` p
+            SET p.home_won = g.home_won,
+                p.actual_winner = IF(g.home_won = 1,
+                                     p.home_team_name, p.away_team_name),
+                p.prediction_correct =
+                    IF((p.home_win_probability > 0.5) = (g.home_won = 1), 1, 0)
+            FROM `{games}` g
+            WHERE p.game_id = g.game_id
+              AND g.home_won IS NOT NULL
+              AND p.prediction_correct IS NULL
+        """)
+        job.result()
+        steps["scored"] = job.num_dml_affected_rows
+    except Exception as exc:
+        logger.error("scoring failed: %s", exc)
+        steps["scored"] = {"error": str(exc)[:200]}
 
 
 def _refresh_rankings(season: int, steps: dict) -> None:
@@ -97,9 +138,15 @@ def cfb_pipeline(request):
                 partition_field="game_date", cluster_fields=["season", "division"],
             )
 
-            # Derived from the games that just landed, so they belong in this call.
+            # All derived from the games that just landed, so they belong in this
+            # call. Scoring runs before the rankings so a week's results are on the
+            # record before anything is rated on them.
+            _score_predictions(result["steps"])
             _refresh_rankings(season, result["steps"])
             _refresh_stats(season, result["steps"])
+
+        elif mode == "score":
+            _score_predictions(result["steps"])
 
         elif mode == "rankings":
             import cfb_config
@@ -155,21 +202,51 @@ def cfb_pipeline(request):
             from espn_data import load_games
             from pipeline import backfill_division, build
 
-            season = int(req.get("season", cfb_config.CTX.season))
+            # Accepts a list so several seasons can be rebuilt with one methodology.
+            requested = req.get("seasons") or [req.get("season", cfb_config.CTX.season)]
+            seasons = [int(s) for s in requested]
             feats = build(load_games())
 
             frames = []
-            for division in DIVISIONS:
-                rows = backfill_division(feats, division, season)
-                if not rows.empty:
-                    frames.append(rows)
-                    result["steps"][division] = len(rows)
+            for season in seasons:
+                for division in DIVISIONS:
+                    rows = backfill_division(feats, division, season)
+                    if not rows.empty:
+                        frames.append(rows)
+                        result["steps"][f"{season}_{division}"] = len(rows)
 
             if frames:
                 ensure_datasets()
                 allrows = pd.concat(frames, ignore_index=True)
+
+                # Replace exactly the games being rewritten, never the table. The
+                # previous WRITE_TRUNCATE wiped every row including upcoming weeks —
+                # predictions for unplayed games that a backfill cannot regenerate,
+                # because it only ever produces rows for completed games.
+                from google.cloud import bigquery
+
+                client = bigquery.Client(project=cfb_config.CTX.project)
+                table_id = (f"{cfb_config.CTX.project}."
+                            f"{cfb_config.CTX.season_dataset}.game_predictions")
+                try:
+                    client.query(
+                        f"DELETE FROM `{table_id}` WHERE game_id IN UNNEST(@ids)",
+                        job_config=bigquery.QueryJobConfig(
+                            query_parameters=[
+                                bigquery.ArrayQueryParameter(
+                                    "ids", "STRING",
+                                    allrows["game_id"].astype(str).tolist()
+                                )
+                            ]
+                        ),
+                    ).result()
+                except Exception as exc:
+                    logger.warning("pre-delete skipped (%s)", exc)
+
                 load(allrows, cfb_config.CTX.season_dataset, "game_predictions",
-                     partition_field="game_date", cluster_fields=["season", "division"])
+                     partition_field="game_date", cluster_fields=["season", "division"],
+                     write_disposition="WRITE_APPEND")
+                result["steps"]["written"] = len(allrows)
 
         else:
             return ({"error": f"unknown mode: {mode}"}, 400)

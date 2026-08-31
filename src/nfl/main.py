@@ -136,9 +136,14 @@ def nfl_pipeline(request):
             from config import CTX
 
             # Join stored predictions to final scores and refresh the result columns.
+            # home_won is set alongside the two result columns, not just implied by
+            # them. The diagnostics endpoint derives Brier and log loss from it, so a
+            # row scored without it reads as an away win and reports the wrong error
+            # for every game — while still looking correctly scored.
             sql = f"""
               UPDATE `{CTX.project}.{CTX.season_dataset}.game_predictions` p
-              SET p.prediction_correct =
+              SET p.home_won = g.home_won,
+                  p.prediction_correct =
                     IF((p.home_win_probability > 0.5) = (g.home_won = 1), 1, 0),
                   p.actual_winner =
                     IF(g.home_won = 1, p.home_team_name, p.away_team_name)
@@ -153,12 +158,46 @@ def nfl_pipeline(request):
             from config import CTX
             from predict_nfl import backfill_season
 
-            season = int(req.get("season", 2025))
-            rows = backfill_season(season)
-            ensure_dataset(CTX.season_dataset)
-            load_table(rows, CTX.season_dataset, "game_predictions",
-                       write_disposition="WRITE_APPEND")
-            result["steps"]["backfilled"] = len(rows)
+            import pandas as pd
+
+            requested = req.get("seasons") or [req.get("season", 2025)]
+            seasons = [int(s) for s in requested]
+
+            frames = []
+            for season in seasons:
+                rows = backfill_season(season)
+                if not rows.empty:
+                    frames.append(rows)
+                    result["steps"][str(season)] = len(rows)
+
+            if frames:
+                allrows = pd.concat(frames, ignore_index=True)
+                ensure_dataset(CTX.season_dataset)
+
+                # Replace exactly the games being rewritten so a re-run is idempotent
+                # rather than duplicating every prediction it already made.
+                from google.cloud import bigquery
+
+                client = bigquery.Client(project=CTX.project)
+                table_id = f"{CTX.project}.{CTX.season_dataset}.game_predictions"
+                try:
+                    client.query(
+                        f"DELETE FROM `{table_id}` WHERE game_id IN UNNEST(@ids)",
+                        job_config=bigquery.QueryJobConfig(
+                            query_parameters=[
+                                bigquery.ArrayQueryParameter(
+                                    "ids", "STRING",
+                                    allrows["game_id"].astype(str).tolist()
+                                )
+                            ]
+                        ),
+                    ).result()
+                except Exception as exc:
+                    logger.warning("pre-delete skipped (%s)", exc)
+
+                load_table(allrows, CTX.season_dataset, "game_predictions",
+                           write_disposition="WRITE_APPEND")
+                result["steps"]["written"] = len(allrows)
 
         else:
             return ({"error": f"unknown mode: {mode}"}, 400)
