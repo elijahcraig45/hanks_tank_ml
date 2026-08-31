@@ -29,7 +29,7 @@ from features import EloParams, build_features, feature_columns  # noqa: E402
 from models import build_xgb, evaluate  # noqa: E402
 
 import cfb_config  # noqa: E402
-from espn_data import load_games  # noqa: E402
+from espn_data import load_games, resolve_team_divisions  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +89,26 @@ def build(df: pd.DataFrame | None = None) -> pd.DataFrame:
                   "home_team_name", "away_team_name"]]
     feats = feats.merge(meta, on="game_id", how="left")
 
-    div_of = {}
-    for r in games.itertuples(index=False):
-        div_of[r.home_team] = r.division
-        div_of[r.away_team] = r.division
+    # Team divisions come from resolve_team_divisions, not from each game's own
+    # `division`: that column names the ESPN feed the game was fetched from, so both
+    # sides of a cross-division game carry the same tag and comparing them always
+    # yields 0. The cross_division flag is derived at ingest from the fact that ESPN
+    # lists such a game in both feeds.
+    div_of = resolve_team_divisions(games)
     feats["home_division"] = feats["home_team"].map(div_of)
     feats["away_division"] = feats["away_team"].map(div_of)
-    feats["cross_division"] = (feats["home_division"] != feats["away_division"]).astype(int)
+
+    if "cross_division" in games.columns:
+        feats = feats.merge(
+            games[["game_id", "cross_division"]], on="game_id", how="left"
+        )
+        feats["cross_division"] = feats["cross_division"].fillna(0).astype(int)
+    else:
+        # Pre-v2 caches have no ingest-time flag; the resolved divisions still give a
+        # correct answer, which the old same-column comparison did not.
+        feats["cross_division"] = (
+            feats["home_division"] != feats["away_division"]
+        ).astype(int)
     return feats
 
 
