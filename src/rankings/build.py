@@ -22,7 +22,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rankings import core, fpi, sources  # noqa: E402
+from rankings import context, core, fpi, sources  # noqa: E402
 from rankings.sources import SPORTS  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -177,6 +177,16 @@ def build_board(sport: str, season: int, week: int | None = None,
     else:
         meta["has_fpi"] = False
 
+    # Conference/division membership and the human polls. Descriptive only — they let
+    # a reader filter and compare, and none of them feed the fit.
+    out = context.attach(out, sport, season)
+    meta["has_conference"] = bool(
+        "conference" in out.columns and out["conference"].notna().any()
+    )
+    meta["has_polls"] = bool(
+        "ap_rank" in out.columns and out["ap_rank"].notna().any()
+    )
+
     return out, meta
 
 
@@ -221,7 +231,7 @@ def print_board(table: pd.DataFrame, meta: dict, top: int = 25) -> None:
 # whole sport — `division` for the NFL and MLB — comes out of pandas as float64, lands
 # in BigQuery as FLOAT, and the load fails outright because FLOAT cannot be a
 # clustering field.
-TEXT_COLUMNS = ("team", "division", "record")
+TEXT_COLUMNS = ("team", "division", "record", "conference", "division_name")
 
 
 def write_bq(table: pd.DataFrame, meta: dict) -> dict:
@@ -251,7 +261,14 @@ def write_bq(table: pd.DataFrame, meta: dict) -> dict:
 
     client.load_table_from_dataframe(
         out, table_id,
-        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
+        job_config=bigquery.LoadJobConfig(
+            write_disposition="WRITE_APPEND",
+            # The board gains columns over time — conference, polls, FPI fields — and
+            # appending a wider frame to an existing table is rejected without this.
+            schema_update_options=[
+                bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
+            ],
+        ),
     ).result()
     return {"table": table_id, "rows": len(out)}
 

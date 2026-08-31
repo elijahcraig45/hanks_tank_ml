@@ -22,38 +22,17 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-_USE_CURL: bool | None = None
-_PROBE_URL = "https://sports.core.api.espn.com/v2/sports/football"
+# Set once a TLS failure proves interception, so the cost is paid at most once rather
+# than on every request.
+_USE_CURL = False
 
 
-def _probe() -> bool:
-    global _USE_CURL
-    if _USE_CURL is None:
-        try:
-            import requests
-
-            requests.get(_PROBE_URL, timeout=15)
-            _USE_CURL = False
-        except Exception as exc:
-            if "SSL" in type(exc).__name__ or "SSL" in str(exc):
-                logger.info("TLS interception detected — using curl transport")
-                _USE_CURL = True
-            else:
-                # Anything else (timeout, DNS) is not a trust problem; requests is
-                # still the right transport and the caller will see the real error.
-                _USE_CURL = False
-    return _USE_CURL
+def _is_tls_error(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    return "SSL" in name or "Certificate" in name or "CERTIFICATE_VERIFY_FAILED" in str(exc)
 
 
-def get_bytes(url: str, timeout: int = 60) -> bytes:
-    """Fetch a URL, verifying TLS via whichever transport trusts this network."""
-    if not _probe():
-        import requests
-
-        response = requests.get(url, timeout=timeout)
-        response.raise_for_status()
-        return response.content
-
+def _curl_bytes(url: str, timeout: int) -> bytes:
     result = subprocess.run(
         ["curl", "-sSL", "--fail", "--max-time", str(timeout), url],
         capture_output=True,
@@ -61,6 +40,33 @@ def get_bytes(url: str, timeout: int = 60) -> bytes:
     if result.returncode != 0:
         raise RuntimeError(f"fetch failed for {url}: {result.stderr.decode()[:200]}")
     return result.stdout
+
+
+def get_bytes(url: str, timeout: int = 60) -> bytes:
+    """Fetch a URL, verifying TLS via whichever transport trusts this network.
+
+    Detection is per request rather than one upfront probe against a fixed host: the
+    proxy's policy is per host, so probing sports.core.api.espn.com said "no
+    interception" while site.api.espn.com failed. Try requests, and switch to curl only
+    when a TLS trust error actually proves it — anything else (404, timeout, DNS) is a
+    real error and propagates instead of being retried on a second transport.
+    """
+    global _USE_CURL
+
+    if not _USE_CURL:
+        try:
+            import requests
+
+            response = requests.get(url, timeout=timeout)
+            response.raise_for_status()
+            return response.content
+        except Exception as exc:
+            if not _is_tls_error(exc):
+                raise
+            logger.info("TLS interception detected — switching to curl transport")
+            _USE_CURL = True
+
+    return _curl_bytes(url, timeout)
 
 
 def cache_dir(name: str) -> "object":
