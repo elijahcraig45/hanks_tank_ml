@@ -124,7 +124,7 @@ def cfb_pipeline(request):
     try:
         if mode == "ingest":
             import cfb_config
-            from backfill_cfb import ensure_datasets, load
+            from backfill_cfb import ensure_datasets, replace_seasons
             from espn_data import fetch_history
             import pandas as pd
 
@@ -133,7 +133,12 @@ def cfb_pipeline(request):
             ensure_datasets()
             g = games.copy()
             g["game_date"] = pd.to_datetime(g["game_date"])
-            result["steps"]["games"] = load(
+
+            # Replace only this season, never the table. The previous WRITE_TRUNCATE
+            # wiped 2021-2024: fetch_history is scoped to one season, and on a cold
+            # container the /tmp parquet cache is empty, so the frame that overwrote
+            # the whole table held nothing but the current season.
+            result["steps"]["games"] = replace_seasons(
                 g, cfb_config.CTX.hist_dataset, "games",
                 partition_field="game_date", cluster_fields=["season", "division"],
             )
