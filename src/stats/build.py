@@ -48,6 +48,18 @@ def build(sport: str, season: int) -> dict[str, pd.DataFrame]:
     raise ValueError(f"unknown sport: {sport}")
 
 
+# Per-table partition and cluster spec. BigQuery fixes a table's clustering at
+# creation, so a later append that asks for clustering the table was not created with is
+# rejected outright — these have to be right on the first load and never change after.
+# Tables under ~10k rows are deliberately absent: clustering buys nothing measurable
+# there and only adds a way to fail.
+# Deliberately empty. Verified 2026-09-01: cfb_season.team_season_stats,
+# nfl_season.player_season_stats and both stat_leaders tables were all created
+# unclustered and unpartitioned, so adding a spec for any of them here would make the
+# next weekly append fail. Add an entry only for a table being created fresh.
+TABLE_LAYOUT: dict[str, dict] = {}
+
+
 def write_bq(sport: str, season: int, tables: dict[str, pd.DataFrame]) -> list[dict]:
     from google.cloud import bigquery
 
@@ -66,12 +78,29 @@ def write_bq(sport: str, season: int, tables: dict[str, pd.DataFrame]) -> list[d
             client.query(
                 f"DELETE FROM `{table_id}` WHERE season = {season}"
             ).result()
-        except Exception:
-            pass  # table does not exist yet; the load creates it
-        client.load_table_from_dataframe(
-            df, table_id,
-            job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND"),
-        ).result()
+        except Exception as exc:
+            # Expected on a first load: the table does not exist yet. Logged rather
+            # than swallowed, because every other cause looks identical from here.
+            logger.info("%s: pre-delete skipped (%s)", table_id, str(exc)[:120])
+
+        cfg = bigquery.LoadJobConfig(
+            write_disposition="WRITE_APPEND",
+            # Without this, the first append that carries a new column is rejected.
+            # These tables do gain columns: the feeds widen, and a pivoted player table
+            # gains one per new (category, statType) pair the source starts publishing.
+            schema_update_options=[
+                bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
+            ],
+        )
+        layout = TABLE_LAYOUT.get(name, {})
+        if layout.get("partition"):
+            cfg.time_partitioning = bigquery.TimePartitioning(
+                field=layout["partition"]
+            )
+        if layout.get("cluster"):
+            cfg.clustering_fields = layout["cluster"]
+
+        client.load_table_from_dataframe(df, table_id, job_config=cfg).result()
         out.append({"table": table_id, "rows": len(df)})
     return out
 
