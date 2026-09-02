@@ -25,7 +25,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from stats import cfb_stats, nfl_stats  # noqa: E402
+from stats import cfb_advanced, cfb_stats, cfbd, nfl_stats  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +41,49 @@ def build(sport: str, season: int) -> dict[str, pd.DataFrame]:
             "stat_leaders": nfl_stats.leaders(players),
         }
     if sport == "cfb":
-        return {
+        tables = {
+            # ESPN: conventional box-score totals with an opponent split. Kept as the
+            # source for this table because it is what the site already renders, and
+            # because mixing two providers' column vocabularies into one table would
+            # put it at the mercy of either one's field rename.
             "team_season_stats": cfb_stats.fetch_team_stats(season),
-            "stat_leaders": cfb_stats.fetch_leaders(season),
         }
+
+        # CollegeFootballData: everything ESPN cannot do. Each is optional — a missing
+        # key or an uncovered tier must cost only its own table, never the whole run,
+        # so failures are recorded and stepped over.
+        if cfbd.has_api_key():
+            for name, fetch in (
+                ("team_game_advanced", cfb_advanced.fetch_team_game_advanced),
+                ("team_season_advanced", cfb_advanced.fetch_team_season_advanced),
+                ("team_season_epa", cfb_advanced.fetch_team_season_epa),
+                ("betting_lines", cfb_advanced.fetch_lines),
+            ):
+                try:
+                    frame = fetch(season)
+                    if not frame.empty:
+                        tables[name] = frame
+                except Exception as exc:
+                    logger.warning("cfb %s skipped: %s", name, str(exc)[:200])
+
+            # Players and the leaderboard derived from them, so the board can never
+            # disagree with the table beneath it.
+            try:
+                players = cfb_advanced.fetch_player_season(season)
+                if not players.empty:
+                    tables["player_season_stats"] = players
+                    leaders = cfb_advanced.leaders_from_players(players, season)
+                    if not leaders.empty:
+                        tables["stat_leaders"] = leaders
+            except Exception as exc:
+                logger.warning("cfb players skipped: %s", str(exc)[:200])
+
+        # Falls back to ESPN's leaders only where the richer version was not produced.
+        # ESPN's lacks player_id, position and higher_is_better, so it is second choice.
+        if "stat_leaders" not in tables:
+            tables["stat_leaders"] = cfb_stats.fetch_leaders(season)
+
+        return tables
     raise ValueError(f"unknown sport: {sport}")
 
 

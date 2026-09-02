@@ -32,17 +32,21 @@ def _is_tls_error(exc: BaseException) -> bool:
     return "SSL" in name or "Certificate" in name or "CERTIFICATE_VERIFY_FAILED" in str(exc)
 
 
-def _curl_bytes(url: str, timeout: int) -> bytes:
-    result = subprocess.run(
-        ["curl", "-sSL", "--fail", "--max-time", str(timeout), url],
-        capture_output=True,
-    )
+def _curl_bytes(url: str, timeout: int, headers: dict | None = None) -> bytes:
+    argv = ["curl", "-sSL", "--fail", "--max-time", str(timeout)]
+    for name, value in (headers or {}).items():
+        argv += ["-H", f"{name}: {value}"]
+    argv.append(url)
+
+    result = subprocess.run(argv, capture_output=True)
     if result.returncode != 0:
+        # stderr only. A failing request whose headers carried an API key must not put
+        # that key in the logs, and curl echoes the request on some failures.
         raise RuntimeError(f"fetch failed for {url}: {result.stderr.decode()[:200]}")
     return result.stdout
 
 
-def get_bytes(url: str, timeout: int = 60) -> bytes:
+def get_bytes(url: str, timeout: int = 60, headers: dict | None = None) -> bytes:
     """Fetch a URL, verifying TLS via whichever transport trusts this network.
 
     Detection is per request rather than one upfront probe against a fixed host: the
@@ -50,6 +54,10 @@ def get_bytes(url: str, timeout: int = 60) -> bytes:
     interception" while site.api.espn.com failed. Try requests, and switch to curl only
     when a TLS trust error actually proves it — anything else (404, timeout, DNS) is a
     real error and propagates instead of being retried on a second transport.
+
+    `headers` exists for feeds that need authentication — CollegeFootballData wants a
+    bearer token. It is threaded through both transports so an authenticated fetch
+    behaves the same either side of the curl fallback. Header values are never logged.
     """
     global _USE_CURL
 
@@ -57,7 +65,7 @@ def get_bytes(url: str, timeout: int = 60) -> bytes:
         try:
             import requests
 
-            response = requests.get(url, timeout=timeout)
+            response = requests.get(url, timeout=timeout, headers=headers or None)
             response.raise_for_status()
             return response.content
         except Exception as exc:
@@ -66,7 +74,7 @@ def get_bytes(url: str, timeout: int = 60) -> bytes:
             logger.info("TLS interception detected — switching to curl transport")
             _USE_CURL = True
 
-    return _curl_bytes(url, timeout)
+    return _curl_bytes(url, timeout, headers)
 
 
 def cache_dir(name: str) -> "object":
