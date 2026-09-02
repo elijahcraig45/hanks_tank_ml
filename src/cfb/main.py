@@ -192,6 +192,19 @@ def cfb_pipeline(request):
             else:
                 _refresh_stats(season, result["steps"],
                                providers=("cfbd",), label="cfbd")
+
+                # The pick'em sheet. Refreshed here rather than in `ingest` because it
+                # needs the CFBD schedule AND the rankings the ingest produces, so it
+                # has to run after both — and because a failure must cost the sheet
+                # only, never the stats.
+                try:
+                    from stats import pickem as pickem_games
+
+                    result["steps"]["pickem"] = pickem_games.refresh("cfb", season)
+                except Exception as exc:
+                    logger.error("pickem refresh failed: %s", exc)
+                    result["steps"]["pickem"] = {"error": str(exc)[:200]}
+
                 # Surfaced so monthly spend is visible in the logs rather than
                 # discovered when the allowance runs out.
                 result["steps"]["cfbd_calls"] = cfbd.calls_used()
