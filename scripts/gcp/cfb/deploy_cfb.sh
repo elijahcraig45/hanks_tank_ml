@@ -32,6 +32,11 @@ CFB_DIR="$(cd "$SCRIPT_DIR/../../../src/cfb" && pwd)"
 NFL_DIR="$(cd "$SCRIPT_DIR/../../../src/nfl" && pwd)"
 SRC_DIR="$(cd "$SCRIPT_DIR/../../../src" && pwd)"
 
+# CollegeFootballData key, mounted from Secret Manager as an env var rather than read
+# through the SDK: it keeps the local and deployed code paths identical and adds no
+# dependency to a cold start. The App Engine backend reads the same secret.
+CFBD_SECRET="${CFBD_SECRET:-cfbd-api-key}"
+
 DRY_RUN=false
 ONLY_SCHEDULER=false
 for arg in "$@"; do
@@ -52,6 +57,31 @@ echo "=============================================="
 gcloud config set project "$PROJECT" --quiet
 
 STAGE=""
+# Fail before deploying rather than at 6 AM on a Sunday: a missing secret or a missing
+# IAM binding both surface as an unkeyed function that silently skips the cfbd mode.
+if [ "$DRY_RUN" = false ]; then
+    if ! gcloud secrets describe "$CFBD_SECRET" --project="$PROJECT" >/dev/null 2>&1; then
+        cat >&2 <<EOF
+ERROR: secret "$CFBD_SECRET" not found in project $PROJECT.
+
+The cfbd mode needs it. Create it with:
+  gcloud secrets create $CFBD_SECRET --project=$PROJECT --replication-policy=automatic
+  printf '%s' '<key>' | gcloud secrets versions add $CFBD_SECRET --data-file=- --project=$PROJECT
+EOF
+        exit 1
+    fi
+    if ! gcloud secrets get-iam-policy "$CFBD_SECRET" --project="$PROJECT" \
+            --format="value(bindings.members)" 2>/dev/null | grep -q "$SERVICE_ACCOUNT"; then
+        cat >&2 <<EOF
+ERROR: $SERVICE_ACCOUNT cannot read secret "$CFBD_SECRET".
+
+  gcloud secrets add-iam-policy-binding $CFBD_SECRET --project=$PROJECT \\
+    --member=serviceAccount:$SERVICE_ACCOUNT --role=roles/secretmanager.secretAccessor
+EOF
+        exit 1
+    fi
+fi
+
 if [ "$ONLY_SCHEDULER" = false ]; then
     STAGE="$(mktemp -d)/cfb"
     mkdir -p "$STAGE"
@@ -96,6 +126,7 @@ EOF
         --memory="$MEMORY" --timeout="$TIMEOUT" \
         --service-account="$SERVICE_ACCOUNT" \
         --set-env-vars="GCP_PROJECT=$PROJECT,CFB_DATASET=cfb_season,CFB_HIST_DATASET=cfb_historical" \
+        --set-secrets="CFBD_API_KEY=$CFBD_SECRET:latest" \
         --quiet
 fi
 
@@ -131,10 +162,20 @@ _sched "cfb-weekly-predict" "0 6 * 8-12,1 2" \
     '{"mode":"predict_next"}' "CFB: predict the next unplayed week, FBS and FCS"
 echo "  ✓ cfb-weekly-predict (Tue 6:00 AM ET)"
 
-# Rankings and stats are refreshed inside the Sunday ingest, not on their own jobs:
+# Sunday 7 AM ET — an hour after the ingest, so the games and rankings it produces are
+# already on the record. Its own job rather than chained onto the ingest because the
+# CollegeFootballData work is a dozen HTTP calls, an 85-column flatten and a 14,000-row
+# pivot; a timeout inside the ingest invocation would cost the games load that
+# everything else depends on. Same reasoning, and the same one-hour offset, as
+# nfl-weekly-score.
+_sched "cfb-weekly-cfbd" "0 7 * 8-12,1 0" \
+    '{"mode":"cfbd"}' "CFB: CollegeFootballData advanced stats, players and lines"
+echo "  ✓ cfb-weekly-cfbd (Sun 7:00 AM ET)"
+
+# Rankings and ESPN stats are refreshed inside the Sunday ingest, not on their own jobs:
 # they are derived from the games it loads, so chaining them makes the ordering
 # structural instead of a race between two cron entries.
-echo "  · rankings + stats refresh inside cfb-weekly-ingest"
+echo "  · rankings + ESPN stats refresh inside cfb-weekly-ingest"
 
 echo ""
 echo "=============================================="
