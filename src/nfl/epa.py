@@ -96,7 +96,19 @@ def build_team_week_epa(seasons: list[int], refresh: bool = False) -> pl.DataFra
         except Exception as exc:
             logger.warning("pbp fetch failed for %d (%s), skipping", season, exc)
             continue
+        if pbp is None or pbp.height == 0:
+            # Normal before a season's first games: nflverse publishes the release but
+            # it is empty until week 1 is played. Not an error.
+            logger.info("no play-by-play yet for %d", season)
+            continue
         frames.append(_aggregate_season(pbp))
+
+    if not frames:
+        # Every requested season is unplayed. Returning an empty frame lets the caller
+        # decide (the weekly ingest treats it as "nothing to write yet"); concatenating
+        # nothing raises, which is how the pre-season ingest came to fail outright.
+        logger.info("no EPA rows for %s", seasons)
+        return pl.DataFrame()
 
     out = pl.concat(frames, how="diagonal_relaxed").unique(
         subset=["season", "week", "team"], keep="last"

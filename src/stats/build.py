@@ -50,6 +50,10 @@ def build(sport: str, season: int,
     """
     if sport == "nfl":
         players = nfl_stats.fetch_player_stats(season)
+        if players.empty:
+            # Pre-season: nflverse has not published this year yet. write_bq skips
+            # empty frames, so last season's tables stay untouched.
+            return {}
         return {
             "player_season_stats": players,
             "stat_leaders": nfl_stats.leaders(players),

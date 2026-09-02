@@ -94,12 +94,21 @@ def nfl_pipeline(request):
 
             ensure_dataset(CTX.hist_dataset)
             ensure_dataset(CTX.season_dataset)
+            season = int(req.get("season", CTX.season))
+
+            # Games and teams come from a single upstream file that always carries the
+            # whole history, so rebuilding them in full is correct and cheap.
             result["steps"]["games"] = backfill_games()
             result["steps"]["teams"] = backfill_teams()
-            result["steps"]["epa"] = backfill_epa()
+
+            # EPA is different: it is derived from play-by-play, the heaviest load in
+            # this repo. Scoped to the current season so the weekly run refreshes a
+            # slice instead of rebuilding twenty seasons — which is what it was doing,
+            # and why it died at the 2GB limit on every cold container without ever
+            # writing the current season.
+            result["steps"]["epa"] = backfill_epa(seasons=[season])
 
             # Derived from the games that just landed, so they belong in this call.
-            season = int(req.get("season", CTX.season))
             _refresh_rankings(season, result["steps"])
             _refresh_stats(season, result["steps"])
 

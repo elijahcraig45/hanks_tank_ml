@@ -65,15 +65,25 @@ def _curl(url: str, timeout: int = 90) -> bytes:
 
 
 def fetch_player_stats(season: int, refresh: bool = False) -> pd.DataFrame:
-    """Season-level regular-season player stats for one year."""
+    """Season-level regular-season player stats for one year.
+
+    Returns an empty frame where the season has not been published yet. nflverse only
+    creates the release asset once a season's first games are played, so a 404 in
+    September is the normal pre-season state, not a failure — and reporting it as one
+    every week would bury a real outage in expected noise.
+    """
     cached = CACHE / f"nfl_player_stats_{season}.csv"
     if refresh or not cached.exists():
         try:
             cached.write_bytes(_curl(f"{RELEASE}/stats_player_reg_{season}.csv"))
         except Exception as exc:
-            if not cached.exists():
+            if cached.exists():
+                logger.warning("nflverse fetch failed (%s); using cached copy", exc)
+            elif "404" in str(exc):
+                logger.info("nflverse has not published %d player stats yet", season)
+                return pd.DataFrame()
+            else:
                 raise
-            logger.warning("nflverse fetch failed (%s); using cached copy", exc)
 
     df = pd.read_csv(cached, low_memory=False)
     df["season"] = season
