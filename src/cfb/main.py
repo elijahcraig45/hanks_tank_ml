@@ -9,7 +9,8 @@ Modes (POST body {"mode": ...}):
   ingest        refresh games from ESPN, score last week's picks, then rankings + stats
   score         fill in results for predictions whose games have now been played
   rankings      rebuild the Bradley-Terry board only
-  stats         rebuild team season stats and league leaders only
+  stats         rebuild ESPN team season stats and league leaders only
+  cfbd          rebuild the CollegeFootballData tables: advanced stats, players, lines
   predict_week  predict a scheduled week for both divisions
   backfill      re-run a completed season week by week, per division
 
@@ -99,16 +100,25 @@ def _refresh_rankings(season: int, steps: dict) -> None:
         steps["rankings"] = {"error": str(exc)[:200]}
 
 
-def _refresh_stats(season: int, steps: dict) -> None:
-    """Rebuild team season stats and league leaders. Never fatal."""
+def _refresh_stats(season: int, steps: dict,
+                   providers: tuple[str, ...] = ("espn",),
+                   label: str = "stats") -> None:
+    """Rebuild stat tables for the given providers. Never fatal.
+
+    Defaults to ESPN only, so the weekly ingest keeps the cost it always had. The
+    CollegeFootballData feeds are a dozen HTTP calls, an 85-column flatten and a
+    14,000-row pivot, and chaining that onto an invocation already spending its 540
+    seconds on games, scoring and a bootstrap fit is how a timeout starts costing the
+    games ingest everything else depends on. They get their own mode instead.
+    """
     try:
         from stats.build import build as build_stats, write_bq as write_stats
 
-        tables = build_stats("cfb", season)
-        steps["stats"] = write_stats("cfb", season, tables)
+        tables = build_stats("cfb", season, providers=providers)
+        steps[label] = write_stats("cfb", season, tables)
     except Exception as exc:
-        logger.error("stats refresh failed: %s", exc)
-        steps["stats"] = {"error": str(exc)[:200]}
+        logger.error("%s refresh failed: %s", label, exc)
+        steps[label] = {"error": str(exc)[:200]}
 
 
 @functions_framework.http
@@ -164,6 +174,27 @@ def cfb_pipeline(request):
 
             season = int(req.get("season", cfb_config.CTX.season))
             _refresh_stats(season, result["steps"])
+
+        elif mode == "cfbd":
+            # CollegeFootballData feeds: per-game and per-season advanced stats, the
+            # per-player table, and betting lines. Separate from `stats` because these
+            # need an API key and a paid tier, so they must be able to fail — or be
+            # skipped entirely on an unkeyed deployment — without touching anything
+            # ESPN supplies.
+            import cfb_config
+            from stats import cfbd
+
+            season = int(req.get("season", cfb_config.CTX.season))
+            cfbd.reset_call_counter()
+
+            if not cfbd.has_api_key():
+                result["steps"]["cfbd"] = {"skipped": "no CFBD_API_KEY configured"}
+            else:
+                _refresh_stats(season, result["steps"],
+                               providers=("cfbd",), label="cfbd")
+                # Surfaced so monthly spend is visible in the logs rather than
+                # discovered when the allowance runs out.
+                result["steps"]["cfbd_calls"] = cfbd.calls_used()
 
         elif mode in ("predict_week", "predict_next"):
             import cfb_config
