@@ -32,8 +32,22 @@ logger = logging.getLogger(__name__)
 DATASETS = {"nfl": ("NFL_DATASET", "nfl_season"), "cfb": ("CFB_DATASET", "cfb_season")}
 
 
-def build(sport: str, season: int) -> dict[str, pd.DataFrame]:
-    """Every table this sport can supply, keyed by BigQuery table name."""
+def build(sport: str, season: int,
+          providers: tuple[str, ...] = ("espn", "cfbd")) -> dict[str, pd.DataFrame]:
+    """Every table this sport can supply, keyed by BigQuery table name.
+
+    `providers` selects which feeds to pull. It exists so the Cloud Function can run
+    them as separate invocations: the ESPN work rides the weekly ingest, while the
+    CollegeFootballData work — a dozen HTTP calls, an 85-column flatten and a
+    14,000-row pivot — gets its own job rather than being chained onto an invocation
+    that already spends its 540 seconds on games, scoring and a bootstrap fit.
+
+    Ordering matters for one table. Both providers can produce `stat_leaders`, and the
+    write is delete-season-then-append, so whichever runs later wins. CFBD's version is
+    the better one (it has player ids, positions, direction and volume floors), and
+    running it second means a CFBD failure leaves ESPN's version standing rather than
+    no leaderboard at all.
+    """
     if sport == "nfl":
         players = nfl_stats.fetch_player_stats(season)
         return {
@@ -41,7 +55,10 @@ def build(sport: str, season: int) -> dict[str, pd.DataFrame]:
             "stat_leaders": nfl_stats.leaders(players),
         }
     if sport == "cfb":
-        tables = {
+        tables: dict[str, pd.DataFrame] = {}
+
+    if sport == "cfb" and "espn" in providers:
+        tables |= {
             # ESPN: conventional box-score totals with an opponent split. Kept as the
             # source for this table because it is what the site already renders, and
             # because mixing two providers' column vocabularies into one table would
@@ -52,6 +69,7 @@ def build(sport: str, season: int) -> dict[str, pd.DataFrame]:
         # CollegeFootballData: everything ESPN cannot do. Each is optional — a missing
         # key or an uncovered tier must cost only its own table, never the whole run,
         # so failures are recorded and stepped over.
+    if sport == "cfb" and "cfbd" in providers:
         if cfbd.has_api_key():
             for name, fetch in (
                 ("team_game_advanced", cfb_advanced.fetch_team_game_advanced),
@@ -78,9 +96,11 @@ def build(sport: str, season: int) -> dict[str, pd.DataFrame]:
             except Exception as exc:
                 logger.warning("cfb players skipped: %s", str(exc)[:200])
 
-        # Falls back to ESPN's leaders only where the richer version was not produced.
-        # ESPN's lacks player_id, position and higher_is_better, so it is second choice.
-        if "stat_leaders" not in tables:
+    if sport == "cfb":
+        # Falls back to ESPN's leaders only where the richer version was not produced —
+        # either because CFBD was not asked for, or because it failed. ESPN's lacks
+        # player_id, position, direction and any volume qualifier.
+        if "stat_leaders" not in tables and "espn" in providers:
             tables["stat_leaders"] = cfb_stats.fetch_leaders(season)
 
         return tables
@@ -152,9 +172,12 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--write-bq", action="store_true")
     ap.add_argument("--out-dir", type=str, default=None)
+    ap.add_argument("--providers", type=str, default="espn,cfbd",
+                    help="comma list: espn, cfbd")
     args = ap.parse_args()
 
-    tables = build(args.sport, args.season)
+    providers = tuple(p.strip() for p in args.providers.split(",") if p.strip())
+    tables = build(args.sport, args.season, providers=providers)
 
     print()
     print(f"STAT TABLES — {args.sport.upper()} {args.season}")
