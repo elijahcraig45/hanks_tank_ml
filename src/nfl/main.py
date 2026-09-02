@@ -94,14 +94,34 @@ def nfl_pipeline(request):
 
             ensure_dataset(CTX.hist_dataset)
             ensure_dataset(CTX.season_dataset)
+            season = int(req.get("season", CTX.season))
+
+            # Games and teams come from a single upstream file that always carries the
+            # whole history, so rebuilding them in full is correct and cheap.
             result["steps"]["games"] = backfill_games()
             result["steps"]["teams"] = backfill_teams()
-            result["steps"]["epa"] = backfill_epa()
+
+            # EPA is different: it is derived from play-by-play, the heaviest load in
+            # this repo. Scoped to the current season so the weekly run refreshes a
+            # slice instead of rebuilding twenty seasons — which is what it was doing,
+            # and why it died at the 2GB limit on every cold container without ever
+            # writing the current season.
+            result["steps"]["epa"] = backfill_epa(seasons=[season])
 
             # Derived from the games that just landed, so they belong in this call.
-            season = int(req.get("season", CTX.season))
             _refresh_rankings(season, result["steps"])
             _refresh_stats(season, result["steps"])
+
+            # The pick'em sheet, after the rankings it enriches each side with.
+            # Non-fatal: a sheet without context is still a usable sheet, and losing
+            # the ingest because a board was missing would be the wrong trade.
+            try:
+                from stats import pickem as pickem_games
+
+                result["steps"]["pickem"] = pickem_games.refresh("nfl", season)
+            except Exception as exc:
+                logger.error("pickem refresh failed: %s", exc)
+                result["steps"]["pickem"] = {"error": str(exc)[:200]}
 
         elif mode == "rankings":
             from config import CTX
