@@ -68,6 +68,46 @@ def load_table(
     return len(df)
 
 
+def replace_seasons(
+    df: pd.DataFrame,
+    dataset: str,
+    table: str,
+    partition_field: str | None = None,
+    cluster_fields: list[str] | None = None,
+) -> int:
+    """Replace exactly the seasons present in `df`, leaving every other season alone.
+
+    The safe way to refresh one season into a table that also holds history.
+    load_table defaults to WRITE_TRUNCATE, which replaces the whole table with
+    whatever the caller happened to build — fine for a table rebuilt in full from a
+    single source, and destructive for anything refreshed a season at a time.
+    """
+    if df.empty:
+        logger.warning("%s.%s: nothing to load", dataset, table)
+        return 0
+
+    seasons = sorted(int(x) for x in df["season"].unique())
+    table_id = f"{CTX.project}.{dataset}.{table}"
+
+    try:
+        client().query(
+            f"DELETE FROM `{table_id}` WHERE season IN UNNEST(@seasons)",
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ArrayQueryParameter("seasons", "INT64", seasons)
+                ]
+            ),
+        ).result()
+        logger.info("%s: cleared seasons %s", table_id, seasons)
+    except Exception as exc:
+        # First run: the table does not exist yet, so there is nothing to delete.
+        logger.info("%s: pre-delete skipped (%s)", table_id, str(exc)[:120])
+
+    return load_table(df, dataset, table, write_disposition="WRITE_APPEND",
+                      partition_field=partition_field,
+                      cluster_fields=cluster_fields)
+
+
 def delete_week(dataset: str, table: str, season: int, week: int) -> None:
     """Idempotency for weekly reruns: clear the (season, week) slice before insert."""
     c = client()
