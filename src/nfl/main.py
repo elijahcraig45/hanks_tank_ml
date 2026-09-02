@@ -112,6 +112,17 @@ def nfl_pipeline(request):
             _refresh_rankings(season, result["steps"])
             _refresh_stats(season, result["steps"])
 
+            # The pick'em sheet, after the rankings it enriches each side with.
+            # Non-fatal: a sheet without context is still a usable sheet, and losing
+            # the ingest because a board was missing would be the wrong trade.
+            try:
+                from stats import pickem as pickem_games
+
+                result["steps"]["pickem"] = pickem_games.refresh("nfl", season)
+            except Exception as exc:
+                logger.error("pickem refresh failed: %s", exc)
+                result["steps"]["pickem"] = {"error": str(exc)[:200]}
+
         elif mode == "rankings":
             from config import CTX
 

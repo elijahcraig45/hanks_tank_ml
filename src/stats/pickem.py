@@ -55,6 +55,33 @@ COLUMNS: list[tuple[str, str]] = [
     ("home_score", "Int64"),
     ("away_score", "Int64"),
     ("completed", "boolean"),
+    # Per-side context for the pick sheet. Attached at ingest rather than joined per
+    # request: the sheet is the most-requested endpoint, and the college join needs a
+    # name reconstruction that is better done once in Python than in every query.
+    ("home_rank", "Int64"),
+    ("away_rank", "Int64"),
+    ("home_rating", "float64"),
+    ("away_rating", "float64"),
+    ("home_record", "string"),
+    ("away_record", "string"),
+    # Which season the record is FROM. The preseason board carries last year's, and
+    # "14-3" beside a week 1 game reads as this year's unless it says otherwise.
+    ("home_record_season", "Int64"),
+    ("away_record_season", "Int64"),
+    ("home_ap_rank", "Int64"),
+    ("away_ap_rank", "Int64"),
+    ("home_coaches_rank", "Int64"),
+    ("away_coaches_rank", "Int64"),
+    ("home_fpi", "float64"),
+    ("away_fpi", "float64"),
+    ("home_fpi_rank", "Int64"),
+    ("away_fpi_rank", "Int64"),
+    ("home_streak", "string"),
+    ("away_streak", "string"),
+    # The site's own model, where it has published a pick for this game.
+    ("model_home_win_prob", "float64"),
+    ("model_pick", "string"),
+    ("model_confidence", "string"),
 ]
 
 
@@ -263,6 +290,182 @@ def _attach_cfb_lines(df: pd.DataFrame, season: int) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- #
+# Per-side context: rankings, polls, FPI, form
+# --------------------------------------------------------------------------- #
+
+def _bq_client():
+    from google.cloud import bigquery
+
+    return bigquery.Client(project=os.environ.get("GCP_PROJECT", "hankstank"))
+
+
+def _cfb_name_map(season: int) -> dict:
+    """CFBD school name -> the ESPN display name the rankings board keys on.
+
+    The two feeds disagree: the schedule says "TCU", the board says "TCU Horned Frogs".
+    Reconstructing `school + " " + mascot` from /teams resolves all 138 schools on the
+    2026 sheet exactly, with no override list — and exactly is the point, because a
+    prefix match would tie "Miami" to both "Miami Hurricanes" and "Miami (OH)
+    RedHawks".
+    """
+    payload = cfbd.get("/teams", {"year": season}, ttl_hours=None)
+    out = {}
+    for t in payload or []:
+        if t.get("classification") not in cfbd.SITE_CLASSIFICATIONS:
+            continue
+        school, mascot = t.get("school"), t.get("mascot")
+        if not school:
+            continue
+        out[school] = f"{school} {mascot}".strip() if mascot else school
+    return out
+
+
+def _rankings(sport: str, season: int) -> dict:
+    """Team key -> the board row, keyed the way pickem.games names teams.
+
+    NFL abbreviations match the board directly; college needs the name map above.
+    """
+    project = os.environ.get("GCP_PROJECT", "hankstank")
+    dataset = os.environ.get(
+        "NFL_DATASET" if sport == "nfl" else "CFB_DATASET",
+        "nfl_season" if sport == "nfl" else "cfb_season",
+    )
+    # SELECT * because the boards differ by sport: there is no AP or coaches poll in
+    # the NFL, so naming those columns fails the whole query for that sport rather than
+    # returning nulls. The tables are a few hundred rows, so the cost is nothing.
+    try:
+        rows = list(_bq_client().query(f"""
+            SELECT *
+            FROM `{project}.{dataset}.power_rankings`
+            WHERE season = {int(season)}
+              AND as_of_week = (
+                SELECT MAX(as_of_week) FROM `{project}.{dataset}.power_rankings`
+                WHERE season = {int(season)}
+              )
+        """).result())
+    except Exception as exc:
+        logger.info("no rankings to attach for %s (%s)", sport, str(exc)[:120])
+        return {}
+
+    # dict(r) keeps whatever the board actually has; missing fields read as None
+    # through .get() downstream rather than failing.
+    board = {r["team"]: dict(r) for r in rows}
+    if sport == "nfl":
+        return board
+
+    # Translate the board onto the schedule's own naming.
+    name_map = _cfb_name_map(season)
+    resolved, unresolved = {}, []
+    for school, display in name_map.items():
+        if display in board:
+            resolved[school] = board[display]
+        else:
+            unresolved.append(school)
+    if unresolved:
+        # Logged rather than raised: a team with no board row still has a pickable
+        # game, it just shows without context.
+        logger.info("%d schools have no rankings row (e.g. %s)",
+                    len(unresolved), unresolved[:5])
+    return resolved
+
+
+def _streaks(df: pd.DataFrame) -> dict:
+    """Team -> current form, like "W3" or "L2".
+
+    Computed from the completed games in this very frame rather than from another
+    table, so it needs no name translation and cannot disagree with the schedule it is
+    displayed beside. A season's own results are also what a streak means — carrying one
+    across an offseason would be misleading.
+    """
+    played = df[df["completed"].fillna(False)].copy()
+    if played.empty:
+        return {}
+    played = played.sort_values("kickoff")
+
+    results: dict[str, list[str]] = {}
+    for r in played.to_dict("records"):
+        hs, as_ = r.get("home_score"), r.get("away_score")
+        if pd.isna(hs) or pd.isna(as_):
+            continue
+        if hs == as_:
+            outcome_home = outcome_away = "T"
+        else:
+            outcome_home = "W" if hs > as_ else "L"
+            outcome_away = "L" if hs > as_ else "W"
+        results.setdefault(r["home_team"], []).append(outcome_home)
+        results.setdefault(r["away_team"], []).append(outcome_away)
+
+    out = {}
+    for team, seq in results.items():
+        last = seq[-1]
+        run = 0
+        for o in reversed(seq):
+            if o != last:
+                break
+            run += 1
+        out[team] = f"{last}{run}"
+    return out
+
+
+def _model_picks(sport: str, season: int) -> dict:
+    """game_id -> the site's own prediction, where one has been published."""
+    project = os.environ.get("GCP_PROJECT", "hankstank")
+    dataset = os.environ.get(
+        "NFL_DATASET" if sport == "nfl" else "CFB_DATASET",
+        "nfl_season" if sport == "nfl" else "cfb_season",
+    )
+    try:
+        rows = list(_bq_client().query(f"""
+            SELECT game_id, home_win_probability, predicted_winner, confidence_tier
+            FROM `{project}.{dataset}.game_predictions`
+            WHERE season = {int(season)}
+        """).result())
+    except Exception as exc:
+        logger.info("no model picks to attach for %s (%s)", sport, str(exc)[:120])
+        return {}
+    return {str(r["game_id"]): dict(r) for r in rows}
+
+
+def attach_context(sport: str, season: int, df: pd.DataFrame) -> pd.DataFrame:
+    """Add per-side rankings, polls, FPI and form to a games frame."""
+    if df.empty:
+        return df
+
+    board = _rankings(sport, season)
+    streaks = _streaks(df)
+    models = _model_picks(sport, season)
+
+    def side(key: str, field: str):
+        return [(board.get(t) or {}).get(field) for t in df[key]]
+
+    for prefix, key in (("home", "home_team"), ("away", "away_team")):
+        df[f"{prefix}_rank"] = side(key, "rank")
+        df[f"{prefix}_rating"] = side(key, "rating")
+        df[f"{prefix}_record"] = side(key, "record")
+        df[f"{prefix}_record_season"] = side(key, "record_season")
+        df[f"{prefix}_ap_rank"] = side(key, "ap_rank")
+        df[f"{prefix}_coaches_rank"] = side(key, "coaches_rank")
+        df[f"{prefix}_fpi"] = side(key, "fpi")
+        df[f"{prefix}_fpi_rank"] = side(key, "fpi_rank")
+        df[f"{prefix}_streak"] = [streaks.get(t) for t in df[key]]
+
+    df["model_home_win_prob"] = [
+        (models.get(g) or {}).get("home_win_probability") for g in df["game_id"]
+    ]
+    df["model_pick"] = [
+        (models.get(g) or {}).get("predicted_winner") for g in df["game_id"]
+    ]
+    df["model_confidence"] = [
+        (models.get(g) or {}).get("confidence_tier") for g in df["game_id"]
+    ]
+
+    attached = int(df["home_rank"].notna().sum())
+    logger.info("pickem %s: context on %d/%d games, %d with a model pick",
+                sport, attached, len(df), int(df["model_pick"].notna().sum()))
+    return _conform(df.to_dict("records"))
+
+
+# --------------------------------------------------------------------------- #
 # Write
 # --------------------------------------------------------------------------- #
 
@@ -316,9 +519,19 @@ def write_games(sport: str, season: int, df: pd.DataFrame) -> dict:
 
 
 def refresh(sport: str, season: int) -> dict:
-    """Fetch and write one sport's slice. The Cloud Function entry point."""
+    """Fetch, enrich and write one sport's slice. The Cloud Function entry point."""
     if sport == "nfl":
-        return write_games("nfl", season, fetch_nfl_games(season))
-    if sport == "cfb":
-        return write_games("cfb", season, fetch_cfb_games(season))
-    raise ValueError(f"unknown sport: {sport}")
+        games = fetch_nfl_games(season)
+    elif sport == "cfb":
+        games = fetch_cfb_games(season)
+    else:
+        raise ValueError(f"unknown sport: {sport}")
+
+    # Never fatal: a sheet without rankings is still a usable sheet, and losing the
+    # schedule because a board was missing would be the wrong trade.
+    try:
+        games = attach_context(sport, season, games)
+    except Exception as exc:
+        logger.warning("could not attach context for %s: %s", sport, str(exc)[:200])
+
+    return write_games(sport, season, games)
