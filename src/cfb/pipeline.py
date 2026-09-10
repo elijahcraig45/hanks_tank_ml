@@ -274,17 +274,39 @@ def predict_week(season: int, week: int) -> pd.DataFrame:
 
 
 def next_unplayed_week(season: int, max_week: int = 21) -> int | None:
-    """Earliest week in the season that still has games without a result.
+    """Earliest week that still contains a game which has not happened yet.
 
     Lets the weekly scheduler fire a bare {"mode": "predict_next"} instead of hardcoding
     a week number that would go stale after seven days.
+
+    The kickoff guard is load-bearing, and its absence stalled the whole 2026 season.
+    This used to return the first week with any NULL `home_won`, which reads "no result
+    yet" as "has not happened yet" - and those are not the same thing. ESPN's 2026 FCS
+    week 1 carried two games that will never produce a result:
+
+        401868016  2026-08-27  STATUS_CANCELED   (Lafayette at Georgetown)
+        401866625  2026-09-05  STATUS_POSTPONED  (Western Carolina at Campbell)
+
+    Their `home_won` is NULL permanently, so this returned 1 on every run from
+    2026-09-06 onward and would have done for the rest of the season. The scheduler
+    fired correctly and the function exited zero every week; it simply predicted a week
+    that had already been played, so nothing downstream ever noticed.
+
+    Comparing against kickoff rather than reading ESPN's status name is deliberate: it
+    catches any terminal-but-unplayed state without needing to enumerate them, and it
+    still returns the right week if a postponed game is rescheduled into the future.
     """
     from espn_data import fetch_scheduled
+
+    # `game_date` arrives naive-UTC from _parse_event, so compare like with like.
+    now = pd.Timestamp.utcnow().tz_localize(None)
 
     for week in range(1, max_week + 1):
         slate = fetch_scheduled(season, week)
         if slate.empty:
             continue
-        if slate["home_won"].isna().any():
+        kickoff = pd.to_datetime(slate["game_date"], errors="coerce")
+        still_to_come = slate["home_won"].isna() & kickoff.notna() & (kickoff > now)
+        if still_to_come.any():
             return week
     return None

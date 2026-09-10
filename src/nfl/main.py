@@ -38,7 +38,19 @@ logger = logging.getLogger(__name__)
 
 
 def _next_unplayed_week() -> tuple[int, int]:
-    """The earliest scheduled week with no result yet."""
+    """The earliest scheduled week containing a game that has not kicked off yet.
+
+    The kickoff guard mirrors the one in src/cfb/pipeline.py, and exists for the same
+    reason: a game with a permanently NULL result - cancelled, or postponed and never
+    replayed - sorts to the front by date and pins this cursor to its week forever. That
+    is precisely what stalled CFB for the 2026 season, silently, because the job kept
+    succeeding while predicting a week already played.
+
+    NFL has never hit it. It cancels roughly one game a decade, and nflverse tends to
+    rewrite `gameday` on a postponement rather than leave the original row unplayed. The
+    structure is identical though, so it gets the same guard rather than waiting to find
+    out which of those two facts stops being true first.
+    """
     import pandas as pd
     from data import load_schedules
 
@@ -46,8 +58,16 @@ def _next_unplayed_week() -> tuple[int, int]:
     pending = sched[sched["result"].isna()].copy()
     if pending.empty:
         raise RuntimeError("no unplayed games on the schedule")
-    pending["gameday"] = pd.to_datetime(pending["gameday"])
-    row = pending.sort_values("gameday").iloc[0]
+    pending["gameday"] = pd.to_datetime(pending["gameday"], errors="coerce")
+
+    now = pd.Timestamp.utcnow().tz_localize(None)
+    upcoming = pending[pending["gameday"].notna() & (pending["gameday"] >= now.normalize())]
+    if upcoming.empty:
+        # Every unplayed game is in the past: the season is over, or what is left will
+        # never be played. Saying so beats silently re-predicting a finished week.
+        raise RuntimeError("no upcoming games on the schedule - all unplayed games are past")
+
+    row = upcoming.sort_values("gameday").iloc[0]
     return int(row["season"]), int(row["week"])
 
 
