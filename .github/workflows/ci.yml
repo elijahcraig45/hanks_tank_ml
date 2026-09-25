@@ -24,9 +24,9 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        # pytest is a test-only dependency, so it stays out of the pinned requirements.txt
+        # pytest (and the NFL function's polars) are test-only here, so they stay out of the pinned requirements.txt
         # (which is mirrored byte-for-byte to src/requirements.txt for the Cloud Function).
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pytest
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pytest "polars==1.*"
 
       - name: Run unit tests
         # pytest also collects the unittest-style tests; several suites use pytest fixtures.
