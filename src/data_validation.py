@@ -67,30 +67,90 @@ class DataValidator:
             self.errors.append(msg)
             if self.fix_duplicates:
                 logger.info("  Fixing game duplicates...")
-                self.bq.query(f"""
-                    DELETE FROM `{PROJECT}.{DATASET}.games`
-                    WHERE STRUCT(game_pk, game_date, synced_at) NOT IN (
-                        SELECT STRUCT(game_pk, game_date, MAX(synced_at))
-                        FROM `{PROJECT}.{DATASET}.games`
-                        GROUP BY game_pk, game_date
-                    )
-                """).result()
-                logger.info("  ✓ duplicates resolved")
+                self._dedupe_games()
         else:
             logger.info("  ✓ no game duplicates")
 
+    def _dedupe_games(self):
+        """Collapse duplicate game_pk+game_date rows, keeping the freshest.
+
+        The previous implementation was a single DELETE keyed on
+        STRUCT(game_pk, game_date, synced_at) NOT IN (... MAX(synced_at) ...).
+        That silently never deleted anything in the case this table actually
+        produces: the collector inserts a skeleton row when a game is scheduled
+        (synced_at NULL, no score) and inserts the completed row afterwards
+        rather than updating in place. `STRUCT(.., NULL) NOT IN (..)` evaluates
+        to NULL, not TRUE, so the skeleton row survived every run and the
+        validator reported CRITICAL forever.
+
+        Ranking with NULLS LAST fixes the NULL case, and rewriting the affected
+        keys through a transaction also handles two fully identical rows, which
+        no DELETE predicate can tell apart. Only duplicated keys are touched,
+        and the table is never recreated, so partitioning and clustering on
+        `games` are preserved.
+        """
+        table = f"{PROJECT}.{DATASET}.games"
+        try:
+            self.bq.query(f"""
+                BEGIN TRANSACTION;
+
+                CREATE TEMP TABLE _games_dedup AS
+                SELECT * EXCEPT(_rn) FROM (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY game_pk, game_date
+                        ORDER BY synced_at DESC NULLS LAST
+                    ) AS _rn
+                    FROM `{table}`
+                    WHERE STRUCT(game_pk, game_date) IN (
+                        SELECT STRUCT(game_pk, game_date) FROM `{table}`
+                        GROUP BY game_pk, game_date HAVING COUNT(*) > 1
+                    )
+                )
+                WHERE _rn = 1;
+
+                DELETE FROM `{table}`
+                WHERE STRUCT(game_pk, game_date) IN (
+                    SELECT STRUCT(game_pk, game_date) FROM _games_dedup
+                );
+
+                INSERT INTO `{table}`
+                SELECT * FROM _games_dedup;
+
+                COMMIT TRANSACTION;
+            """).result()
+            logger.info("  ✓ duplicates resolved")
+        except Exception as exc:
+            # Rows still in BigQuery's streaming buffer reject UPDATE/DELETE for
+            # ~90 minutes after insert. Report it and let the next run retry
+            # rather than failing the whole validation step.
+            logger.warning("  could not dedupe games (will retry next run): %s", exc)
+            self.warnings.append(f"game dedupe deferred: {str(exc)[:120]}")
+
     def check_statcast_duplicates(self):
+        """Count rows in statcast_pitches that are byte-identical to another row.
+
+        This used to group by (game_pk, pitcher, batter, game_date, description),
+        which is not a uniqueness constraint: a pitcher legitimately throws
+        several pitches with the same `description` to the same batter in a game,
+        so two called strikes in one at-bat counted as a duplicate. That reported
+        185,700 "duplicate groups" against 781,427 rows — permanent noise that
+        buried the 13 real `games` duplicates sitting next to it in the output.
+
+        The table has no pitch identifier (no at_bat_number / pitch_number), so
+        there is no key to dedupe on. Fully identical rows are the only defensible
+        signal: pitches differing in inning, count, type or velocity are distinct
+        events. On the same data this reports 9. ~288 MB scanned.
+        """
         logger.info("Checking statcast duplicates...")
-        dups = self._query_scalar(f"""
-            SELECT COUNT(*) FROM (
-                SELECT game_pk, pitcher, batter, game_date, description, COUNT(*) c
-                FROM `{PROJECT}.{DATASET}.statcast_pitches`
-                GROUP BY game_pk, pitcher, batter, game_date, description HAVING c > 1
-            )
+        table = f"{PROJECT}.{DATASET}.statcast_pitches"
+        surplus = self._query_scalar(f"""
+            SELECT (SELECT COUNT(*) FROM `{table}`)
+                 - (SELECT COUNT(*) FROM (SELECT DISTINCT * FROM `{table}`))
         """)
-        if dups and dups > 0:
-            msg = f"statcast_pitches has {dups} duplicate groups"
-            self.warnings.append(msg)
+        if surplus and surplus > 0:
+            self.warnings.append(
+                f"statcast_pitches has {surplus} exact duplicate rows"
+            )
         else:
             logger.info("  ✓ no statcast duplicates")
 
@@ -136,12 +196,24 @@ class DataValidator:
             self.warnings.append(f"{bad_innings} games with >25 innings")
 
     def check_team_consistency(self):
+        """Flag games whose home club is missing from the teams table.
+
+        Exhibition ('E') and All-Star ('A') games are excluded because their
+        opponents are legitimately not MLB clubs — the 2026 slate alone has
+        Dominican Republic, Cuba, the National League All-Stars, and the
+        Sacramento River Cats and Springfield Cardinals affiliates. `teams`
+        holds the 30 MLB clubs, so those five will never join and the check
+        warned about them on every run forever. Regular-season ('R') and spring
+        ('S') games have zero orphans; postseason codes are left in scope
+        deliberately, since an orphan there would be a real defect.
+        """
         logger.info("Checking team ID consistency...")
         orphans = self._query_scalar(f"""
             SELECT COUNT(DISTINCT g.home_team_id)
             FROM `{PROJECT}.{DATASET}.games` g
             LEFT JOIN `{PROJECT}.{DATASET}.teams` t ON g.home_team_id = t.team_id
             WHERE t.team_id IS NULL AND g.home_team_id IS NOT NULL
+              AND g.game_type NOT IN ('E', 'A')
         """)
         if orphans and orphans > 0:
             self.warnings.append(f"{orphans} home_team_ids in games not in teams table")

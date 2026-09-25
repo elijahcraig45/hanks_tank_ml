@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Algorithms Inside Your MLB Models</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{color-scheme:light;
+ --ground:#f6f7f9;--surface:#fff;--surface-2:#eef1f5;--eqbg:#f0f3f7;
+ --ink:#111620;--ink-2:#4b5566;--ink-3:#7d8798;
+ --rule:#dee2e9;--rule-2:#c9d0da;
+ --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;
+ --s1-soft:#dbe8f9;--warn-bg:#fdf1ea;--ok-bg:#e7f4ee;
+ --shadow:0 1px 2px rgba(17,22,32,.06);
+ --f-display:"Archivo","Helvetica Neue",Arial,sans-serif;
+ --f-body:"Source Serif 4",Georgia,"Times New Roman",serif;
+ --f-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;
+ --ground:#13161b;--surface:#1a1e25;--surface-2:#21262e;--eqbg:#1e242c;
+ --ink:#eef1f5;--ink-2:#aeb8c6;--ink-3:#78828f;
+ --rule:#282e37;--rule-2:#39414c;
+ --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+ --s1-soft:#1d2c40;--warn-bg:#2a1f19;--ok-bg:#152620;
+ --shadow:0 1px 2px rgba(0,0,0,.3)}}
+:root[data-theme="dark"]{color-scheme:dark;
+ --ground:#13161b;--surface:#1a1e25;--surface-2:#21262e;--eqbg:#1e242c;
+ --ink:#eef1f5;--ink-2:#aeb8c6;--ink-3:#78828f;
+ --rule:#282e37;--rule-2:#39414c;
+ --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+ --s1-soft:#1d2c40;--warn-bg:#2a1f19;--ok-bg:#152620;
+ --shadow:0 1px 2px rgba(0,0,0,.3)}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{background:var(--ground);color:var(--ink);font-family:var(--f-body);
+ font-size:17px;line-height:1.68;margin:0;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1000px;margin:0 auto;padding:0 28px 96px}
+h1,h2,h3,h4{font-family:var(--f-display);text-wrap:balance;margin:0}
+h1{font-size:clamp(29px,4.2vw,42px);font-weight:700;letter-spacing:-.022em;line-height:1.1}
+h2{font-size:clamp(21px,2.5vw,27px);font-weight:600;letter-spacing:-.014em;line-height:1.22}
+h3{font-size:16px;font-weight:600;margin-top:22px}
+h4{font-family:var(--f-mono);font-size:10.5px;font-weight:600;letter-spacing:.1em;
+ text-transform:uppercase;color:var(--ink-3)}
+p{margin:0 0 1.05em}
+.col{max-width:64ch}
+.eyebrow{font-family:var(--f-mono);font-size:10.5px;font-weight:600;
+ letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3)}
+header{border-bottom:1px solid var(--rule);padding:58px 0 32px;margin-bottom:10px}
+.kicker{display:flex;gap:10px;align-items:baseline;margin-bottom:18px;flex-wrap:wrap}
+.kicker .dot{width:6px;height:6px;border-radius:50%;background:var(--s2);flex:none}
+.lede{font-size:19px;color:var(--ink-2);margin-top:20px;max-width:62ch}
+.lede b{color:var(--ink);font-weight:600}
+/* contents */
+.toc{margin:30px 0 0;border:1px solid var(--rule);border-radius:4px;
+ background:var(--surface);overflow:hidden}
+.toc a{display:grid;grid-template-columns:38px minmax(0,1fr) minmax(0,1.1fr);
+ gap:14px;padding:9px 16px;border-bottom:1px solid var(--rule);
+ text-decoration:none;color:inherit;align-items:baseline}
+.toc a:last-child{border-bottom:0}
+.toc a:hover{background:var(--surface-2)}
+.toc .n{font-family:var(--f-mono);font-size:11px;color:var(--s1);font-weight:600}
+.toc .t{font-family:var(--f-display);font-size:14.5px;font-weight:600}
+.toc .s{font-size:13px;color:var(--ink-3)}
+/* chapter */
+.ch{border-top:1px solid var(--rule);padding-top:40px;margin-top:46px}
+.chn{font-family:var(--f-mono);font-size:11px;font-weight:600;color:var(--s1);
+ letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:9px}
+pre.eq{background:var(--eqbg);border:1px solid var(--rule);border-radius:4px;
+ padding:14px 16px;margin:18px 0;overflow-x:auto;font-family:var(--f-mono);
+ font-size:13px;line-height:1.7;color:var(--ink)}
+pre.eq b{color:var(--s1);font-weight:600}
+pre.eq i{color:var(--ink-3);font-style:normal}
+.yours{border-left:2px solid var(--s3);background:var(--ok-bg);
+ padding:15px 18px;margin:22px 0;border-radius:0 3px 3px 0}
+.yours .eyebrow{display:block;margin-bottom:7px;color:var(--s3)}
+.yours p{margin:0;font-size:15.5px;line-height:1.6}
+.yours p+p{margin-top:.7em}
+.gotcha{border-left:2px solid var(--s2);background:var(--warn-bg);
+ padding:15px 18px;margin:22px 0;border-radius:0 3px 3px 0}
+.gotcha .eyebrow{display:block;margin-bottom:7px;color:var(--s2)}
+.gotcha p{margin:0;font-size:15.5px;line-height:1.6}
+figure{margin:22px 0 0;background:var(--surface);border:1px solid var(--rule);
+ border-radius:4px;padding:18px 20px 14px;box-shadow:var(--shadow)}
+figcaption{font-size:14px;color:var(--ink-2);line-height:1.55;
+ border-top:1px solid var(--rule);margin-top:13px;padding-top:11px}
+figcaption b{color:var(--ink)}
+.ftitle{display:flex;justify-content:space-between;align-items:baseline;
+ gap:16px;margin-bottom:14px;flex-wrap:wrap}
+.fn{font-family:var(--f-mono);font-size:11px;color:var(--ink-3);
+ font-variant-numeric:tabular-nums;white-space:nowrap}
+.chart{position:relative;overflow-x:auto}
+svg{display:block;width:100%;height:auto}
+svg text{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.ax{fill:var(--ink-3);font-size:10.5px}
+.lbl{fill:var(--ink-2);font-size:11px}
+.val{fill:var(--ink);font-size:11px;font-weight:600}
+.valm{fill:var(--ink-3);font-size:11px}
+.grid{stroke:var(--rule);stroke-width:1}
+.reflbl{fill:var(--ink-3);font-size:10px}
+.legend{display:flex;gap:18px;flex-wrap:wrap;margin:0 0 12px}
+.legend span{display:inline-flex;align-items:center;gap:7px;
+ font-family:var(--f-mono);font-size:11px;color:var(--ink-2)}
+.legend i{width:11px;height:11px;border-radius:2px;flex:none;display:block}
+.tblwrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-family:var(--f-mono);
+ font-size:12.5px;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:6px 10px;border-bottom:1px solid var(--rule)}
+th:first-child,td:first-child,td.l,th.l{text-align:left}
+th{color:var(--ink-3);font-weight:600;font-size:10.5px;letter-spacing:.06em;
+ text-transform:uppercase;border-bottom:1px solid var(--rule-2)}
+tr.hl td{background:var(--s1-soft)}
+code{font-family:var(--f-mono);font-size:.88em;background:var(--surface-2);
+ padding:1px 5px;border-radius:2px}
+.file{font-family:var(--f-mono);font-size:11.5px;color:var(--s1)}
+footer{margin-top:70px;padding-top:26px;border-top:1px solid var(--rule);
+ font-family:var(--f-mono);font-size:11.5px;color:var(--ink-3);line-height:1.85}
+footer b{color:var(--ink-2);font-weight:600}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+:focus-visible{outline:2px solid var(--s1);outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="kicker"><span class="dot"></span><span class="eyebrow">Hank&rsquo;s Tank &middot; the computer science and statistics inside your own code</span></div>
+  <h1>The algorithms inside your MLB models</h1>
+  <p class="lede">Sixteen chapters on how each model you have built actually works: the equations it evaluates, the assumptions it makes, and the code in your repo that implements it. <b>Every parameter shown is the real fitted value from your data</b>, not a textbook placeholder. This is about mechanism, not about how the models scored.</p>
+  <nav class="toc" id="toc"></nav>
+</header>
+
+<!-- 01 -->
+<section class="ch" id="c01">
+  <span class="chn">Chapter 01</span>
+  <h2>The shape of the problem</h2>
+  <div class="col">
+    <p>Everything you have built is <b>supervised binary classification</b>. You have a set of games. Each game <code>i</code> has a feature vector <code>x&#8341;</code> (numbers known before first pitch) and a label <code>y&#8341; &isin; {0,1}</code> (did the home team win). You want a function that maps features to a probability.</p>
+  </div>
+  <pre class="eq">given   (x&#8321;, y&#8321;), (x&#8322;, y&#8322;), &hellip;, (x&#8345;, y&#8345;)      <i>your 1,763 pregame games</i>
+find    f(x) &rarr; p &isin; (0,1)                    <i>a probability, not a yes/no</i>
+so that p is close to y on games <b>not</b> in the training set</pre>
+  <div class="col">
+    <p>Two details in that framing do a lot of work later. First, the output is a <b>probability</b>, not a class &mdash; which is why the loss functions in Chapter 16 score probabilities. Second, &ldquo;not in the training set&rdquo; is the whole difficulty: a model can memorise the games it saw, and memorisation looks identical to learning until you test it on new games.</p>
+    <p>The models differ only in what shape <code>f</code> is allowed to take. A logistic regression makes <code>f</code> a weighted sum pushed through a curve. A tree makes it a nested set of if-statements. A simulator makes it the outcome of playing the game 1,000 times. That is the entire taxonomy.</p>
+  </div>
+</section>
+
+<!-- 02 -->
+<section class="ch" id="c02">
+  <span class="chn">Chapter 02</span>
+  <h2>Logistic regression</h2>
+  <div class="col"><p>This is V1, and it is also your best-performing model. It computes a weighted sum of the features, then squashes that sum into (0,1).</p></div>
+  <pre class="eq">z  = &beta;&#8320; + &beta;&#8321;x&#8321; + &beta;&#8322;x&#8322; + &hellip; + &beta;&#8342;x&#8342;      <i>the linear predictor, any real number</i>
+p  = &sigma;(z) = 1 / (1 + e<sup>&minus;z</sup>)                <i>the logistic (sigmoid) function</i></pre>
+  <div class="col">
+    <p>The sigmoid is the only interesting part. It is monotone, so a bigger <code>z</code> always means a bigger probability, and it saturates &mdash; near the ends, large changes in <code>z</code> barely move <code>p</code>. That saturation is why a logistic model rarely emits 0.95 unless the evidence is overwhelming.</p>
+    <p>Inverting it gives the interpretation that matters:</p>
+  </div>
+  <pre class="eq">z = log( p / (1 &minus; p) )        <i>the <b>log-odds</b>, or "logit"</i></pre>
+  <div class="col">
+    <p>So logistic regression is linear <em>in log-odds</em>. A coefficient <code>&beta;&#8342;</code> is not &ldquo;how much probability this feature adds&rdquo; &mdash; it is how much the log-odds move per one-unit change in <code>x&#8342;</code>. Exponentiate it and you get an odds multiplier.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>The sigmoid, with one of your real games on it</h3><span class="fn">the largest Elo mismatch in 2026</span></div>
+    <div class="chart" id="c-sigmoid"></div>
+    <figcaption>Notice how flat the curve is at the extremes. To reach <b>p = 0.90</b> the linear predictor must reach <b>z &asymp; 2.2</b>; your model&rsquo;s most extreme game only reached z = 0.53. In a domain where features are weak, <b>the sigmoid does most of the work of keeping you honest.</b></figcaption>
+  </figure>
+  <h3>How the coefficients are found</h3>
+  <div class="col"><p>By <b>maximum likelihood</b>. Write the probability of the labels you actually observed, then pick the <code>&beta;</code> that makes it largest. Taking the log turns the product into a sum:</p></div>
+  <pre class="eq">L(&beta;) = &Sigma;&#8341;  y&#8341;&middot;log p&#8341;  +  (1 &minus; y&#8341;)&middot;log(1 &minus; p&#8341;)     <i>log-likelihood, maximise</i>
+&#8467;(&beta;) = &minus;L(&beta;) / n                                   <i>log-loss, minimise &mdash; same thing</i>
+
+&part;&#8467;/&part;&beta;&#8342; = (1/n) &Sigma;&#8341; (p&#8341; &minus; y&#8341;) &middot; x&#8341;&#8342;                      <i>the gradient</i></pre>
+  <div class="col">
+    <p>That gradient is worth staring at. The update for each feature is driven by <b>(prediction &minus; truth) &times; feature value</b>. When the model is right, the error term is near zero and nothing moves. There is no closed-form solution, so a solver iterates &mdash; <code>lbfgs</code> for L2, <code>liblinear</code> for L1.</p>
+  </div>
+  <div class="yours">
+    <span class="eyebrow">Your model, in full</span>
+    <p>Three features, fitted on 2026. Because the inputs are standardised (Chapter 04), each coefficient is directly comparable:</p>
+    <div id="eq-yours"></div>
+    <p>Read it as: a one-standard-deviation edge in <code>pythag_differential</code> raises the home log-odds by <span id="v-pyth"></span>, which is an odds multiplier of <span id="v-pythx"></span>. The intercept <span id="v-int"></span> is home-field advantage: with three perfectly neutral features the model still predicts <span id="v-base"></span> for the home team.</p>
+  </div>
+  <div class="yours">
+    <span class="eyebrow">One prediction, computed end to end</span>
+    <div id="eq-worked"></div>
+    <p>The model said <span id="w-prob"></span> and the home team <b>lost</b>. That is not a bug. A calibrated 63% prediction is supposed to be wrong 37% of the time &mdash; and checking that it is wrong at the right <em>rate</em> is exactly what Chapter 14 is about.</p>
+  </div>
+</section>
+
+<!-- 03 -->
+<section class="ch" id="c03">
+  <span class="chn">Chapter 03</span>
+  <h2>Regularisation: L1, L2, and what C actually does</h2>
+  <div class="col"><p>Maximum likelihood alone will happily give a feature a huge coefficient if that helps fit the training data. Regularisation adds a penalty for large coefficients, so the fit has to pay for complexity.</p></div>
+  <pre class="eq">L2 (ridge)   minimise   &#8467;(&beta;) + (1/2C) &middot; &Sigma; &beta;&#8342;&sup2;        <i>penalise squared size</i>
+L1 (lasso)   minimise   &#8467;(&beta;) + (1/C)   &middot; &Sigma; |&beta;&#8342;|        <i>penalise absolute size</i>
+
+small C  &rarr;  strong penalty  &rarr;  coefficients pulled toward 0
+large C  &rarr;  weak penalty    &rarr;  approaches plain maximum likelihood</pre>
+  <div class="col">
+    <p><code>C</code> is inverse regularisation strength. Your models use <code>C=0.1</code>, which is fairly strong &mdash; appropriate when you have ~1,300 training rows and the signal is small.</p>
+    <p>The difference between L1 and L2 is geometric, and it is the reason L1 selects features. Picture the penalty&rsquo;s constraint region in coefficient space. L2&rsquo;s is a circle; L1&rsquo;s is a diamond with corners <em>on the axes</em>. The optimum tends to land where the loss contour first touches that region, and a diamond is far more likely to be touched at a corner &mdash; a corner means some coefficients are exactly zero.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>L1 versus L2 on 60 of your features, same C</h3><span class="fn">C = 0.1, identical data</span></div>
+    <div class="chart" id="c-sparse"></div>
+    <figcaption>L2 keeps <b>all 60</b> features with small weights. L1 zeroes <b>43 of them</b> and keeps <span id="v-l1n"></span>. This is why the automated search in your project could pick <code>logit_l1</code> and get feature selection for free &mdash; the penalty does the selecting as part of the fit.</figcaption>
+  </figure>
+</section>
+
+<!-- 04 -->
+<section class="ch" id="c04">
+  <span class="chn">Chapter 04</span>
+  <h2>Feature scaling, and why trees do not care</h2>
+  <div class="col"><p>Your <code>elo_differential</code> ranges over hundreds; <code>pythag_differential</code> over tenths. Standardisation puts them on a common scale:</p></div>
+  <pre class="eq">z&#8342; = (x&#8342; &minus; &mu;&#8342;) / &sigma;&#8342;        <i>&mu; and &sigma; computed on the TRAINING fold only</i></pre>
+  <div class="col">
+    <p>This matters for two separate reasons. First, the <b>penalty</b> in Chapter 03 is applied to raw coefficient size, so an unscaled feature measured in hundreds gets an artificially tiny coefficient and is effectively over-penalised. Second, <b>gradient descent</b> converges badly when features have wildly different scales, because the loss surface becomes a long narrow valley.</p>
+    <p>Trees are immune to both. A tree only asks &ldquo;is <code>x&#8342; &le; t</code>?&rdquo;, and that question is unchanged by any monotone rescaling. This is why V3 onward could throw raw features at XGBoost without a scaler, while your logistic models all need one.</p>
+  </div>
+  <div class="yours">
+    <span class="eyebrow">Your scaler</span>
+    <div id="eq-scale"></div>
+    <p>Those are the training-fold means and standard deviations. Fitting them on all the data instead would leak information about the test games into the transform &mdash; a small leak, but the same category as the ones that produced the inflated numbers elsewhere in this project.</p>
+  </div>
+</section>
+
+<!-- 05 -->
+<section class="ch" id="c05">
+  <span class="chn">Chapter 05</span>
+  <h2>Decision trees and boosting</h2>
+  <div class="col"><p>A decision tree partitions feature space into boxes and predicts a constant in each box. It is built greedily: at each node, try every feature and every threshold, and take the split that most reduces the loss.</p></div>
+  <pre class="eq">at each node, choose (feature j, threshold t) maximising
+    gain = loss(parent) &minus; [ loss(left child) + loss(right child) ]
+recurse until a stopping rule fires (depth, min samples, no positive gain)</pre>
+  <div class="col">
+    <p>One tree is high-variance: change a few rows and the splits move. <b>Boosting</b> fixes that by building many small trees in sequence, each one fitting what the previous ones got wrong.</p>
+  </div>
+  <pre class="eq">F&#8320;(x) = a constant                       <i>start with the base rate</i>
+for m = 1 &hellip; M:
+    r&#8341; = &minus;&part;&#8467;/&part;F(x&#8341;)                       <i>the "pseudo-residual" &mdash; for log-loss, this is (y&#8341; &minus; p&#8341;)</i>
+    h&#8344; = a shallow tree fitted to r
+    F&#8344;(x) = F&#8344;&#8331;&#8321;(x) + &eta; &middot; h&#8344;(x)              <i>&eta; = learning rate, a deliberate under-step</i>
+p(x) = &sigma;( F&#8352;(x) )</pre>
+  <div class="col">
+    <p>Each tree is fitted to the <em>gradient of the loss</em>, which for log-loss is just the residual <code>y &minus; p</code>. The trees operate in log-odds space, and the sigmoid is applied once at the end &mdash; the same sigmoid as Chapter 02.</p>
+    <p>The learning rate <code>&eta;</code> is why boosting works: each tree is only allowed to fix a fraction of the remaining error, so hundreds of weak corrections accumulate instead of a few aggressive ones overfitting.</p>
+  </div>
+  <h3>What each XGBoost knob does</h3>
+  <div class="tblwrap"><table id="t-xgb"></table></div>
+  <div class="gotcha">
+    <span class="eyebrow">The failure mode boosting is prone to</span>
+    <p>Boosting fits residuals, and in a low-signal problem most of the residual <em>is noise</em>. With enough trees and enough depth, it will fit that noise perfectly. This is exactly what happened in your V8 generation: the model had the capacity to memorise which franchises won at home during 2015&ndash;2025, and did.</p>
+    <p>The defences are all in the table above: shallow trees, a small learning rate, strong <code>reg_lambda</code>, and a large <code>min_child_weight</code> so no leaf is built from a handful of games.</p>
+  </div>
+</section>
+
+<!-- 06 -->
+<section class="ch" id="c06">
+  <span class="chn">Chapter 06</span>
+  <h2>Bagging versus boosting</h2>
+  <div class="col"><p>Both build many trees, but they attack different halves of the error.</p></div>
+  <pre class="eq"><b>Bagging</b> (RandomForest, ExtraTrees)
+    train each tree on a bootstrap sample, on a random feature subset
+    predict by <b>averaging</b> &mdash; trees are independent, order does not matter
+    reduces <b>variance</b>; each tree is deep and overfits, the average cancels it
+
+<b>Boosting</b> (XGBoost, LightGBM, CatBoost)
+    train trees <b>sequentially</b>, each on the previous ensemble's residuals
+    predict by <b>summing</b> &mdash; order is essential
+    reduces <b>bias</b>; each tree is shallow and underfits, the sum builds up</pre>
+  <div class="col">
+    <p>ExtraTrees goes further than RandomForest: instead of searching for the best threshold, it picks thresholds <em>at random</em>. That sounds worse and often is not &mdash; it adds variance to each tree, which the average removes, and it removes a source of overfitting in the split search itself.</p>
+    <p><b>Stacking</b> is the third pattern, and you used it: train several models, then train a small model on <em>their outputs</em>. Your stack fitted a logistic regression on <code>[logit(sim), logit(logit3)]</code>. The key discipline is that the stacker must be fitted on predictions the base models made for games they did not train on, or it learns to trust whichever model memorised hardest.</p>
+  </div>
+</section>
+
+<!-- 07 -->
+<section class="ch" id="c07">
+  <span class="chn">Chapter 07</span>
+  <h2>Neural networks</h2>
+  <div class="col"><p>Your V9 experiment tried an MLP with layers 128&ndash;64&ndash;32. An MLP is an alternating stack of affine maps and elementwise nonlinearities.</p></div>
+  <pre class="eq">h&#8321; = g(W&#8321;x + b&#8321;)        <i>128 units, g = ReLU: g(u) = max(0,u)</i>
+h&#8322; = g(W&#8322;h&#8321; + b&#8322;)       <i>64 units</i>
+h&#8323; = g(W&#8323;h&#8322; + b&#8323;)       <i>32 units</i>
+p  = &sigma;(w&#8348;h&#8323; + b)         <i>one output, same sigmoid as Chapter 02</i></pre>
+  <div class="col">
+    <p>Without the nonlinearity <code>g</code>, the whole stack would collapse: a composition of affine maps is just another affine map, and you would have reinvented logistic regression with extra steps. ReLU is what lets depth buy you anything.</p>
+    <p>Training is the same idea as Chapter 02 &mdash; minimise log-loss by gradient descent &mdash; with <b>backpropagation</b> being the chain rule applied efficiently to get the gradient with respect to every weight in every layer.</p>
+  </div>
+  <div class="gotcha">
+    <span class="eyebrow">Why it lost to a 3-feature logistic on your data</span>
+    <p>Count the parameters. With 121 input features, that MLP has roughly 121&times;128 + 128&times;64 + 64&times;32 + 32 &asymp; <b>26,000 weights</b>, fitted on about 24,000 training games. Roughly one parameter per training example.</p>
+    <p>Neural networks earn their keep when the input has structure a hand-built feature cannot capture &mdash; adjacency in an image, order in a sentence &mdash; and when there is far more data than parameters. A table of 121 pre-engineered team statistics has no such hidden structure left to find. This is a case where the model class was a poor match for the data shape, not a case of bad tuning.</p>
+  </div>
+</section>
+
+<!-- 08 -->
+<section class="ch" id="c08">
+  <span class="chn">Chapter 08</span>
+  <h2>Empirical Bayes shrinkage</h2>
+  <div class="col">
+    <p>This is the statistics inside <span class="file">src/pa_sim/rates.py</span>, and it is the most broadly useful idea in the whole project. The problem: a batter is 4-for-40 in home runs. Is his true rate 10%? Almost certainly not &mdash; 40 attempts is nearly no evidence, and 10% would be elite.</p>
+    <p>The Bayesian answer treats the true rate as drawn from a prior. For a binary outcome the conjugate prior is the Beta distribution, which makes the posterior mean a clean weighted average:</p>
+  </div>
+  <pre class="eq">prior      &theta; ~ Beta(&alpha;, &beta;)              <i>with mean &alpha;/(&alpha;+&beta;) = the league rate</i>
+data       x successes in n trials
+posterior  &theta; | x ~ Beta(&alpha; + x, &beta; + n &minus; x)
+
+posterior mean  =  (x + &alpha;) / (n + &alpha; + &beta;)
+                =  (x + <b>k</b>&middot;L) / (n + <b>k</b>)        <i>writing k = &alpha;+&beta;, L = league rate</i></pre>
+  <div class="col">
+    <p>Read that last line as a weighted average of the player&rsquo;s own rate and the league rate, where <code>k</code> is <b>how many games&rsquo; worth of league-average evidence the prior is worth</b>. With <code>n</code> small, the league rate dominates. With <code>n &raquo; k</code>, the player&rsquo;s own rate dominates. The shrinkage is automatic and smooth.</p>
+    <p>The remaining question is where <code>k</code> comes from. Hand-setting it is guessing. Instead <b>method of moments</b> estimates it from the spread of observed rates across all players: if true rates really varied a lot, you would see more spread between players than binomial sampling noise alone can explain, and the excess tells you the prior&rsquo;s variance.</p>
+  </div>
+  <pre class="eq">var(observed rates)  =  var(true rates)  +  E[ binomial sampling noise ]
+                                &darr;
+prior_var  =  var_obs  &minus;  E[ L(1&minus;L)/n ]
+
+k  =  L(1&minus;L) / prior_var  &minus;  1      <i>large k &rArr; players barely differ &rArr; shrink hard</i></pre>
+  <div class="yours">
+    <span class="eyebrow">Your fitted shrinkage constants, from 1.7M plate appearances</span>
+    <p>Every one of these was estimated from your data, not chosen:</p>
+    <div class="tblwrap"><table id="t-eb"></table></div>
+    <p>The pattern is subtler than &ldquo;rarer means shrink harder&rdquo;, and your own numbers show why. What <code>k</code> actually measures is <b>how much of the observed spread between players is real skill rather than sampling noise</b>. Strikeout rate has the smallest batter <code>k</code> (46.7) because K% genuinely varies enormously between hitters. Doubles have one of the largest (1,112) because most of the observed spread is luck.</p>
+    <p>Triples are the interesting case: they are far rarer than doubles, yet their batter <code>k</code> is <em>lower</em> (638 vs 1,112). The formula has discovered that triple rate reflects a real, persistent skill &mdash; footspeed &mdash; so it shrinks them less than their rarity alone would suggest. Compare the pitcher column, where triples have the largest <code>k</code> of all (2,488): a pitcher has almost no control over whether a ball becomes a triple. <b>The same statistic, split by role, correctly identifies that this is a batter skill and not a pitcher skill.</b> Nobody told it that.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>The same observed 10% HR rate, shrunk by sample size</h3><span class="fn" id="fn-eb"></span></div>
+    <div class="chart" id="c-eb"></div>
+    <figcaption>Two players with <b>identical</b> observed rates get very different estimates: the 40-PA player is pulled to <span id="v-rook"></span>, the 600-PA player only to <span id="v-reg"></span>. <b>This is regularisation for parameters instead of coefficients</b>, and it is the same bias-variance trade in different clothing.</figcaption>
+  </figure>
+  <div class="gotcha">
+    <span class="eyebrow">A sign error worth remembering</span>
+    <p>When splitting rates by pitcher handedness, the split samples are about half the size, so they need to be shrunk <em>harder</em> &mdash; a larger <code>k</code>. The first version of this code multiplied <code>k</code> by <b>0.5</b>, which shrinks <em>less</em>, letting a 120-PA vs-lefties sample move the estimate more than the player&rsquo;s full-season sample could. Fixing it to <code>k &times; 3.0</code> changed the model from failing its validation gate to passing it. <b>The direction of a shrinkage adjustment is easy to invert and the code still runs.</b></p>
+  </div>
+</section>
+
+<!-- 09 -->
+<section class="ch" id="c09">
+  <span class="chn">Chapter 09</span>
+  <h2>Odds ratios and log5</h2>
+  <div class="col"><p>Given a batter who homers 5% of the time and a pitcher who allows 2% against a league rate of 3%, what happens when they meet? Averaging is wrong &mdash; it ignores that both numbers are already measured against the same league.</p>
+  <p>The right move is to work in <b>odds</b>, where the effects multiply:</p></div>
+  <pre class="eq">odds(p) = p / (1 &minus; p)
+
+odds(matchup)  =  odds(batter) &times; odds(pitcher) / odds(league)
+
+p(matchup)     =  odds / (1 + odds)          <i>convert back</i></pre>
+  <div class="col">
+    <p>Dividing by the league odds is the important part: it removes the league baseline that is already baked into both individual rates, so you are combining the two <em>deviations</em> rather than double-counting the average. This is the classic <b>log5</b> formula, and it has a neat property &mdash; a league-average batter against a league-average pitcher returns exactly the league rate.</p>
+    <p>For an outcome with more than two possibilities, the same idea extends multiplicatively and then renormalises:</p>
+  </div>
+  <pre class="eq">raw&#8344;  =  b&#8344; &middot; p&#8344; / L&#8344;              <i>for each of your 8 outcome classes</i>
+P&#8344;    =  raw&#8344; / &Sigma;&#8341; raw&#8341;            <i>renormalise to a valid distribution</i></pre>
+  <div class="yours">
+    <span class="eyebrow">In your code</span>
+    <p><span class="file">src/pa_sim/rates.py &rarr; log5()</span> implements exactly this over the eight classes <code>K, BB, 1B, 2B, 3B, HR, OUT, DP</code>. The unit test <code>test_log5_is_neutral_at_league_average</code> checks the neutrality property, and <code>test_log5_moves_the_right_way</code> checks that a high-strikeout pitcher raises the strikeout probability. <b>Both tests encode a mathematical property rather than a remembered output</b>, which is the kind of test that survives refactoring.</p>
+  </div>
+</section>
+
+<!-- 10 -->
+<section class="ch" id="c10">
+  <span class="chn">Chapter 10</span>
+  <h2>Markov chains</h2>
+  <div class="col">
+    <p>A Markov chain is a system that moves between states, where the next state depends only on the current one &mdash; not on how you got there. That property is the <b>Markov assumption</b>, and baseball satisfies it well: given runners on first and second with one out, how the inning reached that configuration barely matters.</p>
+    <p>Your state space is small and exact:</p>
+  </div>
+  <pre class="eq">bases &isin; {000, 100, 010, 001, 110, 101, 011, 111}     <i>8 occupancy patterns (3 bits)</i>
+outs  &isin; {0, 1, 2}                                   <i>3 values</i>
+                    8 &times; 3 = <b>24 states</b>, plus an absorbing "3 outs"</pre>
+  <div class="col">
+    <p>Each plate-appearance outcome is a deterministic transition from a state, producing a new state plus some runs. Because there are only 8 outcome classes and 24 states, the whole thing is a fixed 24&times;8 lookup table &mdash; built once in <span class="file">src/pa_sim/markov.py</span>.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>Rows from your actual transition table</h3><span class="fn">0 outs &middot; X = occupied</span></div>
+    <div class="tblwrap"><table id="t-markov"></table></div>
+    <figcaption>Note <code>BB</code> with the bases empty versus loaded: a walk advances runners <b>only when forced</b>, so it scores 0 runs from <code>000</code> and 1 run from <code>123</code>. Encoding that rule correctly is the difference between a simulator and a random number generator.</figcaption>
+  </figure>
+  <div class="col">
+    <p>Once you have the table, you can compute the exact distribution of runs in an inning without simulating anything. Maintain a probability distribution over (state, runs-so-far) and push it through one plate appearance at a time:</p>
+  </div>
+  <pre class="eq">for each PA t:
+    for each live (bases, outs, runs) with probability w:
+        for each outcome e with probability P&#8344;:
+            move w&middot;P&#8344; into (new_bases, new_outs, runs + runs_scored)
+            or into the "inning over" accumulator if it made the 3rd out</pre>
+  <div class="col">
+    <p>This is <b>dynamic programming</b>: the answer is built from the answers to smaller subproblems, and no sampling is involved. The result is the true run distribution to floating-point precision.</p>
+  </div>
+  <div class="gotcha">
+    <span class="eyebrow">Where the Markov assumption is genuinely wrong here</span>
+    <p>Your table advances runners deterministically &mdash; a single always moves a runner exactly one base. Real baseball is probabilistic: a runner scores from second on a single roughly 60% of the time depending on the runner, the outfielder, and the number of outs. That is a modelling choice, and it narrows the run distribution slightly. It was compensated for with a single global scaling factor rather than fixed properly, which is a known limitation of the implementation rather than of the method.</p>
+  </div>
+</section>
+
+<!-- 11 -->
+<section class="ch" id="c11">
+  <span class="chn">Chapter 11</span>
+  <h2>Monte Carlo</h2>
+  <div class="col">
+    <p>If the chain in Chapter 10 gives the exact answer, why also sample it 1,000 times? Because exactness stops being available as soon as the model gets realistic. Walk-off rules, the home team skipping the bottom of the 9th when ahead, extra innings, a pitcher change mid-inning &mdash; each of these breaks the clean recursion. Sampling does not care.</p>
+    <p>Monte Carlo replaces &ldquo;compute the distribution&rdquo; with &ldquo;draw from it many times and count&rdquo;. Its accuracy is governed by one formula:</p>
+  </div>
+  <pre class="eq">estimate  &mu;&#770; = (1/N) &Sigma; X&#7522;                    <i>the sample mean of N episodes</i>
+error     SE = &sigma; / &radic;N                       <i>standard error</i>
+
+&rArr;  <b>4&times; the episodes buys 2&times; the precision.</b>  Halving the error costs 4&times; the compute.</pre>
+  <div class="col">
+    <p>That square root is why 1,000 episodes is a reasonable default and 100,000 is rarely worth it. It also sets the floor on what a simulator can resolve: with N=1,000, a win probability has a standard error of about <code>&radic;(0.25/1000) &asymp; 1.6</code> percentage points. Any &ldquo;edge&rdquo; smaller than that is invisible to the simulation itself.</p>
+  </div>
+  <div class="yours">
+    <span class="eyebrow">The verification trick worth stealing</span>
+    <p>You have two independent implementations of the same process: the exact recursion and the sampler. They must agree, and how closely is predictable from the formula above. Measured on your code:</p>
+    <div class="tblwrap"><table id="t-mc"></table></div>
+    <p>Agreement to <b>0.17 standard errors</b> at 100,000 episodes. Neither implementation validates itself, but the two together do &mdash; a bug in the transition table would break both identically, while a bug in <em>either</em> the recursion or the sampling loop shows up as a divergence. <b>This is the strongest correctness evidence available when you have no ground truth to compare against.</b></p>
+  </div>
+</section>
+
+<!-- 12 -->
+<section class="ch" id="c12">
+  <span class="chn">Chapter 12</span>
+  <h2>Poisson and Skellam</h2>
+  <div class="col"><p>Instead of predicting who wins, you can predict how many runs each side scores and derive the winner. Runs are non-negative integers, so the natural first model is Poisson.</p></div>
+  <pre class="eq">P(X = k)  =  &lambda;<sup>k</sup> e<sup>&minus;&lambda;</sup> / k!             <i>X = runs, &lambda; = expected runs</i>
+E[X] = &lambda;      Var[X] = &lambda;                <i>mean and variance are the SAME number</i>
+
+log &lambda;  =  &beta;&#8320; + &beta;&#8321;x&#8321; + &hellip;                  <i>Poisson regression: model log &lambda; linearly</i></pre>
+  <div class="col">
+    <p>The log link is what keeps <code>&lambda;</code> positive for any coefficients. Note the mean-equals-variance property &mdash; it is a strong assumption, and baseball violates it. Real run distributions are <b>overdispersed</b>: variance exceeds the mean, because innings are correlated and a blowout is a single cascading event. A negative binomial adds a dispersion parameter to fix this, and is the natural next step if you revisit this.</p>
+    <p>Given two independent Poisson counts, the distribution of their <em>difference</em> has a name:</p>
+  </div>
+  <pre class="eq">X&#8341; ~ Poisson(&lambda;&#8341;),  X&#8342; ~ Poisson(&lambda;&#8342;)
+X&#8341; &minus; X&#8342; ~ <b>Skellam</b>(&lambda;&#8341;, &lambda;&#8342;)
+
+P(home wins) = P(X&#8341; &minus; X&#8342; > 0) = 1 &minus; Skellam_cdf(0; &lambda;&#8341;, &lambda;&#8342;)</pre>
+  <div class="col">
+    <p>This gives a closed-form win probability from two run models, with no simulation at all &mdash; <code>scipy.stats.skellam</code> in <span class="file">research/backtest_2026/19_score_target.py</span>. The tie mass needs handling separately, since baseball has no ties.</p>
+  </div>
+  <div class="yours">
+    <span class="eyebrow">Why modelling runs is theoretically attractive</span>
+    <p>A win/loss label carries one bit. A final score carries much more &mdash; a 9&ndash;2 result and a 3&ndash;2 result are both &ldquo;home win&rdquo; but say very different things about the teams. Training on the score therefore extracts more information per game from the same schedule. That is a real and standard argument, and it is why this is worth understanding even though on your data the approach did not end up winning.</p>
+  </div>
+</section>
+
+<!-- 13 -->
+<section class="ch" id="c13">
+  <span class="chn">Chapter 13</span>
+  <h2>From Elo to Kalman filters</h2>
+  <div class="col"><p>Elo is probably the most familiar algorithm in your stack, and seeing what it really is unlocks a large family of methods. Elo is an <b>online update rule</b>:</p></div>
+  <pre class="eq">predict   p = 1 / (1 + 10<sup>&minus;(R&#8341;&minus;R&#8342;)/400</sup>)      <i>a sigmoid on the rating difference</i>
+update    R&#8341; &larr; R&#8341; + <b>K</b>&middot;(outcome &minus; p)           <i>move toward the surprise</i></pre>
+  <div class="col">
+    <p>Look at the update: <b>(observed &minus; predicted) &times; a constant</b>. That is the same shape as the logistic-regression gradient in Chapter 02, applied one game at a time. Elo is stochastic gradient descent on a two-parameter logistic model with a fixed step size.</p>
+    <p>And that fixed step size is its weakness. <code>K</code> is the same for a team you have watched for 800 games and a team fresh out of the offseason, even though your uncertainty about them is wildly different. What you want is a step size that <em>depends on how well the rating is currently known</em>. That is a <b>Kalman filter</b>.</p>
+  </div>
+  <pre class="eq">state       &theta;&#8348; = &phi;&middot;&theta;&#8348;&#8331;&#8321; + &eta;&#8348;          &eta; ~ N(0, Q)     <i>latent strength, drifts over time</i>
+observation y&#8348; = &theta;&#8341; &minus; &theta;&#8342; + h + &epsilon;&#8348;      &epsilon; ~ N(0, R)     <i>run margin, noisily observed</i>
+
+predict     P &larr; &phi;&sup2;P + Q                              <i>uncertainty grows between games</i>
+innovation  v = y &minus; (&theta;&#8341; &minus; &theta;&#8342; + h)                     <i>the surprise</i>
+gain        <b>K = PH&#7488; / (HPH&#7488; + R)</b>                       <i>DERIVED, not chosen</i>
+update      &theta; &larr; &theta; + K&middot;v ,   P &larr; P &minus; K&middot;H&#7488;P                <i>shrink uncertainty</i></pre>
+  <div class="col">
+    <p>Two things are worth unpacking. <code>P</code> is a full covariance matrix over all 30 teams, so beating a team you were uncertain about updates your belief about <em>that</em> team more, and correlations between teams are tracked. And the gain <code>K</code> is a ratio of <b>how uncertain you are</b> to <b>how noisy the observation is</b> &mdash; when <code>P</code> is large relative to <code>R</code>, trust the new game; when <code>P</code> is small, trust your existing estimate.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>The Kalman gain falls as a team gets pinned down</h3><span class="fn">your fitted q = 0.0008, r = 9.0</span></div>
+    <div class="chart" id="c-gain"></div>
+    <figcaption>The gain drops <b>12-fold</b> from a team&rsquo;s first game to its 800th, then flattens where new information and drift balance. <b>Elo would use the same K at every point on this curve.</b> The filter also handles the offseason correctly &mdash; instead of an ad-hoc regression to the mean, you inflate <code>Q</code>, which says &ldquo;teams changed more than usual and I know less than I did&rdquo;.</figcaption>
+  </figure>
+  <div class="yours">
+    <span class="eyebrow">What your fitted parameters revealed</span>
+    <p>Tuning on 2015&ndash;2019 chose <code>q = 0.0008</code>, <code>&phi; = 1.0</code>, <code>season_inflate = 1.0</code>. Read those: <code>&phi; = 1.0</code> means <b>no mean reversion</b> &mdash; a pure random walk. <code>season_inflate = 1.0</code> means <b>no extra offseason drift</b>. The data asked for the simplest possible version of the model and declined the extra machinery.</p>
+    <p>That is a genuinely useful outcome. A fitted parameter sitting exactly at the boundary of its range is the model telling you that term is not needed. <span class="file">src/edge/statespace.py</span></p>
+  </div>
+</section>
+
+<!-- 14 -->
+<section class="ch" id="c14">
+  <span class="chn">Chapter 14</span>
+  <h2>Calibration</h2>
+  <div class="col">
+    <p>A model can rank games perfectly and still print wrong numbers. <b>Discrimination</b> (does it order games correctly) and <b>calibration</b> (do the stated probabilities match reality) are independent properties, and they need separate fixes.</p>
+    <p>The standard test is a reliability curve: bucket predictions, then compare mean predicted against observed frequency in each bucket. The two standard repairs:</p>
+  </div>
+  <pre class="eq"><b>Platt scaling</b> &mdash; fit a 1-D logistic regression on the model's own logit
+    p&#8242; = &sigma;( a&middot;logit(p) + b )
+    2 parameters, monotone, cannot reorder anything, works on small data
+
+<b>Isotonic regression</b> &mdash; fit the best non-decreasing step function
+    p&#8242; = g(p),   g monotone, fitted by pool-adjacent-violators
+    non-parametric, more flexible, needs more data or it overfits the steps</pre>
+  <div class="col">
+    <p>Both are <b>monotone</b>, which is the key property: they change the numbers without changing the ordering, so AUC is untouched while log-loss and Brier improve. Your project also used a third, simpler form &mdash; shrinking toward the base rate:</p>
+  </div>
+  <pre class="eq">p&#8242; = base + &lambda;&middot;(p &minus; base)        <i>&lambda; = 0.38 fitted on your data</i></pre>
+  <div class="gotcha">
+    <span class="eyebrow">The subtlety that caught this project</span>
+    <p>Shrinking toward the base rate is monotone <em>for a fixed base and &lambda;</em>. But when both are refitted weekly, the transform differs between weeks, so the global ordering <b>does</b> change &mdash; and predictions near 0.5 can cross the decision boundary. That is how a &ldquo;calibration fix&rdquo; ended up changing 164 actual picks.</p>
+    <p>If you want calibration without changing picks, fit one transform and keep it fixed, or define your confidence tiers as <b>quantiles</b> of the prediction distribution rather than absolute thresholds. Quantile tiers are invariant to any monotone recalibration.</p>
+  </div>
+</section>
+
+<!-- 15 -->
+<section class="ch" id="c15">
+  <span class="chn">Chapter 15</span>
+  <h2>Hyperparameter search</h2>
+  <div class="col"><p>Model parameters are learned from data; hyperparameters (tree depth, <code>C</code>, learning rate) are chosen by search. There are three generations of method, and your project used all three.</p></div>
+  <pre class="eq"><b>Grid search</b>     every combination on a lattice
+                 cost explodes as d&#7511;; wastes trials on dimensions that do not matter
+
+<b>Random search</b>   sample uniformly from the space
+                 provably better than grid in high dimensions, because most
+                 hyperparameters are irrelevant and random search never wastes
+                 a whole axis resolving one of them
+
+<b>TPE</b> (Optuna)   model-based: build p(good) and p(bad) over the space from
+                 completed trials, then propose points maximising p(good)/p(bad)</pre>
+  <div class="col">
+    <p>TPE is &ldquo;Tree-structured Parzen Estimator&rdquo;. Rather than modelling <code>score = f(params)</code> directly as a Gaussian process would, it splits past trials into good and bad by a quantile, fits a density over each group, and samples where the ratio is highest. This handles conditional spaces naturally &mdash; <code>max_depth</code> only exists when the family is a tree &mdash; which is why it suits a search over several model families at once.</p>
+  </div>
+  <div class="yours">
+    <span class="eyebrow">Reading a search as a diagnostic, not just a chooser</span>
+    <p>Your 300-trial run spent <b>265 trials</b> on the 3-feature configuration. That concentration is not just how TPE finds an optimum &mdash; it is information. A sampler piling up in one corner of the space is telling you that region dominates, and a sampler that spreads evenly is telling you nothing distinguishes the options.</p>
+    <p>The essential discipline: the search must be scored by <b>walk-forward validation inside the search set</b>, with any feature selection performed inside each fold. Selecting features on all the data and then cross-validating measures a model that has already seen the answer.</p>
+  </div>
+</section>
+
+<!-- 16 -->
+<section class="ch" id="c16">
+  <span class="chn">Chapter 16</span>
+  <h2>Loss functions, and what &ldquo;proper&rdquo; means</h2>
+  <div class="col"><p>A scoring rule is <b>proper</b> if it is optimised by reporting your true belief. This is a mathematical property, not a preference, and it is why accuracy is a poor training target.</p></div>
+  <pre class="eq"><b>Log-loss</b>   &#8467; = &minus;[ y&middot;log p + (1&minus;y)&middot;log(1&minus;p) ]
+             proper &middot; unbounded &middot; punishes confident errors severely
+             log(0) = &minus;&infin;, so one confident mistake can dominate
+
+<b>Brier</b>      &#8467; = (p &minus; y)&sup2;
+             proper &middot; bounded in [0,1] &middot; gentler on confident errors
+
+<b>Accuracy</b>   &#8467; = 1 if (p &ge; 0.5) &ne; y
+             <b>NOT proper</b> &middot; discards the probability &middot; zero gradient almost everywhere</pre>
+  <div class="col">
+    <p>Here is why properness matters concretely. Suppose your honest belief is 60%. Under log-loss, your expected score is best if you report exactly 0.60. Under accuracy, reporting 0.60 and reporting 0.99 score <em>identically</em> &mdash; both land on the same side of 0.5. Accuracy gives you no reason to be honest about magnitude, and no gradient to learn from, which is why every model here trains on log-loss and is only <em>reported</em> in accuracy.</p>
+    <p>The decomposition below is the reason both properties from Chapter 14 show up in one number:</p>
+  </div>
+  <pre class="eq">Brier  =  <b>reliability</b>  &minus;  <b>resolution</b>  +  <b>uncertainty</b>
+          (calibration)    (discrimination)   (irreducible)</pre>
+  <div class="col">
+    <p>A proper score improves if you calibrate better <em>or</em> discriminate better, and the third term is the floor set by the problem itself. Two models with identical Brier scores can be differently broken &mdash; one badly calibrated but sharp, the other honest but vague &mdash; which is exactly why you look at reliability curves alongside the aggregate number.</p>
+  </div>
+</section>
+
+<footer>
+  <b>Code referenced</b> &nbsp;src/pa_sim/{rates,markov,sim,usage,game,predict}.py &middot; src/edge/{statespace,benchmark}.py &middot; src/train_v*.py<br>
+  <b>Fitted values</b> &nbsp;every coefficient, shrinkage constant and tuned parameter shown was computed from your data, not chosen for the example<br>
+  <b>Tests</b> &nbsp;tests/test_pa_sim.py encodes the mathematical properties in Chapters 09-11 as assertions<br>
+  <b>Companions</b> &nbsp;docs/ML_LESSONS.html (what the measurements said) &middot; docs/MODEL_HISTORY.html (inventory)
+</footer>
+</div>
+<script>
+const D={"logit":{"features":["elo_differential","pythag_differential","sp_quality_composite_diff"],"coef":[0.03608,0.12588,0.1348],"intercept":0.10336,"means":[0.5336,-0.0017,-0.0468],"scales":[88.9406,0.1045,24.999]},"worked":{"raw":[400.63,0.216,0.0],"z":[4.4985,2.0834,0.0019],"linear":0.52818,"prob":0.62906,"actual":0},"sparsity":{"l1":{"n_features":60,"nonzero":17,"max_abs":0.14554},"l2":{"n_features":60,"nonzero":60,"max_abs":0.19762}},"eb":{"classes":["K","BB","1B","2B","3B","HR","OUT","DP"],"league":[0.22192,0.09439,0.15008,0.04432,0.00418,0.03122,0.43249,0.02141],"k_bat":[46.7,117.4,213.1,1112.3,638.1,194.2,94.2,575.1],"k_pit":[88.6,184.0,481.7,1415.8,2488.1,807.9,248.1,857.9]},"eb_worked":{"league_hr":0.03122,"k":194.2,"rookie":{"obs":"4/40 = 0.1000","shrunk":0.04296},"regular":{"obs":"60/600 = 0.1000","shrunk":0.08318}},"markov":[{"bases":"000","ev":"BB","new_bases":"X__","runs":0,"outs_added":0,"ends":false},{"bases":"000","ev":"1B","new_bases":"X__","runs":0,"outs_added":0,"ends":false},{"bases":"000","ev":"2B","new_bases":"_X_","runs":0,"outs_added":0,"ends":false},{"bases":"000","ev":"HR","new_bases":"___","runs":1,"outs_added":0,"ends":false},{"bases":"000","ev":"OUT","new_bases":"___","runs":0,"outs_added":1,"ends":false},{"bases":"000","ev":"DP","new_bases":"___","runs":0,"outs_added":1,"ends":false},{"bases":"1__","ev":"BB","new_bases":"XX_","runs":0,"outs_added":0,"ends":false},{"bases":"1__","ev":"1B","new_bases":"XX_","runs":0,"outs_added":0,"ends":false},{"bases":"1__","ev":"2B","new_bases":"_XX","runs":0,"outs_added":0,"ends":false},{"bases":"1__","ev":"HR","new_bases":"___","runs":2,"outs_added":0,"ends":false},{"bases":"1__","ev":"OUT","new_bases":"X__","runs":0,"outs_added":1,"ends":false},{"bases":"1__","ev":"DP","new_bases":"___","runs":0,"outs_added":2,"ends":false},{"bases":"1_3","ev":"BB","new_bases":"XXX","runs":0,"outs_added":0,"ends":false},{"bases":"1_3","ev":"1B","new_bases":"XX_","runs":1,"outs_added":0,"ends":false},{"bases":"1_3","ev":"2B","new_bases":"_XX","runs":1,"outs_added":0,"ends":false},{"bases":"1_3","ev":"HR","new_bases":"___","runs":3,"outs_added":0,"ends":false},{"bases":"1_3","ev":"OUT","new_bases":"X_X","runs":0,"outs_added":1,"ends":false},{"bases":"1_3","ev":"DP","new_bases":"__X","runs":0,"outs_added":2,"ends":false},{"bases":"123","ev":"BB","new_bases":"XXX","runs":1,"outs_added":0,"ends":false},{"bases":"123","ev":"1B","new_bases":"XXX","runs":1,"outs_added":0,"ends":false},{"bases":"123","ev":"2B","new_bases":"_XX","runs":2,"outs_added":0,"ends":false},{"bases":"123","ev":"HR","new_bases":"___","runs":4,"outs_added":0,"ends":false},{"bases":"123","ev":"OUT","new_bases":"XXX","runs":0,"outs_added":1,"ends":false},{"bases":"123","ev":"DP","new_bases":"_XX","runs":0,"outs_added":2,"ends":false}],"hook":[1.0,0.981,0.947,0.887,0.764,0.501,0.201,0.042,0.013],"gains":[[1,0.07696566998892579],[10,0.032587201320906624],[50,0.010466536554728194],[200,0.00659164664699071],[800,0.006535805327986342]],"mc":[[1000,-0.0872,0.09],[20000,0.0054,0.0204],[100000,0.0016,0.0091]],"chapters":[["01","The shape of the problem","supervised learning, notation"],["02","Logistic regression","the model under V1 and your best model"],["03","Regularisation","L1, L2, and what C actually does"],["04","Feature scaling","why trees do not care and logistic does"],["05","Decision trees and boosting","what XGBoost is doing under V3-V10"],["06","Bagging vs boosting","random forests, ExtraTrees, and why they differ"],["07","Neural networks","the MLP you tried at 128-64-32"],["08","Empirical Bayes shrinkage","the statistics inside pa_sim/rates.py"],["09","Odds ratios and log5","how two players combine into one matchup"],["10","Markov chains","your 24-state base-out model"],["11","Monte Carlo","why 1,000 episodes, and how you know it is right"],["12","Poisson and Skellam","modelling counts instead of labels"],["13","From Elo to Kalman filters","online updates and state-space models"],["14","Calibration","Platt scaling and isotonic regression"],["15","Hyperparameter search","grid, random, and what TPE does differently"],["16","Loss functions","why log-loss, and what proper means"]]};
+const NS="http://www.w3.org/2000/svg";
+const $=s=>document.querySelector(s);
+const el=(p,t,a)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);p.appendChild(n);return n};
+const txt=(p,x,y,s,c,an)=>{const n=el(p,"text",{x,y,class:c||"lbl"});if(an)n.setAttribute("text-anchor",an);n.textContent=s;return n};
+const svg=(w,h)=>{const s=document.createElementNS(NS,"svg");s.setAttribute("viewBox",`0 0 ${w} ${h}`);s.setAttribute("role","img");return s};
+
+/* TOC */
+$("#toc").innerHTML=D.chapters.map(([n,t,s])=>
+ `<a href="#c${n}"><span class="n">${n}</span><span class="t">${t}</span><span class="s">${s}</span></a>`).join("");
+
+/* ch02 equations */
+(function(){
+ const L=D.logit,f=L.features,c=L.coef;
+ $("#eq-yours").innerHTML=`<pre class="eq">z = <b>${L.intercept}</b>`
+  +f.map((n,i)=>`\n  ${c[i]>=0?"+":"−"} <b>${Math.abs(c[i])}</b> × z(${n})`).join("")
+  +`\np = σ(z)</pre>`;
+ const pi=f.indexOf("pythag_differential");
+ $("#v-pyth").textContent=c[pi].toFixed(5);
+ $("#v-pythx").textContent=Math.exp(c[pi]).toFixed(4)+"×";
+ $("#v-int").textContent=L.intercept;
+ $("#v-base").textContent=(1/(1+Math.exp(-L.intercept))*100).toFixed(1)+"%";
+ const W=D.worked;
+ $("#eq-worked").innerHTML=`<pre class="eq">`
+  +f.map((n,i)=>`${n.padEnd(28)} raw ${String(W.raw[i]).padStart(8)}   z ${String(W.z[i]).padStart(8)}`).join("\n")
+  +`\n\nz = ${D.logit.intercept} + ${c.map((v,i)=>`(${v})(${W.z[i]})`).join(" + ")}\n`
+  +`z = <b>${W.linear}</b>\np = σ(${W.linear}) = <b>${W.prob}</b>   <i>actual outcome: home ${W.actual?"WON":"LOST"}</i></pre>`;
+ $("#w-prob").textContent=(W.prob*100).toFixed(1)+"%";
+ $("#eq-scale").innerHTML=`<pre class="eq">`
+  +f.map((n,i)=>`${n.padEnd(28)} μ = ${String(L.means[i]).padStart(9)}   σ = ${String(L.scales[i]).padStart(9)}`).join("\n")
+  +`</pre>`;
+ $("#v-l1n").textContent=D.sparsity.l1.nonzero+" with nonzero weight";
+})();
+
+/* sigmoid */
+(function(){
+ const W=800,H=250,mT=18,mB=44,mL=52,mR=30;
+ const s=svg(W,H);$("#c-sigmoid").appendChild(s);
+ const x0=-4,x1=4,sx=v=>mL+(v-x0)/(x1-x0)*(W-mL-mR),sy=p=>mT+(1-p)*(H-mT-mB);
+ [0,.25,.5,.75,1].forEach(p=>{el(s,"line",{x1:mL,y1:sy(p),x2:W-mR,y2:sy(p),class:"grid"});
+  txt(s,mL-9,sy(p)+4,p.toFixed(2),"ax","end")});
+ for(let v=-4;v<=4;v+=1){txt(s,sx(v),H-mB+18,v,"ax","middle")}
+ let pts=[];for(let v=x0;v<=x1;v+=0.05)pts.push(`${sx(v)},${sy(1/(1+Math.exp(-v)))}`);
+ el(s,"polyline",{points:pts.join(" "),fill:"none",stroke:"var(--s1)","stroke-width":2});
+ el(s,"line",{x1:mL,y1:sy(.5),x2:W-mR,y2:sy(.5),stroke:"var(--ink-3)","stroke-width":1,opacity:.5});
+ const z=D.worked.linear,p=D.worked.prob;
+ el(s,"line",{x1:sx(z),y1:sy(0),x2:sx(z),y2:sy(p),stroke:"var(--s2)","stroke-width":1,"stroke-dasharray":"3 3"});
+ el(s,"circle",{cx:sx(z),cy:sy(p),r:5.5,fill:"var(--s2)",stroke:"var(--surface)","stroke-width":2});
+ txt(s,sx(z)+10,sy(p)-6,`your game: z=${z}, p=${p}`,"val");
+ el(s,"circle",{cx:sx(2.2),cy:sy(0.9),r:4,fill:"var(--ink-3)"});
+ txt(s,sx(2.2)+9,sy(0.9)+4,"p=0.90 needs z≈2.2","valm");
+ txt(s,mL,H-6,"z  (the linear predictor)","ax");
+})();
+
+/* L1 vs L2 */
+(function(){
+ const r=[["L2 (ridge)",D.sparsity.l2.nonzero,"var(--rule-2)"],["L1 (lasso)",D.sparsity.l1.nonzero,"var(--s1)"]];
+ const W=800,rh=52,mT=22,mL=150,mR=180,H=mT+r.length*rh+16;
+ const s=svg(W,H);$("#c-sparse").appendChild(s);
+ const sx=v=>mL+v/60*(W-mL-mR);
+ for(let t=0;t<=60;t+=15){el(s,"line",{x1:sx(t),y1:mT-8,x2:sx(t),y2:mT+r.length*rh-18,class:"grid"});
+  txt(s,sx(t),mT-14,t,"ax","middle")}
+ r.forEach(([n,v,c],i)=>{const y=mT+i*rh;
+  el(s,"rect",{x:mL,y:y+5,width:Math.max(2,sx(v)-mL),height:20,rx:3,fill:c});
+  txt(s,mL-12,y+20,n,"lbl","end");
+  txt(s,sx(v)+10,y+20,`${v} of 60 nonzero`,"val");
+  txt(s,mL-12,y+35,i?"selects features":"keeps everything","ax","end")});
+ txt(s,mL,H-1,"features with a nonzero coefficient","ax");
+})();
+
+/* EB table + curve */
+(function(){
+ const e=D.eb;
+ let h="<thead><tr><th class='l'>Outcome</th><th>League rate</th><th>k (batter)</th><th>k (pitcher)</th><th class='l'>Reading</th></tr></thead><tbody>";
+ const notes={K:"batters differ a lot — trust the player",BB:"moderate",
+  "1B":"moderate",  "2B":"mostly luck — shrink hard","3B":"almost pure luck",
+  HR:"real skill differences", OUT:"trust the player", DP:"mostly luck"};
+ e.classes.forEach((c,i)=>{h+=`<tr${(c==="3B"||c==="K")?" class='hl'":""}><td class='l'>${c}</td>`
+  +`<td>${(e.league[i]*100).toFixed(3)}%</td><td>${e.k_bat[i]}</td><td>${e.k_pit[i]}</td>`
+  +`<td class='l'>${notes[c]||""}</td></tr>`});
+ $("#t-eb").innerHTML=h+"</tbody>";
+ const w=D.eb_worked;
+ $("#fn-eb").textContent=`league HR rate ${(w.league_hr*100).toFixed(3)}% · k = ${w.k}`;
+ $("#v-rook").textContent=(w.rookie.shrunk*100).toFixed(2)+"%";
+ $("#v-reg").textContent=(w.regular.shrunk*100).toFixed(2)+"%";
+ const W=800,H=250,mT=18,mB=46,mL=54,mR=120;
+ const s=svg(W,H);$("#c-eb").appendChild(s);
+ const L=w.league_hr,k=w.k,obs=0.10;
+ const n0=5,n1=900,sx=n=>mL+(Math.log(n)-Math.log(n0))/(Math.log(n1)-Math.log(n0))*(W-mL-mR);
+ const y0=0.02,y1=0.105,sy=v=>mT+(y1-v)/(y1-y0)*(H-mT-mB);
+ [0.02,0.04,0.06,0.08,0.10].forEach(v=>{el(s,"line",{x1:mL,y1:sy(v),x2:W-mR,y2:sy(v),class:"grid"});
+  txt(s,mL-9,sy(v)+4,(v*100).toFixed(0)+"%","ax","end")});
+ el(s,"line",{x1:mL,y1:sy(obs),x2:W-mR,y2:sy(obs),stroke:"var(--ink-3)","stroke-width":1,"stroke-dasharray":"4 4"});
+ txt(s,W-mR+8,sy(obs)+4,"observed 10%","reflbl");
+ el(s,"line",{x1:mL,y1:sy(L),x2:W-mR,y2:sy(L),stroke:"var(--s3)","stroke-width":1.5,"stroke-dasharray":"4 4"});
+ txt(s,W-mR+8,sy(L)+4,"league 3.12%","reflbl").setAttribute("fill","var(--s3)");
+ let pts=[];for(let n=n0;n<=n1;n*=1.06){const v=(obs*n+k*L)/(n+k);pts.push(`${sx(n)},${sy(v)}`)}
+ el(s,"polyline",{points:pts.join(" "),fill:"none",stroke:"var(--s1)","stroke-width":2});
+ [[40,w.rookie.shrunk,"40 PA"],[600,w.regular.shrunk,"600 PA"]].forEach(([n,v,lab])=>{
+  el(s,"circle",{cx:sx(n),cy:sy(v),r:5.5,fill:"var(--s2)",stroke:"var(--surface)","stroke-width":2});
+  txt(s,sx(n)+9,sy(v)-6,`${lab} → ${(v*100).toFixed(2)}%`,"val")});
+ [10,40,100,300,600].forEach(n=>txt(s,sx(n),H-mB+18,n,"ax","middle"));
+ txt(s,mL,H-4,"plate appearances observed (log scale)","ax");
+})();
+
+/* markov table */
+(function(){
+ let h="<thead><tr><th class='l'>Bases</th><th class='l'>Outcome</th><th class='l'>New bases</th><th>Runs</th><th>Outs</th><th class='l'>Inning ends</th></tr></thead><tbody>";
+ D.markov.forEach(r=>{h+=`<tr${(r.ev==="BB")?" class='hl'":""}><td class='l'>${r.bases}</td>`
+  +`<td class='l'>${r.ev}</td><td class='l'>${r.new_bases}</td><td>${r.runs}</td>`
+  +`<td>${r.outs_added}</td><td class='l'>${r.ends?"yes":""}</td></tr>`});
+ $("#t-markov").innerHTML=h+"</tbody>";
+})();
+
+/* mc table */
+(function(){
+ let h="<thead><tr><th>Episodes</th><th>Difference vs exact</th><th>Standard error</th><th>In SE units</th></tr></thead><tbody>";
+ D.mc.forEach(([n,d,se])=>{h+=`<tr><td>${n.toLocaleString()}</td><td>${d>=0?"+":""}${d.toFixed(4)} runs</td>`
+  +`<td>${se.toFixed(4)}</td><td>${(Math.abs(d)/se).toFixed(2)} SE</td></tr>`});
+ $("#t-mc").innerHTML=h+"</tbody>";
+})();
+
+/* xgb knobs */
+(function(){
+ const rows=[["max_depth","how many questions a single tree may ask","deeper = more interactions, more variance"],
+  ["n_estimators","how many trees in the sum","more = lower bias, but each adds variance"],
+  ["learning_rate (η)","how much of each tree to keep","smaller = safer, needs more trees"],
+  ["subsample","fraction of ROWS per tree","adds randomness, decorrelates trees"],
+  ["colsample_bytree","fraction of FEATURES per tree","stops one strong feature dominating every tree"],
+  ["reg_lambda","L2 penalty on leaf values","the Chapter 03 penalty, applied to leaves"],
+  ["reg_alpha","L1 penalty on leaf values","can zero a leaf out entirely"],
+  ["min_child_weight","minimum evidence to form a leaf","the single best guard against fitting a handful of games"]];
+ let h="<thead><tr><th class='l'>Hyperparameter</th><th class='l'>What it controls</th><th class='l'>Effect</th></tr></thead><tbody>";
+ rows.forEach(([a,b,c])=>{h+=`<tr><td class='l'>${a}</td><td class='l'>${b}</td><td class='l'>${c}</td></tr>`});
+ $("#t-xgb").innerHTML=h+"</tbody>";
+})();
+
+/* kalman gain */
+(function(){
+ const r=D.gains,W=800,H=250,mT=20,mB=46,mL=58,mR=110;
+ const s=svg(W,H);$("#c-gain").appendChild(s);
+ const n0=1,n1=900,sx=n=>mL+(Math.log(n)-Math.log(n0))/(Math.log(n1)-Math.log(n0))*(W-mL-mR);
+ const y1=0.085,sy=v=>mT+(y1-v)/y1*(H-mT-mB);
+ [0,0.02,0.04,0.06,0.08].forEach(v=>{el(s,"line",{x1:mL,y1:sy(v),x2:W-mR,y2:sy(v),class:"grid"});
+  txt(s,mL-9,sy(v)+4,v.toFixed(3),"ax","end")});
+ el(s,"polyline",{points:r.map(([n,g])=>`${sx(n)},${sy(g)}`).join(" "),fill:"none",
+  stroke:"var(--s1)","stroke-width":2});
+ r.forEach(([n,g])=>{el(s,"circle",{cx:sx(n),cy:sy(g),r:4.5,fill:"var(--s1)",stroke:"var(--surface)","stroke-width":2});
+  txt(s,sx(n),H-mB+18,n,"ax","middle")});
+ txt(s,sx(r[0][0])+10,sy(r[0][1])+4,r[0][1].toFixed(4),"val");
+ txt(s,sx(r[r.length-1][0])+10,sy(r[r.length-1][1])+4,r[r.length-1][1].toFixed(4)+"  (12× smaller)","val");
+ txt(s,mL,H-4,"games observed (log scale)   —   Elo's K is a flat line here","ax");
+})();
+</script>
+</body>
+</html>

@@ -234,6 +234,7 @@ class V7FeatureBuilder:
     def __init__(self, dry_run: bool = False):
         self.bq = bigquery.Client(project=PROJECT)
         self.dry_run = dry_run
+        self._venue_splits_ok: bool | None = None
         self._ensure_table()
 
     def _ensure_table(self) -> None:
@@ -516,10 +517,58 @@ class V7FeatureBuilder:
     # Group C: Pitcher venue splits
     # -----------------------------------------------------------------------
 
+    # Columns _pitcher_venue_splits needs out of PITCHER_STATS_TABLE.
+    _VENUE_SPLIT_COLUMNS = (
+        "earned_runs", "innings_pitched", "hits_allowed",
+        "walks", "strikeouts", "batters_faced",
+    )
+
+    def _venue_splits_available(self) -> bool:
+        """Whether PITCHER_STATS_TABLE can actually answer a venue-split query.
+
+        It currently cannot. `mlb_historical_data.pitcher_game_stats` is a
+        Statcast pitch-mix summary (velo, spin, pitch-type percentages, xwOBA)
+        and carries no box-score counting stats, so the query below used to 400
+        once per probable pitcher — around 20 failed BigQuery jobs every
+        pipeline run, each one falling back to the same neutral values.
+
+        Nothing consumes these columns as a model input: V10_MODEL_FEATURES has
+        no venue-split entries, and the only reader is the `starter_venue_era`
+        field on the scouting report, which has therefore been showing the
+        neutral 4.25 all season. Probing the schema once keeps that behaviour
+        identical while dropping the failed queries and the log noise.
+
+        Populating this for real needs a per-game pitcher box-score table
+        (game_pk, venue, IP, ER, H, BB, K, BF); no table in either dataset has
+        that today — player_stats_historical is per player-year, and
+        player_venue_splits is per batter.
+        """
+        if self._venue_splits_ok is None:
+            try:
+                table = self.bq.get_table(PITCHER_STATS_TABLE)
+                have = {f.name for f in table.schema}
+                missing = [c for c in self._VENUE_SPLIT_COLUMNS if c not in have]
+                self._venue_splits_ok = not missing
+                if missing:
+                    # Warning, not info: this silently swaps a real feature for a
+                    # constant, and INFO does not survive to Cloud Logging here.
+                    logger.warning(
+                        "Pitcher venue splits disabled — %s lacks %s; "
+                        "using neutral values",
+                        PITCHER_STATS_TABLE, ", ".join(missing),
+                    )
+            except Exception as exc:
+                logger.warning("Pitcher venue splits disabled — %s unreadable: %s",
+                               PITCHER_STATS_TABLE, exc)
+                self._venue_splits_ok = False
+        return self._venue_splits_ok
+
     def _pitcher_venue_splits(
         self, pitcher_id: int, venue_id: int, game_date: date
     ) -> dict:
         """Career stats for pitcher_id at venue_id from historical game stats."""
+        if not self._venue_splits_available():
+            return self._neutral_pitcher_venue()
         gd_str = game_date.isoformat()
         sql = f"""
         SELECT
