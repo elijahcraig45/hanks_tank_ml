@@ -214,6 +214,19 @@ def strength_for_slate(games: pd.DataFrame, slate: pd.DataFrame, target: date) -
 
     g = games.copy()
     g["game_date"] = pd.to_datetime(g.game_date)
+    # The games table only gets a row once the collector sees a game, which is after
+    # it is played; tonight's slate is not in it yet. Add the slate as unplayed rows
+    # so the chronological pass reaches them (they update no ratings: no runs).
+    todo = slate[~slate.game_pk.isin(g.game_pk)]
+    if len(todo):
+        g = pd.concat([g, pd.DataFrame({
+            "game_pk": todo.game_pk.astype(int).values,
+            "game_date": pd.to_datetime(todo.game_date).values,
+            "year": pd.to_datetime(todo.game_date).dt.year.values,
+            "home": todo.home_team_id.astype(int).astype(str).values,
+            "away": todo.away_team_id.astype(int).astype(str).values,
+            "h_runs": np.nan, "a_runs": np.nan,
+        })], ignore_index=True)
     late = g.game_date >= pd.Timestamp(target)
     g.loc[late, ["h_runs", "a_runs"]] = np.nan              # same-day results never leak
     G = strength.features(g)
