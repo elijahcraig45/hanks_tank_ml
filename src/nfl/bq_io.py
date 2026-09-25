@@ -128,7 +128,31 @@ def delete_week(dataset: str, table: str, season: int, week: int) -> None:
 
 
 def upsert_week(df: pd.DataFrame, dataset: str, table: str, season: int, week: int) -> int:
-    delete_week(dataset, table, season, week)
+    """Replace the games in `df` for (season, week).
+
+    Scoped to the frame's game_ids, not the whole week: a mid-week rerun predicts only
+    the games that have not kicked off, and clearing the week would delete the pregame
+    rows of the ones already played, with nothing to replace them.
+    """
+    if df.empty:
+        logger.warning("%s.%s: nothing to write for %d wk%d", dataset, table, season, week)
+        return 0
+    c = client()
+    sql = f"""
+        DELETE FROM `{CTX.project}.{dataset}.{table}`
+        WHERE season = @season AND week = @week AND game_id IN UNNEST(@ids)
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("season", "INT64", season),
+        bigquery.ScalarQueryParameter("week", "INT64", week),
+        bigquery.ArrayQueryParameter("ids", "STRING", df["game_id"].astype(str).tolist()),
+    ])
+    try:
+        c.query(sql, job_config=cfg).result()
+        logger.info("cleared %d games in %s.%s for %d wk%d", len(df), dataset, table, season, week)
+    except Exception as exc:
+        # Table may not exist yet on a first run — that's fine.
+        logger.debug("upsert_week delete skipped (%s)", exc)
     return load_table(df, dataset, table, write_disposition="WRITE_APPEND")
 
 

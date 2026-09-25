@@ -317,13 +317,18 @@ def predict_week(season: int, week: int, model: str = "xgb",
         logger.warning("no scheduled games for %d week %d", season, week)
         return pd.DataFrame()
 
-    # Drop any that already finished — those belong to the backfill path.
+    # Drop any that already finished — those belong to the backfill path — and any
+    # already under way: a prediction written after kickoff would replace the real
+    # pregame row for that game. game_date is the kickoff time in UTC.
     upcoming = upcoming[upcoming["home_won"].isna()].copy()
+    upcoming["game_date"] = pd.to_datetime(upcoming["game_date"])
+    kickoff = upcoming["game_date"]
+    kickoff = kickoff.dt.tz_localize("UTC") if kickoff.dt.tz is None else kickoff.dt.tz_convert("UTC")
+    upcoming = upcoming[~(kickoff <= pd.Timestamp.now(tz="UTC"))].copy()
     if upcoming.empty:
-        logger.info("every %d wk%d game already final", season, week)
+        logger.info("every %d wk%d game already final or under way", season, week)
         return pd.DataFrame()
 
-    upcoming["game_date"] = pd.to_datetime(upcoming["game_date"])
     played = played[~played["game_id"].isin(upcoming["game_id"])]
     combined = pd.concat([played, upcoming], ignore_index=True)
     feats = build(combined)
