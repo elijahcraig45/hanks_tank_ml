@@ -193,7 +193,7 @@ V10_FEATURES_SCHEMA = [
     _float("home_fg_whip"), _float("away_fg_whip"),
     _float("home_fg_k9"), _float("away_fg_k9"),
     _float("home_fg_bb9"), _float("away_fg_bb9"),
-    _float("home_fg_xfip"), _float("away_fg_xfip"),   # proxy via ERA
+    _float("home_fg_xfip"), _float("away_fg_xfip"),   # NULL: no source (was an ERA alias)
     _float("home_fg_k_pct"), _float("away_fg_k_pct"),
     _float("home_fg_bb_pct"), _float("away_fg_bb_pct"),
     _float("home_fg_whiff_pct"), _float("away_fg_whiff_pct"),
@@ -235,6 +235,14 @@ V10_FEATURES_SCHEMA = [
 ]
 
 # Canonical V10 feature list for live/train parity.
+#
+# Dropped 2026-09-25: fg_xfip (+ differential), fg_whiff_pct, fg_fbv_pct, fg_ev_pct,
+# fg_hh_pct, fg_brl_pct. The MLB Stats API has no source for them; they had been an
+# ERA alias and constant 50.0s. Real season-to-date versions rebuilt from
+# statcast_pitches added nothing on top of the 3-feature logistic in walk-forward
+# (research/v10_fixes/eval_v10_fixes.py), and the served model never saw them --
+# train_v10_models.py only keeps columns present in the V8 training parquet, which
+# is 73 of these names. Columns stay in the table schema, written as NULL.
 V10_MODEL_FEATURES = [
     "home_elo", "away_elo", "elo_differential", "elo_home_win_prob", "elo_win_prob_differential",
     "home_pythag_season", "away_pythag_season", "home_pythag_last30", "away_pythag_last30",
@@ -264,14 +272,10 @@ V10_MODEL_FEATURES = [
     "matchup_advantage_home",
     "home_fg_era", "away_fg_era", "home_fg_whip", "away_fg_whip",
     "home_fg_k9", "away_fg_k9", "home_fg_bb9", "away_fg_bb9",
-    "home_fg_xfip", "away_fg_xfip",
     "home_fg_k_pct", "away_fg_k_pct", "home_fg_bb_pct", "away_fg_bb_pct",
-    "home_fg_whiff_pct", "away_fg_whiff_pct", "home_fg_fbv_pct", "away_fg_fbv_pct",
-    "fg_era_differential", "fg_xfip_differential", "fg_whip_differential",
+    "fg_era_differential", "fg_whip_differential",
     "home_fg_ops", "away_fg_ops", "home_fg_obp", "away_fg_obp",
     "home_fg_slg", "away_fg_slg", "home_fg_woba", "away_fg_woba",
-    "home_fg_ev_pct", "away_fg_ev_pct", "home_fg_hh_pct", "away_fg_hh_pct",
-    "home_fg_brl_pct", "away_fg_brl_pct",
     "fg_ops_differential", "fg_woba_differential", "fg_obp_differential",
     "home_park_factor", "home_park_factor_100",
     "day_of_week", "month", "is_weekend",
@@ -423,16 +427,21 @@ class V10LiveFeatureBuilder:
 
                 series_status = g.get("seriesStatus", {})
                 series_info   = g.get("seriesInformation", g.get("seriesSummary", {}))
+                # The schedule endpoint carries these at the top level of each game
+                # (gamesInSeries / seriesGameNumber) and in seriesStatus as
+                # gameNumber / totalGames. The old lookup tried seriesStatus
+                # "seriesLength", which does not exist, so games_in_series fell
+                # through to the default 3 for every 2026 game.
                 game_number = (
-                    series_status.get("gameNumber")
+                    g.get("seriesGameNumber")
+                    or series_status.get("gameNumber")
                     or series_info.get("seriesGameNumber")
-                    or series_info.get("gameNumber")
                     or 1
                 )
                 games_in_series = (
-                    series_status.get("seriesLength")
+                    g.get("gamesInSeries")
+                    or series_status.get("totalGames")
                     or series_info.get("totalGames")
-                    or series_info.get("seriesLength")
                     or 3
                 )
 
@@ -520,6 +529,7 @@ class V10LiveFeatureBuilder:
             FROM `{HIST_GAMES}`
             WHERE game_date >= '{cutoff}'
               AND game_date < '{target_date.isoformat()}'
+              AND game_type = 'R'
               AND home_score IS NOT NULL
               AND away_score IS NOT NULL
             UNION ALL
@@ -532,14 +542,19 @@ class V10LiveFeatureBuilder:
               CAST(away_score AS INT64) AS away_score
             FROM `{SEASON_GAMES}`
             WHERE game_date < '{target_date.isoformat()}'
+              AND game_type = 'R'
               AND home_score IS NOT NULL
               AND away_score IS NOT NULL
             ORDER BY game_date
         """
+        # Regular season only: mlb_2026_season.games also holds ~490 spring-training
+        # and exhibition games, which leaked into April's rolling windows and into
+        # the season game count. The collector writes a skeleton row and a final
+        # row per game, so dedupe on game_pk as well.
         try:
             df = self.bq.query(sql).to_dataframe()
             df["game_date"] = pd.to_datetime(df["game_date"])
-            return df
+            return df.drop_duplicates("game_pk", keep="last").reset_index(drop=True)
         except Exception as e:
             logger.warning("Game history unavailable: %s", e)
             return pd.DataFrame()
@@ -656,9 +671,14 @@ class V10LiveFeatureBuilder:
         """
         Fetch team season pitching and batting stats from MLB Stats API.
         Returns {team_id: {fg_era, fg_whip, fg_k9, fg_bb9, fg_k_pct, fg_bb_pct,
-                            fg_obp, fg_slg, fg_ops, fg_woba (≈ obp), ...}}
-        Statcast-only features (xFIP, whiff%, barrel%, EV%, HH%) default to 50.0
-        (league-average percentile rank) since they're unavailable from the MLB API.
+                            fg_obp, fg_slg, fg_ops, fg_woba}}
+
+        fg_woba is real wOBA from the API's counting stats (see _woba). xFIP and the
+        Statcast percentile columns (whiff, FB velo, EV, hard-hit, barrel) are NOT
+        available from this API and are left out, so they are written as NULL.
+        They used to be filled with ERA (xFIP) and a constant 50.0, which made them
+        exact copies of another column or constants. None of them is in the served
+        model: it was trained on the V8 parquet, which never had them.
         """
         if self._team_quality:
             return self._team_quality
@@ -707,11 +727,6 @@ class V10LiveFeatureBuilder:
                         "fg_bb9":    bb9,
                         "fg_k_pct":  k_pct,
                         "fg_bb_pct": bb_pct,
-                        # xFIP proxy: use ERA (Statcast xFIP not in MLB API)
-                        "fg_xfip":   era if era is not None else 4.20,
-                        # Statcast-only: default to league average
-                        "fg_whiff_pct": 50.0,
-                        "fg_fbv_pct":   50.0,
                     })
         except Exception as e:
             logger.warning("MLB API pitching stats unavailable: %s — using defaults", e)
@@ -735,15 +750,12 @@ class V10LiveFeatureBuilder:
                     obp = _safe_float(s.get("obp"))
                     slg = _safe_float(s.get("slg"))
                     ops = _safe_float(s.get("ops"))
+                    woba = _woba(s)
                     quality[tid].update({
                         "fg_obp":    obp if obp is not None else 0.315,
                         "fg_slg":    slg if slg is not None else 0.410,
                         "fg_ops":    ops if ops is not None else 0.725,
-                        "fg_woba":   obp if obp is not None else 0.315,  # OBP ≈ wOBA proxy
-                        # Statcast batting — not in MLB API
-                        "fg_ev_pct":  50.0,
-                        "fg_hh_pct":  50.0,
-                        "fg_brl_pct": 50.0,
+                        "fg_woba":   woba if woba is not None else 0.315,
                     })
         except Exception as e:
             logger.warning("MLB API batting stats unavailable: %s — using defaults", e)
@@ -756,10 +768,8 @@ class V10LiveFeatureBuilder:
         """Return quality stats for a team, with league-average defaults."""
         return quality.get(team_id, {
             "fg_era": 4.20, "fg_whip": 1.30, "fg_k9": 8.0, "fg_bb9": 3.0,
-            "fg_xfip": 4.20, "fg_k_pct": 0.22, "fg_bb_pct": 0.08,
-            "fg_whiff_pct": 50.0, "fg_fbv_pct": 50.0,
-            "fg_obp": 0.315, "fg_slg": 0.410, "fg_ops": 0.725,
-            "fg_woba": 0.315, "fg_ev_pct": 50.0, "fg_hh_pct": 50.0, "fg_brl_pct": 50.0,
+            "fg_k_pct": 0.22, "fg_bb_pct": 0.08,
+            "fg_obp": 0.315, "fg_slg": 0.410, "fg_ops": 0.725, "fg_woba": 0.315,
         })
 
     # ------------------------------------------------------------------
@@ -876,10 +886,14 @@ class V10LiveFeatureBuilder:
         team_quality = self._fetch_team_quality(season)
         sp_lookup    = self._load_sp_lookup()
 
-        # Season game number: how many games has each team played so far?
+        # Season game number: how many games has each team played so far THIS season?
+        # history reaches back 365 days (for the rolling windows), so counting all of
+        # it gave ~197 games in April and pinned season_pct_complete at 1.0 and
+        # is_late_season at 1 for every 2026 game.
         team_game_count: Dict[int, int] = {}
         if not history.empty:
-            for _, row in history.iterrows():
+            this_season = history[history["game_date"].dt.year == season]
+            for _, row in this_season.iterrows():
                 h, a = int(row["home_team_id"]), int(row["away_team_id"])
                 team_game_count[h] = team_game_count.get(h, 0) + 1
                 team_game_count[a] = team_game_count.get(a, 0) + 1
@@ -984,7 +998,11 @@ class V10LiveFeatureBuilder:
 
         # --- Calendar ---
         gd = pd.Timestamp(gdate)
-        day_of_week = int(gd.dayofweek)
+        # The served model was trained on the V8 parquet, which encodes day_of_week
+        # 1..7 with Sunday = 1 (Monday = 2). pandas dayofweek is 0..6 with Monday = 0,
+        # so every live value was shifted -- Monday looked like "Sunday - 1".
+        pandas_dow = int(gd.dayofweek)
+        day_of_week = (pandas_dow + 1) % 7 + 1
         month = int(gd.month)
 
         # --- Season context ---
@@ -1122,18 +1140,18 @@ class V10LiveFeatureBuilder:
             "away_fg_k9":       aq.get("fg_k9", 8.0),
             "home_fg_bb9":      hq.get("fg_bb9", 3.0),
             "away_fg_bb9":      aq.get("fg_bb9", 3.0),
-            "home_fg_xfip":     hq.get("fg_xfip", 4.20),
-            "away_fg_xfip":     aq.get("fg_xfip", 4.20),
+            "home_fg_xfip":     None,   # no source; was an ERA alias
+            "away_fg_xfip":     None,
             "home_fg_k_pct":    hq.get("fg_k_pct", 0.22),
             "away_fg_k_pct":    aq.get("fg_k_pct", 0.22),
             "home_fg_bb_pct":   hq.get("fg_bb_pct", 0.08),
             "away_fg_bb_pct":   aq.get("fg_bb_pct", 0.08),
-            "home_fg_whiff_pct": hq.get("fg_whiff_pct", 50.0),
-            "away_fg_whiff_pct": aq.get("fg_whiff_pct", 50.0),
-            "home_fg_fbv_pct":  hq.get("fg_fbv_pct", 50.0),
-            "away_fg_fbv_pct":  aq.get("fg_fbv_pct", 50.0),
+            "home_fg_whiff_pct": None,  # no source; was a constant 50.0
+            "away_fg_whiff_pct": None,
+            "home_fg_fbv_pct":  None,
+            "away_fg_fbv_pct":  None,
             "fg_era_differential":  aq.get("fg_era", 4.20) - hq.get("fg_era", 4.20),
-            "fg_xfip_differential": aq.get("fg_xfip", 4.20) - hq.get("fg_xfip", 4.20),
+            "fg_xfip_differential": None,
             "fg_whip_differential": aq.get("fg_whip", 1.30) - hq.get("fg_whip", 1.30),
             "home_fg_ops":      hq.get("fg_ops", 0.725),
             "away_fg_ops":      aq.get("fg_ops", 0.725),
@@ -1143,12 +1161,12 @@ class V10LiveFeatureBuilder:
             "away_fg_slg":      aq.get("fg_slg", 0.410),
             "home_fg_woba":     hq.get("fg_woba", 0.315),
             "away_fg_woba":     aq.get("fg_woba", 0.315),
-            "home_fg_ev_pct":   hq.get("fg_ev_pct", 50.0),
-            "away_fg_ev_pct":   aq.get("fg_ev_pct", 50.0),
-            "home_fg_hh_pct":   hq.get("fg_hh_pct", 50.0),
-            "away_fg_hh_pct":   aq.get("fg_hh_pct", 50.0),
-            "home_fg_brl_pct":  hq.get("fg_brl_pct", 50.0),
-            "away_fg_brl_pct":  aq.get("fg_brl_pct", 50.0),
+            "home_fg_ev_pct":   None,   # no source; were constant 50.0
+            "away_fg_ev_pct":   None,
+            "home_fg_hh_pct":   None,
+            "away_fg_hh_pct":   None,
+            "home_fg_brl_pct":  None,
+            "away_fg_brl_pct":  None,
             "fg_ops_differential":  hq.get("fg_ops", 0.725) - aq.get("fg_ops", 0.725),
             "fg_woba_differential": hq.get("fg_woba", 0.315) - aq.get("fg_woba", 0.315),
             "fg_obp_differential":  hq.get("fg_obp", 0.315) - aq.get("fg_obp", 0.315),
@@ -1161,13 +1179,13 @@ class V10LiveFeatureBuilder:
             # Calendar
             "day_of_week": day_of_week,
             "month":       month,
-            "is_weekend":  int(day_of_week >= 4),
+            "is_weekend":  int(pandas_dow >= 4),   # Fri/Sat/Sun
             "month_3":  int(month == 3),  "month_4":  int(month == 4),
             "month_5":  int(month == 5),  "month_6":  int(month == 6),
             "month_7":  int(month == 7),  "month_8":  int(month == 8),
             "month_9":  int(month == 9),  "month_10": int(month == 10),
             # Season context
-            "season_game_number": int(avg_gp),
+            "season_game_number": int(round(avg_gp)),
             "season_pct_complete": season_pct,
             "is_late_season":   int(season_pct >= 0.75),
             "is_early_season":  int(season_pct <= 0.20),
@@ -1259,6 +1277,29 @@ class V10LiveFeatureBuilder:
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
+# FanGraphs 2024 linear weights. They drift ~1% a season; that moves every team
+# together, so a team-vs-team differential barely notices.
+_WOBA_WEIGHTS = {"bb": 0.689, "hbp": 0.720, "1b": 0.882, "2b": 1.254, "3b": 1.590, "hr": 2.050}
+
+
+def _woba(s: dict) -> Optional[float]:
+    """wOBA from MLB Stats API team hitting counting stats (None if incomplete)."""
+    try:
+        bb = float(s["baseOnBalls"]); ibb = float(s.get("intentionalWalks", 0) or 0)
+        hbp = float(s["hitByPitch"]); h = float(s["hits"])
+        d2 = float(s["doubles"]); d3 = float(s["triples"]); hr = float(s["homeRuns"])
+        ab = float(s["atBats"]); sf = float(s.get("sacFlies", 0) or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    denom = ab + bb - ibb + sf + hbp
+    if denom <= 0:
+        return None
+    w = _WOBA_WEIGHTS
+    num = (w["bb"] * (bb - ibb) + w["hbp"] * hbp + w["1b"] * (h - d2 - d3 - hr)
+           + w["2b"] * d2 + w["3b"] * d3 + w["hr"] * hr)
+    return num / denom
+
+
 def _safe_float(val) -> Optional[float]:
     if val is None:
         return None
