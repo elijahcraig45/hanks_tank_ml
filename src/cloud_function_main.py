@@ -86,7 +86,7 @@ def daily_pipeline(request):
 
     # Allow overriding target date and mode via request body
     target_date_str = req_json.get("date")
-    mode = req_json.get("mode", "daily")  # daily | backfill | features | predict | validate
+    mode = req_json.get("mode", "daily")  # daily | backfill | features | predict | validate | pa_sim
     dry_run = req_json.get("dry_run", False)
 
     yesterday = date.today() - timedelta(days=1)
@@ -131,8 +131,17 @@ def daily_pipeline(request):
         if mode in ("daily", "power_rankings"):
             results["steps"].append(_run_power_rankings(dry_run))
 
-        # Weekly prediction run (Friday)
-        if mode == "predict" or (mode == "daily" and target.weekday() == 4):
+        # Weekly prediction run — mlb-2026-weekly-predict, Friday 5 AM ET.
+        #
+        # This used to also fire from `daily` when target.weekday() == 4. Since
+        # `target` is yesterday that actually ran on Saturdays, and it was the
+        # only path that ran at all while mlb-2026-weekly-predict was POSTing a
+        # malformed body and falling through to `daily`. With that job fixed the
+        # piggyback is pure duplication — _run_weekly_predictions takes no date
+        # and always predicts the upcoming week from now, so both invocations
+        # write the same slate a day apart, and a repeat write inside the
+        # streaming-buffer window degrades to INSERT-only and duplicates rows.
+        if mode == "predict":
             results["steps"].append(_run_weekly_predictions(dry_run))
 
         # Per-game pre-game modes (triggered by Cloud Tasks ~90 min before first pitch)
@@ -149,6 +158,10 @@ def daily_pipeline(request):
         if mode == "predict_today":
             results["steps"].append(_run_daily_prediction(target, game_pks, dry_run, req_json))
 
+        # PA simulator, shadow-only (writes game_predictions_sim, never game_predictions)
+        if mode in ("pa_sim", "pregame_sim"):
+            results["steps"].append(_run_pa_sim(target, dry_run, req_json))
+
         # Combined pre-game pipeline:
         #   pregame:    lineups → V5/V6 matchup → V7 features → prediction → scouting report
         #   pregame_v8: lineups → V5/V6 matchup → V7 features → V8 features → prediction → scouting report
@@ -164,6 +177,10 @@ def daily_pipeline(request):
             if mode == "pregame_v10":
                 results["steps"].append(_run_v10_features(target, game_pks, dry_run))
             results["steps"].append(_run_daily_prediction(target, game_pks, dry_run, req_json))
+            # shadow run so both models are scored on the same games; enable with
+            # {"run_pa_sim": true} in the task body once the shadow table exists
+            if mode == "pregame_v10" and req_json.get("run_pa_sim"):
+                results["steps"].append(_run_pa_sim(target, dry_run, req_json))
             results["steps"].append(_run_scouting_reports(target, dry_run))
 
         # Weekly model training (Sundays only) — keeps training cost-efficient
@@ -214,9 +231,16 @@ def daily_pipeline(request):
             report_date = date.fromisoformat(req_json.get("date", target.isoformat()))
             results["steps"].append(_run_scouting_reports(report_date, dry_run))
 
-        # Morning schedule check: enqueue per-game Cloud Tasks for today
+        # Morning schedule check: enqueue per-game Cloud Tasks for today.
+        # Must target today, not the pipeline-wide default of yesterday — the
+        # backend skips any game whose first pitch has already passed, so
+        # yesterday's slate enqueues nothing at all. An explicit "date" in the
+        # request body still wins, for manual re-runs.
         if mode == "schedule_pregame_tasks":
-            results["steps"].append(_schedule_pregame_tasks(target, dry_run))
+            pregame_target = (
+                date.fromisoformat(target_date_str) if target_date_str else date.today()
+            )
+            results["steps"].append(_schedule_pregame_tasks(pregame_target, dry_run))
 
     except Exception as e:
         logger.error("Pipeline error: %s\n%s", e, traceback.format_exc())
@@ -496,6 +520,25 @@ def _run_v10_features(target: date, game_pks: list, dry_run: bool) -> dict:
     else:
         result = builder.run_for_date(target)
     return {"step": "v10_features", **result}
+
+
+def _run_pa_sim(target: date, dry_run: bool, req_json: dict) -> dict:
+    """Plate-appearance Monte Carlo simulation for the target date's slate.
+
+    Plays each game `n_episodes` times PA by PA off ~1.9M historical plate appearances
+    and writes the resulting win probabilities to game_predictions_sim -- a SHADOW
+    table. It deliberately does NOT write game_predictions, so running this in
+    production cannot change what the live site serves; promoting it is a separate,
+    explicit change to PA_SIM_TABLE.
+    """
+    from pa_sim.pipeline import run_slate
+
+    return run_slate(
+        target,
+        dry_run=dry_run,
+        n_episodes=int(req_json.get("n_episodes", 1000)),
+        alpha=req_json.get("alpha"),
+    )
 
 
 def _run_v10_backfill(start: date, end: date, dry_run: bool) -> dict:
