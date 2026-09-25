@@ -88,7 +88,7 @@ if [ "$ONLY_SCHEDULER" = false ]; then
     cp "$CFB_DIR"/*.py "$STAGE"/
     # The shared football core: the causal feature builder and the model/eval helpers.
     # models.py exists precisely so this does not have to drag in NFL's data loader.
-    cp "$NFL_DIR/features.py" "$NFL_DIR/models.py" "$STAGE"/
+    cp "$NFL_DIR/features.py" "$NFL_DIR/models.py" "$NFL_DIR/margin_ridge.py" "$STAGE"/
     # features.py reads its default Elo constants from a module named `config`; in the
     # staged tree that name belongs to CFB, which defines the same constants. CFB
     # passes EloParams explicitly anyway, so the defaults are never what's used.
