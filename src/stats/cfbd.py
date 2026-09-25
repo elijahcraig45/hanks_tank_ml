@@ -18,6 +18,7 @@ cfb_historical.games. Hence a hard per-run ceiling that raises rather than warns
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -99,7 +100,9 @@ def reset_call_counter() -> None:
 def _cache_path(path: str, params: dict) -> Path:
     slug = path.strip("/").replace("/", "_")
     query = urllib.parse.urlencode(sorted(params.items()))
-    digest = str(abs(hash(query)) % (10 ** 12))
+    # hashlib, not hash(): str hashes are salted per process, so hash() gave
+    # every run a fresh key and the disk cache never hit across runs.
+    digest = hashlib.sha256(query.encode()).hexdigest()[:12]
     return CACHE / f"{slug}_{digest}.json"
 
 
