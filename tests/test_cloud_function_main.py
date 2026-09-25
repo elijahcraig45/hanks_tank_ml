@@ -106,6 +106,57 @@ class CloudFunctionMainTests(unittest.TestCase):
             FakeRequest({"mode": "scouting_reports", "date": "2026-09-24", "dry_run": True}))
         mocks["_run_scouting_reports"].assert_called_once()
 
+    def _pregame_patches(self):
+        names = ["_run_lineup_fetch", "_run_matchup_features", "_run_v7_features",
+                 "_run_v8_features", "_run_v10_features", "_run_daily_prediction",
+                 "_run_scouting_reports", "_run_pa_sim", "_run_logit3", "_run_sim_blend"]
+        patchers = {n: patch.object(cloud_function_main, n, return_value={"step": n}) for n in names}
+        mocks = {n: p.start() for n, p in patchers.items()}
+        for p in patchers.values():
+            self.addCleanup(p.stop)
+        return mocks
+
+    def test_pregame_v10_shadows_are_off_by_default(self):
+        mocks = self._pregame_patches()
+        cloud_function_main.daily_pipeline(FakeRequest(
+            {"mode": "pregame_v10", "date": "2026-09-20", "game_pks": [1], "dry_run": True}))
+        mocks["_run_logit3"].assert_not_called()
+        mocks["_run_sim_blend"].assert_not_called()
+        mocks["_run_pa_sim"].assert_not_called()
+
+    def test_pregame_v10_runs_shadows_when_flagged_before_scouting(self):
+        mocks = self._pregame_patches()
+        body, status, _ = cloud_function_main.daily_pipeline(FakeRequest(
+            {"mode": "pregame_v10", "date": "2026-09-20", "game_pks": [7], "dry_run": True,
+             "run_logit3": True, "run_sim_blend": True}))
+        steps = [s["step"] for s in json.loads(body)["steps"]]
+        self.assertEqual(200, status)
+        self.assertLess(steps.index("_run_daily_prediction"), steps.index("_run_logit3"))
+        self.assertLess(steps.index("_run_sim_blend"), steps.index("_run_scouting_reports"))
+        args = mocks["_run_logit3"].call_args[0]
+        self.assertEqual([7], args[1])
+
+    def test_standalone_shadow_modes(self):
+        mocks = self._pregame_patches()
+        cloud_function_main.daily_pipeline(FakeRequest({"mode": "logit3", "date": "2026-09-20"}))
+        cloud_function_main.daily_pipeline(FakeRequest({"mode": "sim_blend", "date": "2026-09-20"}))
+        mocks["_run_logit3"].assert_called_once()
+        mocks["_run_sim_blend"].assert_called_once()
+        mocks["_run_daily_prediction"].assert_not_called()
+
+    def test_sim_blend_refuses_in_a_small_container(self):
+        with patch.dict(os.environ, {"SIM_BLEND_MEMORY_MB": "1024"}):
+            out = cloud_function_main._run_sim_blend(
+                cloud_function_main.date(2026, 9, 20), [], True, {})
+        self.assertEqual("insufficient_memory", out["status"])
+
+    def test_shadow_failure_is_non_fatal(self):
+        def boom():
+            raise RuntimeError("table exploded")
+        out = cloud_function_main._shadow("logit3", boom)
+        self.assertEqual("error", out["status"])
+        self.assertIn("exploded", out["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
