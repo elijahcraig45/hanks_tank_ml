@@ -164,7 +164,7 @@ if [ "$SKIP_FUNCTION" = false ] && [ "$ONLY_SCHEDULER" = false ]; then
         --source="." \
         --entry-point="$ENTRY_POINT" \
         --trigger-http \
-        --allow-unauthenticated=false \
+        --no-allow-unauthenticated \
         --memory="$MEMORY" \
         --timeout="$TIMEOUT" \
         --service-account="$SERVICE_ACCOUNT" \
