@@ -190,6 +190,13 @@ def cfb_pipeline(request):
     mode = req.get("mode", "ingest")
     result: dict = {"mode": mode, "steps": {}}
 
+    # dry_run used to be ignored here, so {"dry_run": true} ran for real and replaced
+    # a week of production predictions. Now only the predict modes support it (they
+    # compute and return, writing nothing); any other mode refuses rather than run.
+    dry_run = bool(req.get("dry_run"))
+    if dry_run and mode not in ("predict_week", "predict_next"):
+        return ({"mode": mode, "error": "dry_run is only supported for predict_week and predict_next"}, 400)
+
     try:
         if mode == "ingest":
             import cfb_config
@@ -298,22 +305,31 @@ def cfb_pipeline(request):
                     return (result, 200)
 
             rows = predict_week(season, int(week))
+            if dry_run:
+                result["dry_run"] = True
+                result["week"] = int(week)
+                result["steps"]["predicted"] = len(rows)
+                result["steps"]["games"] = (rows["game_id"].astype(str).tolist()
+                                            if not rows.empty else [])
+                if _shadow_enabled(req):
+                    try:
+                        result["steps"]["shadow_ridge"] = len(
+                            predict_week(season, int(week), model="ridge"))
+                    except Exception as exc:
+                        result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
+                result["status"] = "ok"
+                return (result, 200)
             if not rows.empty:
+                from backfill_cfb import replace_game_ids
+
                 ensure_datasets()
-                # Replace this week's slice so re-runs are idempotent.
-                from google.cloud import bigquery
-                c = bigquery.Client(project=cfb_config.CTX.project)
-                try:
-                    c.query(
-                        f"DELETE FROM `{cfb_config.CTX.project}."
-                        f"{cfb_config.CTX.season_dataset}.game_predictions` "
-                        f"WHERE season={season} AND week={int(week)} "
-                        f"AND prediction_correct IS NULL"
-                    ).result()
-                except Exception:
-                    pass
-                load(rows, cfb_config.CTX.season_dataset, "game_predictions",
-                     write_disposition="WRITE_APPEND")
+                # Replace exactly the games predicted, so re-runs are idempotent. This
+                # used to clear every unscored row of the week, which deleted the
+                # pregame rows of games already under way or final-but-unscored,
+                # and predict_week never rewrites those.
+                replace_game_ids(rows, cfb_config.CTX.season_dataset, "game_predictions",
+                                 partition_field="game_date",
+                                 cluster_fields=["season", "division"])
                 result["steps"]["predicted"] = len(rows)
 
             if _shadow_enabled(req):

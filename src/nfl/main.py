@@ -156,6 +156,13 @@ def nfl_pipeline(request):
     mode = req.get("mode", "predict_week")
     result: dict = {"mode": mode, "steps": {}}
 
+    # dry_run used to be ignored here, so {"dry_run": true} ran for real and replaced
+    # a week of production predictions. Now only the predict modes support it (they
+    # compute and return, writing nothing); any other mode refuses rather than run.
+    dry_run = bool(req.get("dry_run"))
+    if dry_run and mode not in ("predict_week",):
+        return ({"mode": mode, "error": "dry_run is only supported for predict_week"}, 400)
+
     try:
         if mode == "ingest":
             from backfill_nfl_history import backfill_epa, backfill_games, backfill_teams
@@ -225,6 +232,19 @@ def nfl_pipeline(request):
                 season, week = _next_unplayed_week()
 
             rows = predict_week(int(season), int(week))
+            if dry_run:
+                result["dry_run"] = True
+                result["season"], result["week"] = season, week
+                result["steps"]["predicted"] = len(rows)
+                result["steps"]["games"] = rows["game_id"].astype(str).tolist()
+                if _shadow_enabled(req):
+                    try:
+                        result["steps"]["shadow_ridge"] = len(
+                            predict_week(int(season), int(week), model="ridge"))
+                    except Exception as exc:
+                        result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
+                result["status"] = "ok"
+                return (result, 200)
             ensure_dataset(CTX.season_dataset)
             upsert_week(rows, CTX.season_dataset, "game_predictions",
                         int(season), int(week))

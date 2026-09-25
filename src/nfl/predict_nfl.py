@@ -278,10 +278,30 @@ def backfill_season(season: int, model: str = "xgb",
     return result
 
 
-def _upcoming(schedule: pd.DataFrame, season: int, week: int) -> pd.DataFrame:
+def _kickoff_utc(schedule: pd.DataFrame) -> pd.Series:
+    """nflverse gameday + gametime are US/Eastern wall-clock; a missing time is read
+    as midnight, so an undated game is never treated as not yet started."""
+    local = pd.to_datetime(schedule["gameday"].astype(str) + " "
+                           + schedule.get("gametime", pd.Series("00:00", index=schedule.index))
+                           .fillna("00:00").astype(str), errors="coerce")
+    return local.dt.tz_localize("America/New_York", ambiguous="NaT",
+                                nonexistent="NaT").dt.tz_convert("UTC")
+
+
+def _upcoming(schedule: pd.DataFrame, season: int, week: int,
+              now: pd.Timestamp | None = None) -> pd.DataFrame:
     upcoming = schedule[(schedule["season"] == season) & (schedule["week"] == week)].copy()
     if upcoming.empty:
         raise SystemExit(f"no scheduled games found for {season} week {week}")
+    # Only games that have not kicked off. A rerun after Thursday used to re-predict
+    # the week's finished games, writing a post-kickoff row over the real pregame one
+    # (and duplicating that game in the ridge frame).
+    now = pd.Timestamp.now(tz="UTC") if now is None else now
+    started = upcoming["result"].notna() if "result" in upcoming else False
+    started = started | (_kickoff_utc(upcoming) <= now).fillna(False)
+    upcoming = upcoming[~started].copy()
+    if upcoming.empty:
+        raise SystemExit(f"every {season} week {week} game has already kicked off")
     upcoming["home_won"] = np.nan
     upcoming["game_date"] = pd.to_datetime(upcoming["gameday"])
     return upcoming
