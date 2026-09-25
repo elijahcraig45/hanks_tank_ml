@@ -202,7 +202,8 @@ def test_cfb_ridge_predict_week_is_shadow_shaped():
 
     g = cfb_games(upcoming_week=6)
     played, upcoming = g[g.home_won.notna()], g[g.home_won.isna()]
-    rows = cp.predict_week(2025, 6, model="ridge", played=played, upcoming=upcoming)
+    rows = cp.predict_week(2025, 6, model="ridge", played=played, upcoming=upcoming,
+                           now=pd.Timestamp("2000-01-01", tz="UTC"))
 
     assert len(rows) == len(upcoming)
     assert set(rows.model_version) == {cp.RIDGE_MODEL_VERSION}
@@ -303,7 +304,7 @@ def test_nfl_predict_week_carries_epa():
 
     sched = nfl_schedule()
     rows = pn.predict_week(2025, 10, played=completed_games(sched), schedule=sched,
-                           epa=nfl_epa(sched))
+                           epa=nfl_epa(sched), now=pd.Timestamp("2000-01-01", tz="UTC"))
     assert len(rows) == 4
     assert rows.net_epa_8g.notna().all() and (rows.net_epa_8g != 0).any()
     assert set(rows.model_version) == {pn.MODEL_VERSION}
@@ -356,7 +357,7 @@ def test_nfl_ridge_predict_week_needs_no_epa():
 
     sched = nfl_schedule()
     rows = pn.predict_week(2025, 10, model="ridge", played=completed_games(sched),
-                           schedule=sched)
+                           schedule=sched, now=pd.Timestamp("2000-01-01", tz="UTC"))
     assert len(rows) == 4 and set(rows.model_version) == {pn.RIDGE_MODEL_VERSION}
     np.testing.assert_allclose(rows.home_win_probability,
                                mr.win_prob(rows.predicted_home_margin,

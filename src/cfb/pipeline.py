@@ -299,7 +299,8 @@ def load_played_games() -> pd.DataFrame:
 def predict_week(season: int, week: int, model: str = "xgb",
                  played: pd.DataFrame | None = None,
                  upcoming: pd.DataFrame | None = None,
-                 cfg: "mr.RidgeConfig" = mr.CFB_RIDGE) -> pd.DataFrame:
+                 cfg: "mr.RidgeConfig" = mr.CFB_RIDGE,
+                 now: pd.Timestamp | None = None) -> pd.DataFrame:
     """Predict a scheduled (not yet played) week for both divisions.
 
     Mirrors the NFL path: team state is built from every completed game, the unplayed
@@ -324,7 +325,8 @@ def predict_week(season: int, week: int, model: str = "xgb",
     upcoming["game_date"] = pd.to_datetime(upcoming["game_date"])
     kickoff = upcoming["game_date"]
     kickoff = kickoff.dt.tz_localize("UTC") if kickoff.dt.tz is None else kickoff.dt.tz_convert("UTC")
-    upcoming = upcoming[~(kickoff <= pd.Timestamp.now(tz="UTC"))].copy()
+    now = pd.Timestamp.now(tz="UTC") if now is None else now
+    upcoming = upcoming[~(kickoff <= now)].copy()
     if upcoming.empty:
         logger.info("every %d wk%d game already final or under way", season, week)
         return pd.DataFrame()
