@@ -209,6 +209,13 @@ def daily_pipeline(request):
         if mode in ("pa_sim", "pregame_sim"):
             results["steps"].append(_run_pa_sim(target, dry_run, req_json))
 
+        # More shadows, same rule: they write their own tables, never game_predictions.
+        # Target defaults to yesterday, so a forward-looking run must pass "date".
+        if mode == "logit3":
+            results["steps"].append(_run_logit3(target, game_pks, dry_run))
+        if mode == "sim_blend":
+            results["steps"].append(_run_sim_blend(target, game_pks, dry_run, req_json))
+
         # Combined pre-game pipeline:
         #   pregame:    lineups → V5/V6 matchup → V7 features → prediction → scouting report
         #   pregame_v8: lineups → V5/V6 matchup → V7 features → V8 features → prediction → scouting report
@@ -228,6 +235,11 @@ def daily_pipeline(request):
             # {"run_pa_sim": true} in the task body once the shadow table exists
             if mode == "pregame_v10" and req_json.get("run_pa_sim"):
                 results["steps"].append(_run_pa_sim(target, dry_run, req_json))
+            # opt-in shadows, off by default: {"run_logit3": true} / {"run_sim_blend": true}
+            if mode == "pregame_v10" and req_json.get("run_logit3"):
+                results["steps"].append(_run_logit3(target, game_pks, dry_run))
+            if mode == "pregame_v10" and req_json.get("run_sim_blend"):
+                results["steps"].append(_run_sim_blend(target, game_pks, dry_run, req_json))
             results["steps"].append(_run_scouting_reports(target, dry_run))
 
         # Weekly model training — mlb-2026-weekly-train-v10, Sunday 2 AM ET.
@@ -603,6 +615,39 @@ def _run_pa_sim(target: date, dry_run: bool, req_json: dict) -> dict:
         n_episodes=int(req_json.get("n_episodes", 1000)),
         alpha=req_json.get("alpha"),
     )
+
+
+def _shadow(step: str, fn) -> dict:
+    """A shadow model must never fail the production run it rides along with."""
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001 - logged and reported, deliberately non-fatal
+        logger.exception("%s shadow failed (non-fatal)", step)
+        return {"step": step, "status": "error", "error": str(e)[:300]}
+
+
+def _run_logit3(target: date, game_pks: list, dry_run: bool) -> dict:
+    """3-feature L1 logistic, refit in-season; writes game_predictions_logit3 only."""
+    def go():
+        from logit3_shadow import run_slate
+        return run_slate(target, dry_run=dry_run, game_pks=game_pks or None)
+    return _shadow("logit3", go)
+
+
+def _run_sim_blend(target: date, game_pks: list, dry_run: bool, req_json: dict) -> dict:
+    """v2 PA sim + team-strength blend; writes game_predictions_sim_blend and
+    game_props_sim only. Refuses (insufficient_memory) below SIM_BLEND_MIN_MEMORY_MB,
+    which the current 1 GB function is."""
+    def go():
+        from pa_sim.blend import memory_ok, run_slate
+        ok, have, need = memory_ok()
+        if not ok:
+            return {"step": "sim_blend", "status": "insufficient_memory",
+                    "memory_mb": have, "required_mb": need}
+        return run_slate(target, dry_run=dry_run, game_pks=game_pks or None,
+                         experimental=bool(req_json.get("experimental_props")),
+                         n_episodes=req_json.get("n_episodes"))
+    return _shadow("sim_blend", go)
 
 
 def _run_v10_backfill(start: date, end: date, dry_run: bool) -> dict:
