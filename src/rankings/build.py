@@ -40,6 +40,61 @@ def _records(games: pd.DataFrame) -> dict[str, list[int]]:
     return rec
 
 
+def _has_margins(*frames) -> bool:
+    """Every non-empty frame the fit will use carries at least some scores."""
+    present = [f for f in frames if f is not None and not f.empty]
+    return bool(present) and all(
+        "margin" in f.columns and f["margin"].notna().any() for f in present
+    )
+
+
+def strength_of_record(games: pd.DataFrame | None, strengths: pd.Series,
+                       home_adv: float) -> dict[str, float]:
+    """Wins above an average (rating 0) team's expected wins on the same schedule."""
+    out: dict[str, float] = {}
+    if games is None or games.empty:
+        return out
+    for g in games.itertuples(index=False):
+        for team, opp, is_home, won in (
+            (g.home_team_name, g.away_team_name, True, g.home_won),
+            (g.away_team_name, g.home_team_name, False, 1 - g.home_won),
+        ):
+            if opp not in strengths.index:
+                continue
+            venue = 0.0 if g.neutral_site else (home_adv if is_home else -home_adv)
+            expected = core.win_prob(venue, float(strengths[opp]))
+            out[team] = out.get(team, 0.0) + float(won) - expected
+    return out
+
+
+# After this many weeks every Division I program has played; one that has not is no
+# longer in the division (Saint Francis dropped to D3 for 2026).
+MEMBERSHIP_GRACE_WEEKS = 3
+
+
+def board_membership(prior: pd.DataFrame | None, current: pd.DataFrame,
+                     week: int = 0) -> dict[str, str | None]:
+    """Team -> the board it belongs on, decided by the CURRENT season.
+
+    Any team that has played this season is placed by this season's division, and a
+    None there (a D2/NAIA opponent) keeps it off every board even if an earlier
+    season's data said otherwise. Teams yet to play this season fall back to last
+    season, so early-season boards are not missing anybody — but only for the first
+    MEMBERSHIP_GRACE_WEEKS weeks.
+    """
+    out: dict[str, str | None] = {}
+    if week > MEMBERSHIP_GRACE_WEEKS and current is not None and not current.empty:
+        prior = None
+    for frame in (prior, current):
+        if frame is None or frame.empty:
+            continue
+        for g in frame.itertuples(index=False):
+            for team, div in ((g.home_team_name, getattr(g, "home_division", None)),
+                              (g.away_team_name, getattr(g, "away_division", None))):
+                out[team] = core._clean(div)
+    return out
+
+
 def build_board(sport: str, season: int, week: int | None = None,
                 n_boot: int = 200, use_prior: bool = True,
                 games: pd.DataFrame | None = None,
@@ -73,19 +128,21 @@ def build_board(sport: str, season: int, week: int | None = None,
         )
 
     major = spec.major_division
+    # Each team's CURRENT division, shared by the fit and every bootstrap replicate so
+    # a program that moved up is rated, banded and boarded as what it is now.
+    divisions = core.season_divisions(prior, current)
+    model_kw = spec.model_kw()
+    model = spec.model
+    if model != "bt" and not _has_margins(current, prior):
+        # A feed that lost its scores must not take the board down; the W/L fit is
+        # the measured next best. Flagged in `model` so the page says which it got.
+        logger.warning("%s %d: no scores for the margin model; using W/L", sport, season)
+        model = "bt"
+        model_kw["model"] = "bt"
+    fit_kw = dict(C=spec.ridge_C, w0=spec.prior_w0, tau=spec.prior_tau, major=major,
+                  divisions=divisions, **model_kw)
     strengths, home_adv, div_gap = core.fit_with_prior(
-        current, prior, effective_week,
-        C=spec.ridge_C, w0=spec.prior_w0, tau=spec.prior_tau, major=major,
-    )
-
-    # Bootstrap over the same evidence the point estimate used, prior included, so the
-    # ranges describe the actual information rather than a different sample.
-    pool = pd.concat(
-        [f for f in (prior, current) if f is not None and not f.empty], ignore_index=True
-    )
-    divisions = core.team_divisions(pool)
-    boot = core.bootstrap_ranks(
-        pool, n_boot=n_boot, C=spec.ridge_C, divisions=divisions, major=major
+        current, prior, effective_week, **fit_kw
     )
 
     # In preseason there is no current-season record to show, and "0-0" against a
@@ -94,14 +151,19 @@ def build_board(sport: str, season: int, week: int | None = None,
     record = _records(current) if not current.empty else _records(prior)
     record_season = season if not current.empty else season - 1
 
-    # Board membership needs a division for EVERY team in the fit, but early in a
-    # season only a handful have played. Start from the prior season so nobody is
-    # missing, then let this season's games overwrite it — that ordering is what makes
-    # a team who moved up appear on the right board from week one.
-    division_of = dict(core.team_divisions(prior)) if prior is not None else {}
-    division_of.update(core.team_divisions(current))
-    if not division_of:
-        division_of = divisions
+    division_of = (
+        board_membership(prior, current, effective_week) if spec.board_divisions else {}
+    )
+    board_of = (
+        {t: d for t, d in division_of.items() if d in spec.board_divisions}
+        if spec.board_divisions else None
+    )
+
+    # Bootstrap the SAME model as the point estimate: same week, decay, divisions and
+    # model, with each season resampled separately (see core.bootstrap_ranks).
+    boot = core.bootstrap_ranks(
+        current, prior, effective_week, n_boot=n_boot, board_of=board_of, **fit_kw
+    )
 
     overall = {team: i for i, team in enumerate(strengths.index, start=1)}
 
@@ -161,11 +223,34 @@ def build_board(sport: str, season: int, week: int | None = None,
         ),
         "is_preseason": bool(is_preseason),
         "record_season": record_season,
+        "model": model,
+        # When the board was computed and the last game it has seen. MLB "weeks" are
+        # an internal index for the prior decay, not something a reader counts in, so
+        # the UI should show the date rather than "through week 27".
+        "computed_at": pd.Timestamp.now(tz="UTC").floor("s"),
+        "as_of_date": (
+            (current if not current.empty else prior)["game_date"].max().date()
+            if not (current.empty and prior is None) else None
+        ),
     }
 
     out = pd.DataFrame(rows)
-    for key in ("prior_weight", "home_field_points"):
+    for key in ("prior_weight", "home_field_points", "computed_at", "as_of_date",
+                "model"):
         out[key] = meta[key]
+    if model == "margin":
+        # The same rating in the sport's own units: expected margin against an
+        # average team on a neutral field.
+        out["rating_points"] = (out["rating"] * spec.margin_scale / core.ELO_SCALE).round(1)
+
+    # Strength of record from this board's own ratings: wins minus the wins an average
+    # team would expect against the same schedule, at the same venues. Descriptive (it
+    # grades the resume, it does not predict), and used for `sor_rank` only where
+    # ESPN publishes none — ESPN returns 0 for every NFL team.
+    sor = strength_of_record(
+        current if not current.empty else prior, strengths, home_adv
+    )
+    out["sor"] = out["team"].map(sor).round(2)
 
     # Strength of record, strength of schedule and unit efficiency come from ESPN's
     # FPI. They answer questions this rating deliberately does not model, so they are
@@ -176,6 +261,15 @@ def build_board(sport: str, season: int, week: int | None = None,
         meta["has_fpi"] = bool("fpi" in out.columns and out["fpi"].notna().any())
     else:
         meta["has_fpi"] = False
+
+    if "sor_rank" not in out.columns or out["sor_rank"].isna().all():
+        out["sor_rank"] = (
+            out.groupby("division", dropna=False)["sor"]
+            .rank(ascending=False, method="min").astype("Int64")
+        )
+        meta["sor_source"] = "model"
+    else:
+        meta["sor_source"] = "espn_fpi"
 
     # Conference/division membership and the human polls. Descriptive only — they let
     # a reader filter and compare, and none of them feed the fit.
@@ -231,7 +325,7 @@ def print_board(table: pd.DataFrame, meta: dict, top: int = 25) -> None:
 # whole sport — `division` for the NFL and MLB — comes out of pandas as float64, lands
 # in BigQuery as FLOAT, and the load fails outright because FLOAT cannot be a
 # clustering field.
-TEXT_COLUMNS = ("team", "division", "record", "conference", "division_name")
+TEXT_COLUMNS = ("team", "division", "record", "conference", "division_name", "model")
 
 
 def write_bq(table: pd.DataFrame, meta: dict) -> dict:

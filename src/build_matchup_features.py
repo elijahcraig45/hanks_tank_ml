@@ -1003,6 +1003,16 @@ class MatchupFeatureBuilder:
             else None
         )
 
+        # Must exist before the hand fallback below reads it. It used to be assigned
+        # ~30 lines later, so any game whose probable starter had no pitch_hand in
+        # the lineup row raised UnboundLocalError and 500'd the whole pregame task.
+        game_pitcher_ids = [p for p in [home_starter_id, away_starter_id] if p]
+        game_pitcher_splits = pd.DataFrame()
+        if not pitcher_splits_df.empty and game_pitcher_ids:
+            game_pitcher_splits = pitcher_splits_df[
+                pitcher_splits_df["pitcher"].isin(game_pitcher_ids)
+            ]
+
         if home_starter_hand is None and not game_pitcher_splits.empty and home_starter_id is not None:
             home_pitcher_hand = game_pitcher_splits[
                 game_pitcher_splits["pitcher"] == home_starter_id
@@ -1024,19 +1034,12 @@ class MatchupFeatureBuilder:
             list(home_lineup["player_id"].dropna().astype(int).unique()) +
             list(away_lineup["player_id"].dropna().astype(int).unique())
         )
-        game_pitcher_ids = [p for p in [home_starter_id, away_starter_id] if p]
 
         game_statcast = pd.DataFrame()
         if not statcast_df.empty and game_pitcher_ids and game_batter_ids:
             game_statcast = statcast_df[
                 (statcast_df["pitcher"].isin(game_pitcher_ids)) &
                 (statcast_df["batter"].isin(game_batter_ids))
-            ]
-
-        game_pitcher_splits = pd.DataFrame()
-        if not pitcher_splits_df.empty and game_pitcher_ids:
-            game_pitcher_splits = pitcher_splits_df[
-                pitcher_splits_df["pitcher"].isin(game_pitcher_ids)
             ]
 
         game_platoon = pd.DataFrame()

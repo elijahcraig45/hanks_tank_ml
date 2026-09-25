@@ -13,6 +13,17 @@ Modes (POST body {"mode": ...}):
   cfbd          rebuild the CollegeFootballData tables: advanced stats, players, lines
   predict_week  predict a scheduled week for both divisions
   backfill      re-run a completed season week by week, per division
+                ({"model": "ridge"} writes the shadow ridge to its own table)
+  fpi_snapshot  record ESPN FPI's pregame win probability for the next unplayed week
+
+Shadow model: {"shadow_ridge": true} on predict_week/predict_next (or CFB_RIDGE_SHADOW=1)
+also writes the margin ridge's predictions to cfb_season.game_predictions_ridge_shadow.
+Nothing reads that table; it exists so the ridge can be scored live before adoption.
+
+FPI snapshot: {"fpi_snapshot": true} on ingest/predict_week (or FPI_SNAPSHOT=1) also
+appends ESPN FPI's pregame predictions to cfb_season.fpi_game_predictions, for the model
+comparison page. Off by default; the table must be created first (it is loaded with
+CREATE_NEVER) — see scripts/gcp/football/create_fpi_game_predictions.sql.
 
 `ingest` runs the derived steps itself rather than each getting its own Scheduler job:
 they must run after the games land, and chaining them in one invocation makes that
@@ -38,6 +49,54 @@ logger = logging.getLogger(__name__)
 DIVISIONS = ("fbs", "fcs")
 
 
+
+
+def _shadow_enabled(req: dict) -> bool:
+    """The margin ridge is an experiment: it runs only when asked for, per request
+    ({"shadow_ridge": true}) or per deployment (CFB_RIDGE_SHADOW=1), and writes only
+    to its own table, which nothing reads. Off by default."""
+    import os
+
+    return bool(req.get("shadow_ridge")) or os.environ.get("CFB_RIDGE_SHADOW") == "1"
+
+
+def _shadow_ridge_week(season: int, week: int, steps: dict) -> None:
+    """Predict the week with the margin ridge into the shadow table. Never fatal:
+    an experiment must not cost the production predictions anything."""
+    try:
+        import cfb_config
+        from backfill_cfb import ensure_datasets, replace_game_ids
+        from pipeline import SHADOW_TABLE, predict_week
+
+        rows = predict_week(season, week, model="ridge")
+        if not rows.empty:
+            ensure_datasets()
+            replace_game_ids(rows, cfb_config.CTX.season_dataset, SHADOW_TABLE,
+                             partition_field="game_date",
+                             cluster_fields=["season", "division"])
+        steps["shadow_ridge"] = len(rows)
+    except Exception as exc:
+        logger.error("shadow ridge failed: %s", exc)
+        steps["shadow_ridge"] = {"error": str(exc)[:200]}
+
+
+def _fpi_snapshot(season: int, week: int | None, steps: dict) -> None:
+    """Append FPI's pregame numbers for one week's games that have not kicked off. Never
+    fatal: FPI is shown for comparison and must not cost the pipeline anything."""
+    try:
+        from espn_data import fetch_scheduled
+        from pipeline import next_unplayed_week
+        from rankings import fpi_games
+
+        week = week if week is not None else next_unplayed_week(season)
+        if week is None:
+            steps["fpi_snapshot"] = 0
+            return
+        slate = fpi_games.cfb_slate(fetch_scheduled(season, int(week)))
+        fpi_games.run_snapshot("cfb", slate, steps)
+    except Exception as exc:
+        logger.error("FPI snapshot failed: %s", exc)
+        steps["fpi_snapshot"] = {"error": str(exc)[:200]}
 
 
 def _score_predictions(steps: dict) -> None:
@@ -131,6 +190,13 @@ def cfb_pipeline(request):
     mode = req.get("mode", "ingest")
     result: dict = {"mode": mode, "steps": {}}
 
+    # dry_run used to be ignored here, so {"dry_run": true} ran for real and replaced
+    # a week of production predictions. Now only the predict modes support it (they
+    # compute and return, writing nothing); any other mode refuses rather than run.
+    dry_run = bool(req.get("dry_run"))
+    if dry_run and mode not in ("predict_week", "predict_next"):
+        return ({"mode": mode, "error": "dry_run is only supported for predict_week and predict_next"}, 400)
+
     try:
         if mode == "ingest":
             import cfb_config
@@ -159,6 +225,19 @@ def cfb_pipeline(request):
             _score_predictions(result["steps"])
             _refresh_rankings(season, result["steps"])
             _refresh_stats(season, result["steps"])
+
+            from rankings import fpi_games
+
+            if fpi_games.enabled(req):
+                _fpi_snapshot(season, None, result["steps"])
+
+        elif mode == "fpi_snapshot":
+            import cfb_config
+
+            season = int(req.get("season", cfb_config.CTX.season))
+            week = req.get("week")
+            _fpi_snapshot(season, int(week) if week is not None else None,
+                          result["steps"])
 
         elif mode == "score":
             _score_predictions(result["steps"])
@@ -226,43 +305,73 @@ def cfb_pipeline(request):
                     return (result, 200)
 
             rows = predict_week(season, int(week))
-            if not rows.empty:
-                ensure_datasets()
-                # Replace this week's slice so re-runs are idempotent.
-                from google.cloud import bigquery
-                c = bigquery.Client(project=cfb_config.CTX.project)
-                try:
-                    c.query(
-                        f"DELETE FROM `{cfb_config.CTX.project}."
-                        f"{cfb_config.CTX.season_dataset}.game_predictions` "
-                        f"WHERE season={season} AND week={int(week)} "
-                        f"AND prediction_correct IS NULL"
-                    ).result()
-                except Exception:
-                    pass
-                load(rows, cfb_config.CTX.season_dataset, "game_predictions",
-                     write_disposition="WRITE_APPEND")
+            if dry_run:
+                result["dry_run"] = True
+                result["week"] = int(week)
                 result["steps"]["predicted"] = len(rows)
+                result["steps"]["games"] = (rows["game_id"].astype(str).tolist()
+                                            if not rows.empty else [])
+                if _shadow_enabled(req):
+                    try:
+                        result["steps"]["shadow_ridge"] = len(
+                            predict_week(season, int(week), model="ridge"))
+                    except Exception as exc:
+                        result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
+                result["status"] = "ok"
+                return (result, 200)
+            if not rows.empty:
+                from backfill_cfb import replace_game_ids
+
+                ensure_datasets()
+                # Replace exactly the games predicted, so re-runs are idempotent. This
+                # used to clear every unscored row of the week, which deleted the
+                # pregame rows of games already under way or final-but-unscored,
+                # and predict_week never rewrites those.
+                replace_game_ids(rows, cfb_config.CTX.season_dataset, "game_predictions",
+                                 partition_field="game_date",
+                                 cluster_fields=["season", "division"])
+                result["steps"]["predicted"] = len(rows)
+
+            if _shadow_enabled(req):
+                _shadow_ridge_week(season, int(week), result["steps"])
+
+            from rankings import fpi_games
+
+            if fpi_games.enabled(req):
+                _fpi_snapshot(season, int(week), result["steps"])
 
         elif mode == "backfill":
             import cfb_config
             import pandas as pd
             from backfill_cfb import ensure_datasets, load
-            from espn_data import load_games
-            from pipeline import backfill_division, build
+            from pipeline import SHADOW_TABLE, backfill_division, build, load_played_games
 
             # Accepts a list so several seasons can be rebuilt with one methodology.
             requested = req.get("seasons") or [req.get("season", cfb_config.CTX.season)]
             seasons = [int(s) for s in requested]
-            feats = build(load_games())
+            # {"model": "ridge"} backfills the shadow model into its own table only.
+            model = "ridge" if req.get("model") == "ridge" else "xgb"
+            games = load_played_games()
+            feats = build(games)
 
             frames = []
             for season in seasons:
                 for division in DIVISIONS:
-                    rows = backfill_division(feats, division, season)
+                    rows = backfill_division(feats, division, season, model=model,
+                                             games=games)
                     if not rows.empty:
                         frames.append(rows)
                         result["steps"][f"{season}_{division}"] = len(rows)
+
+            if frames and model == "ridge":
+                from backfill_cfb import replace_game_ids
+
+                ensure_datasets()
+                result["steps"]["written_shadow"] = replace_game_ids(
+                    pd.concat(frames, ignore_index=True),
+                    cfb_config.CTX.season_dataset, SHADOW_TABLE,
+                    partition_field="game_date", cluster_fields=["season", "division"])
+                frames = []
 
             if frames:
                 ensure_datasets()

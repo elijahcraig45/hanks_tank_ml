@@ -1,0 +1,25 @@
+{
+  "model_version": "sim_blend_v2",
+  "sim_config": {"variant": "full_x50", "tau": 365, "tau_league": 60, "platoon": "both", "home": true,
+                 "park": "class", "xw": 0.5, "tto": true, "hook": "hazard", "bullpen": "recent",
+                 "bp_days": 30, "trans": "empirical", "weather": false, "env": false, "alpha": 1.0},
+  "n_episodes": 3000,
+  "platt_sim": {"intercept": -0.04373477, "coef": 1.19816887,
+                "note": "P(home) = sigmoid(a + b*logit(sim_p)); fit with LogisticRegression(C=1e4)"},
+  "stack": {"intercept": -0.04899521, "coef_logit_strength": 0.51413073, "coef_logit_sim": 0.7581402,
+            "note": "blend = sigmoid(a + b1*logit(strength_p) + b2*logit(sim_p)); LogisticRegression(C=1e4)"},
+  "totals_bias_runs": 0.47116807,
+  "totals_bias_note": "mean(raw sim mean total - actual total) over the fit window; the calibrated pmf is exponentially tilted to (raw mean - bias). Raw totals ran hot, +0.2 to +0.8 runs/game in 2022-26, cause unknown.",
+  "strength": {"elo_k": 4.0, "elo_hfa": 24.0, "elo_season_regress": 0.3333333, "pythag_exp": 1.83,
+               "pythag_prior_games": 10, "pythag_prior_runs_per_game": 4.5, "fit_seasons_before_target": 3,
+               "logistic_C": 1.0},
+  "provenance": {
+    "fitted_at": "2026-09-25",
+    "source": "hanks_tank_ml/data/backtest_2026/rich/test_frame.parquet (research/backtest_2026/51_test_report.py output)",
+    "fit_window": "2016-04-03 .. 2025-09-28, regular season, games with a pregame lineup",
+    "n_games": 22746,
+    "logit_clip": 0.0001,
+    "measured": "sim+strength vs strength alone, 2020-26 test seasons (n=15,000): +0.0021 nats log loss [+0.0010, +0.0032], research/backtest_2026/rich/test_report.json",
+    "caveat": "Frozen coefficients: in the research each season was stacked on EARLIER seasons only; these are fit on everything through 2025, so 2026 scores from this table are out-of-sample but 2016-2025 are not."
+  }
+}

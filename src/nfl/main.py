@@ -12,6 +12,16 @@ Modes (POST body {"mode": ...}):
   predict_week  predict a scheduled week (defaults to the next unplayed week)
   score         recompute results for completed games and update predictions
   backfill      re-run a whole season week by week
+  fpi_snapshot  record ESPN FPI's pregame win probability for the next 8 days of games
+
+Shadow model: {"shadow_ridge": true} on predict_week (or NFL_RIDGE_SHADOW=1) also writes
+the margin ridge's predictions to nfl_season.game_predictions_ridge_shadow. Nothing reads
+that table; it exists so the ridge can be scored live before adoption.
+
+FPI snapshot: {"fpi_snapshot": true} on ingest/predict_week (or FPI_SNAPSHOT=1) also
+appends ESPN FPI's pregame predictions to nfl_season.fpi_game_predictions, for the model
+comparison page. Off by default; the table must be created first (it is loaded with
+CREATE_NEVER) — see scripts/gcp/football/create_fpi_game_predictions.sql.
 
 The derived steps hang off `ingest` rather than taking Scheduler jobs of their own:
 they only make sense after the week's games land, so chaining them in one invocation
@@ -72,6 +82,46 @@ def _next_unplayed_week() -> tuple[int, int]:
 
 
 
+def _shadow_enabled(req: dict) -> bool:
+    """The margin ridge is an experiment: it runs only when asked for, per request
+    ({"shadow_ridge": true}) or per deployment (NFL_RIDGE_SHADOW=1), and writes only
+    to its own table. Off by default."""
+    import os
+
+    return bool(req.get("shadow_ridge")) or os.environ.get("NFL_RIDGE_SHADOW") == "1"
+
+
+def _shadow_ridge_week(season: int, week: int, steps: dict) -> None:
+    """Predict the week with the margin ridge into the shadow table. Never fatal."""
+    try:
+        from bq_io import upsert_week
+        from config import CTX
+        from predict_nfl import SHADOW_TABLE, predict_week
+
+        rows = predict_week(season, week, model="ridge")
+        upsert_week(rows, CTX.season_dataset, SHADOW_TABLE, season, week)
+        steps["shadow_ridge"] = len(rows)
+    except Exception as exc:
+        logger.error("shadow ridge failed: %s", exc)
+        steps["shadow_ridge"] = {"error": str(exc)[:200]}
+
+
+def _fpi_snapshot(season: int, steps: dict, refresh: bool = False) -> None:
+    """Append FPI's pregame numbers for games kicking off in the next 8 days. Never
+    fatal: FPI is shown for comparison and must not cost the pipeline anything."""
+    try:
+        from data import load_schedules
+        from rankings import fpi_games
+
+        sched = load_schedules(refresh=refresh)
+        slate = fpi_games.nfl_slate(sched[sched["season"] == season],
+                                    team_ids=fpi_games.nfl_team_ids(season))
+        fpi_games.run_snapshot("nfl", slate, steps)
+    except Exception as exc:
+        logger.error("FPI snapshot failed: %s", exc)
+        steps["fpi_snapshot"] = {"error": str(exc)[:200]}
+
+
 def _refresh_rankings(season: int, steps: dict) -> None:
     """Rebuild and publish the power-ranking board. Never fatal."""
     try:
@@ -105,6 +155,13 @@ def nfl_pipeline(request):
 
     mode = req.get("mode", "predict_week")
     result: dict = {"mode": mode, "steps": {}}
+
+    # dry_run used to be ignored here, so {"dry_run": true} ran for real and replaced
+    # a week of production predictions. Now only the predict modes support it (they
+    # compute and return, writing nothing); any other mode refuses rather than run.
+    dry_run = bool(req.get("dry_run"))
+    if dry_run and mode not in ("predict_week",):
+        return ({"mode": mode, "error": "dry_run is only supported for predict_week"}, 400)
 
     try:
         if mode == "ingest":
@@ -143,6 +200,17 @@ def nfl_pipeline(request):
                 logger.error("pickem refresh failed: %s", exc)
                 result["steps"]["pickem"] = {"error": str(exc)[:200]}
 
+            from rankings import fpi_games
+
+            if fpi_games.enabled(req):
+                _fpi_snapshot(season, result["steps"])
+
+        elif mode == "fpi_snapshot":
+            from config import CTX
+
+            _fpi_snapshot(int(req.get("season", CTX.season)), result["steps"],
+                          refresh=True)
+
         elif mode == "rankings":
             from config import CTX
 
@@ -164,12 +232,33 @@ def nfl_pipeline(request):
                 season, week = _next_unplayed_week()
 
             rows = predict_week(int(season), int(week))
+            if dry_run:
+                result["dry_run"] = True
+                result["season"], result["week"] = season, week
+                result["steps"]["predicted"] = len(rows)
+                result["steps"]["games"] = rows["game_id"].astype(str).tolist()
+                if _shadow_enabled(req):
+                    try:
+                        result["steps"]["shadow_ridge"] = len(
+                            predict_week(int(season), int(week), model="ridge"))
+                    except Exception as exc:
+                        result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
+                result["status"] = "ok"
+                return (result, 200)
             ensure_dataset(CTX.season_dataset)
             upsert_week(rows, CTX.season_dataset, "game_predictions",
                         int(season), int(week))
             result["steps"]["predicted"] = len(rows)
             result["season"] = season
             result["week"] = week
+
+            if _shadow_enabled(req):
+                _shadow_ridge_week(int(season), int(week), result["steps"])
+
+            from rankings import fpi_games
+
+            if fpi_games.enabled(req):
+                _fpi_snapshot(int(season), result["steps"])
 
         elif mode == "score":
             from bq_io import query
