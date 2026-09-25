@@ -120,6 +120,8 @@ class _TeamState:
 
     def snapshot(self, prefix: str) -> dict:
         pyth = pythagorean_win_pct(self.pf, self.pa) if self.games else 0.5
+        # Last-8-games win rate: `results` is a deque(maxlen=LONG_WINDOW). It was
+        # published as `win_pct_season`, which it never was past week 8.
         win_pct = float(np.mean(self.results)) if self.results else 0.5
         return {
             f"{prefix}_elo": self.elo,
@@ -128,7 +130,7 @@ class _TeamState:
             f"{prefix}_point_diff_8g": self._mean(self.margins, LONG_WINDOW),
             f"{prefix}_points_scored_pg": self.pf / self.games if self.games else 0.0,
             f"{prefix}_points_allowed_pg": self.pa / self.games if self.games else 0.0,
-            f"{prefix}_win_pct_season": win_pct,
+            f"{prefix}_win_pct_8g": win_pct,
             f"{prefix}_current_streak": self.streak,
             f"{prefix}_streak_magnitude": abs(self.streak),
             f"{prefix}_on_winning_streak": int(self.streak >= 2),
@@ -241,7 +243,7 @@ def build_features(games: pd.DataFrame, epa: pd.DataFrame | None = None,
                 row["home_off_explosive_rate_8g"] - row["away_off_explosive_rate_8g"]
             )
         row["point_diff_short_differential"] = row["home_point_diff_3g"] - row["away_point_diff_3g"]
-        row["win_pct_diff"] = row["home_win_pct_season"] - row["away_win_pct_season"]
+        row["win_pct_diff"] = row["home_win_pct_8g"] - row["away_win_pct_8g"]
         row["streak_differential"] = row["home_current_streak"] - row["away_current_streak"]
         row["points_allowed_differential"] = (
             row["away_points_allowed_pg"] - row["home_points_allowed_pg"]

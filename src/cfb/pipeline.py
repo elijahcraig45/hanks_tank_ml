@@ -27,9 +27,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from features import EloParams, build_features, feature_columns  # noqa: E402
 from models import build_xgb, evaluate  # noqa: E402
+import margin_ridge as mr  # noqa: E402
 
 import cfb_config  # noqa: E402
 from espn_data import load_games, resolve_team_divisions  # noqa: E402
+
+# margin_ridge lives beside features.py in src/nfl (the shared football core) and is
+# staged flat next to it by deploy_cfb.sh.
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,11 @@ CFB_ELO = EloParams(
 )
 
 MODEL_VERSION = "cfb_v1"
+RIDGE_MODEL_VERSION = "cfb_v2_margin_ridge"
+
+# The ridge runs as a SHADOW model: it writes to its own table, which nothing reads,
+# until it has earned a place in game_predictions. Off unless asked for.
+SHADOW_TABLE = "game_predictions_ridge_shadow"
 CONFIDENCE_TIERS = {"high": 0.80, "medium": 0.65}  # wider than NFL: bigger mismatches
 
 
@@ -123,65 +132,125 @@ def cfb_feature_columns(feats: pd.DataFrame) -> list[str]:
             if c not in CFB_NON_FEATURE]
 
 
-def backfill_division(feats: pd.DataFrame, division: str, season: int) -> pd.DataFrame:
-    """Honest week-by-week out-of-sample predictions for one division and season."""
-    cols = cfb_feature_columns(feats)
-    subset = feats[feats["division"] == division]
+def ridge_frame(games: pd.DataFrame) -> pd.DataFrame:
+    """Games in the shape margin_ridge expects, one pool across FBS and FCS.
 
-    out = []
-    for wk in sorted(subset[subset["season"] == season]["week"].unique()):
-        # Train on every prior game in this division, across all seasons.
-        train = subset[(subset["season"] < season)
-                       | ((subset["season"] == season) & (subset["week"] < wk))]
-        test = subset[(subset["season"] == season) & (subset["week"] == wk)]
-        if len(train) < 300 or test.empty:
-            continue
+    `fbs_diff` is the division covariate: +1 FBS home vs FCS away, -1 the reverse, 0
+    otherwise. Without it the only thing separating the two populations is the ~350
+    cross-division games a window holds, and FCS ratings drift toward FBS's.
+    """
+    div_of = resolve_team_divisions(games)
+    rg = games[["game_id", "season", "week", "division", "home_team", "away_team"]].copy()
+    rg["margin"] = pd.to_numeric(games["result"], errors="coerce")
+    rg["neutral"] = games["neutral_site"].fillna(0).astype(int)
+    rg["fbs_diff"] = ((rg["home_team"].map(div_of) == "fbs").astype(int)
+                      - (rg["away_team"].map(div_of) == "fbs").astype(int))
+    return rg.reset_index(drop=True)
 
-        model = build_xgb()
-        model.fit(train[cols].fillna(0.0).values, train["home_won"].astype(int).values)
-        proba = model.predict_proba(test[cols].fillna(0.0).values)[:, 1]
 
-        rows = pd.DataFrame({
-            "game_id": test["game_id"].values,
-            "season": test["season"].values,
-            "week": test["week"].values,
-            "division": division,
-            "game_date": pd.to_datetime(test["game_date"].values),
-            "home_team_id": test["home_team"].values,
-            "away_team_id": test["away_team"].values,
-            "home_team_name": test["home_team_name"].values,
-            "away_team_name": test["away_team_name"].values,
-            "home_win_probability": proba,
-            "away_win_probability": 1 - proba,
-            "predicted_winner": np.where(proba > 0.5,
-                                         test["home_team_name"].values,
-                                         test["away_team_name"].values),
-            "confidence_tier": [confidence_tier(p) for p in proba],
-            "model_version": MODEL_VERSION,
-            "predicted_at": datetime.now(timezone.utc),
-            "elo_differential": test["elo_differential"].values,
-            "elo_home_win_prob": test["elo_home_win_prob"].values,
-            "pythag_differential": test["pythag_differential"].values,
-            "home_point_diff_3g": test["home_point_diff_3g"].values,
-            "away_point_diff_3g": test["away_point_diff_3g"].values,
-            "home_current_streak": test["home_current_streak"].values,
-            "away_current_streak": test["away_current_streak"].values,
-            "is_divisional": test["is_divisional"].values,
-            "cross_division": test["cross_division"].values,
-            "neutral_site": test["neutral_site"].values,
-            "home_won": test["home_won"].values,
-        })
+def _prediction_rows(test: pd.DataFrame, proba: np.ndarray, division: str,
+                     model_version: str, margin: np.ndarray | None = None,
+                     ridge: "mr.MarginRidge | None" = None,
+                     scored: bool = True) -> pd.DataFrame:
+    """The game_predictions row shape. Column names are the backend's contract — add,
+    never rename. The ridge-only columns are additive and NaN for the XGBoost rows."""
+    rows = pd.DataFrame({
+        "game_id": test["game_id"].values,
+        "season": test["season"].values,
+        "week": test["week"].values,
+        "division": division,
+        "game_date": pd.to_datetime(test["game_date"].values),
+        "home_team_id": test["home_team"].values,
+        "away_team_id": test["away_team"].values,
+        "home_team_name": test["home_team_name"].values,
+        "away_team_name": test["away_team_name"].values,
+        "home_win_probability": proba,
+        "away_win_probability": 1 - proba,
+        "predicted_winner": np.where(proba > 0.5,
+                                     test["home_team_name"].values,
+                                     test["away_team_name"].values),
+        "confidence_tier": [confidence_tier(p) for p in proba],
+        "model_version": model_version,
+        "predicted_at": datetime.now(timezone.utc),
+        "elo_differential": test["elo_differential"].values,
+        "elo_home_win_prob": test["elo_home_win_prob"].values,
+        "pythag_differential": test["pythag_differential"].values,
+        "home_point_diff_3g": test["home_point_diff_3g"].values,
+        "away_point_diff_3g": test["away_point_diff_3g"].values,
+        "home_current_streak": test["home_current_streak"].values,
+        "away_current_streak": test["away_current_streak"].values,
+        "is_divisional": test["is_divisional"].values,
+        "cross_division": test["cross_division"].values,
+        "neutral_site": test["neutral_site"].values,
+    })
+    # Positive = home favoured, the same sign as nflverse's spread_line. Deliberately
+    # NOT named spread_line: the backend joins CFB's betting-line spread_line onto
+    # `p.*`, and a second column of that name would break that query.
+    if margin is not None:
+        rows["predicted_home_margin"] = np.asarray(margin, dtype=float)
+    if ridge is not None:
+        rows["home_power_rating"] = test["home_team"].map(ridge.ratings).fillna(0.0).values
+        rows["away_power_rating"] = test["away_team"].map(ridge.ratings).fillna(0.0).values
+        rows["home_field_points"] = ridge.hfa * (1 - test["neutral_site"].fillna(0).values)
+
+    if scored:
+        rows["home_won"] = test["home_won"].values
         rows["actual_winner"] = np.where(rows["home_won"] == 1,
                                          rows["home_team_name"], rows["away_team_name"])
         rows["prediction_correct"] = (
             (rows["home_win_probability"] > 0.5).astype(int) == rows["home_won"]
         ).astype(int)
-        out.append(rows)
+    else:
+        rows["home_won"] = None
+        rows["actual_winner"] = None
+        rows["prediction_correct"] = None
+    return rows
 
-    if not out:
-        return pd.DataFrame()
-    result = pd.concat(out, ignore_index=True)
-    logger.info("%s %d: %d predictions, %.2f%% accurate",
+
+def backfill_division(feats: pd.DataFrame, division: str, season: int,
+                      model: str = "xgb", games: pd.DataFrame | None = None,
+                      cfg: "mr.RidgeConfig" = mr.CFB_RIDGE) -> pd.DataFrame:
+    """Honest week-by-week out-of-sample predictions for one division and season.
+
+    model="xgb" is production (cfb_v1). model="ridge" is the shadow margin ridge; it
+    needs the raw `games` frame because it fits one pool across both divisions.
+    """
+    if model == "ridge":
+        if games is None:
+            raise ValueError("ridge backfill needs the raw games frame")
+        rg = ridge_frame(games)
+        target = ((rg["season"] == season) & (rg["division"] == division)).to_numpy()
+        margin = mr.walk_forward(rg, target, cfg)
+        pred = rg.loc[target, ["game_id"]].assign(margin=margin[target]).dropna()
+        test = feats.merge(pred, on="game_id")
+        if test.empty:
+            return pd.DataFrame()
+        proba = mr.win_prob(test["margin"].values, cfg.sigma)
+        result = _prediction_rows(test, proba, division, RIDGE_MODEL_VERSION,
+                                  margin=test["margin"].values)
+    else:
+        cols = cfb_feature_columns(feats)
+        subset = feats[feats["division"] == division]
+
+        out = []
+        for wk in sorted(subset[subset["season"] == season]["week"].unique()):
+            # Train on every prior game in this division, across all seasons.
+            train = subset[(subset["season"] < season)
+                           | ((subset["season"] == season) & (subset["week"] < wk))]
+            test = subset[(subset["season"] == season) & (subset["week"] == wk)]
+            if len(train) < 300 or test.empty:
+                continue
+
+            xgb = build_xgb()
+            xgb.fit(train[cols].fillna(0.0).values, train["home_won"].astype(int).values)
+            proba = xgb.predict_proba(test[cols].fillna(0.0).values)[:, 1]
+            out.append(_prediction_rows(test, proba, division, MODEL_VERSION))
+
+        if not out:
+            return pd.DataFrame()
+        result = pd.concat(out, ignore_index=True)
+
+    logger.info("%s %s %d: %d predictions, %.2f%% accurate", model,
                 division, season, len(result),
                 100 * result["prediction_correct"].mean())
     return result
@@ -199,17 +268,51 @@ def baselines(feats: pd.DataFrame, division: str, season: int) -> dict:
     }
 
 
-def predict_week(season: int, week: int) -> pd.DataFrame:
+def load_played_games() -> pd.DataFrame:
+    """Every completed game, current season included.
+
+    BigQuery first: the ingest keeps cfb_historical.games current with replace_seasons.
+    The local parquet cache is only a fallback, because on a cold Cloud Function
+    container load_games() finds /tmp empty and calls fetch_history(), whose default
+    range stops at 2025 — so predict_week was training and building features without a
+    single 2026 game. Measured in cfb_season.game_predictions: every 2026 week-2..4 row
+    has home_point_diff_3g = 0.00, i.e. no team had a current-season game on record.
+    """
+    try:
+        from google.cloud import bigquery
+
+        table = (f"{cfb_config.CTX.project}.{cfb_config.CTX.hist_dataset}.games")
+        df = bigquery.Client(project=cfb_config.CTX.project).query(
+            f"SELECT * FROM `{table}` WHERE home_won IS NOT NULL").to_dataframe()
+        if not df.empty:
+            df["game_date"] = pd.to_datetime(df["game_date"]).dt.tz_localize(None)
+            logger.info("played games from BigQuery: %d rows, seasons %s",
+                        len(df), sorted(df["season"].unique().tolist()))
+            return df
+    except Exception as exc:
+        logger.warning("BigQuery games read failed (%s); using local cache", exc)
+    from espn_data import fetch_history
+
+    return fetch_history(last_season=cfb_config.CTX.season)
+
+
+def predict_week(season: int, week: int, model: str = "xgb",
+                 played: pd.DataFrame | None = None,
+                 upcoming: pd.DataFrame | None = None,
+                 cfg: "mr.RidgeConfig" = mr.CFB_RIDGE) -> pd.DataFrame:
     """Predict a scheduled (not yet played) week for both divisions.
 
     Mirrors the NFL path: team state is built from every completed game, the unplayed
-    slate is appended so it inherits that state without contributing to it, and each
-    division is predicted by a model trained only on its own division's history.
+    slate is appended so it inherits that state without contributing to it.
+
+    model="xgb" (production): each division gets a model trained on its own history.
+    model="ridge" (shadow): one margin ridge over both divisions, fit on the window
+    before this week; also emits the predicted margin and the power ratings behind it.
     """
     from espn_data import fetch_scheduled
 
-    played = load_games()
-    upcoming = fetch_scheduled(season, week)
+    played = load_played_games() if played is None else played
+    upcoming = fetch_scheduled(season, week) if upcoming is None else upcoming
     if upcoming.empty:
         logger.warning("no scheduled games for %d week %d", season, week)
         return pd.DataFrame()
@@ -221,8 +324,17 @@ def predict_week(season: int, week: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     upcoming["game_date"] = pd.to_datetime(upcoming["game_date"])
+    played = played[~played["game_id"].isin(upcoming["game_id"])]
     combined = pd.concat([played, upcoming], ignore_index=True)
     feats = build(combined)
+
+    ridge = rg = None
+    if model == "ridge":
+        rg = ridge_frame(combined)
+        ridge = mr.fit(rg, mr.time_index(season, week), cfg)
+        if ridge is None:
+            logger.warning("ridge: too few games before %d wk%d", season, week)
+            return pd.DataFrame()
 
     cols = cfb_feature_columns(feats)
     out = []
@@ -230,45 +342,26 @@ def predict_week(season: int, week: int) -> pd.DataFrame:
         train = feats[(feats["division"] == division) & feats["home_won"].notna()]
         target = feats[(feats["division"] == division) & feats["home_won"].isna()
                        & (feats["season"] == season) & (feats["week"] == week)]
-        if len(train) < 300 or target.empty:
+        if target.empty:
             continue
 
-        model = build_xgb()
-        model.fit(train[cols].fillna(0.0).values, train["home_won"].astype(int).values)
-        proba = model.predict_proba(target[cols].fillna(0.0).values)[:, 1]
-
-        out.append(pd.DataFrame({
-            "game_id": target["game_id"].values,
-            "season": target["season"].values,
-            "week": target["week"].values,
-            "division": division,
-            "game_date": pd.to_datetime(target["game_date"].values),
-            "home_team_id": target["home_team"].values,
-            "away_team_id": target["away_team"].values,
-            "home_team_name": target["home_team_name"].values,
-            "away_team_name": target["away_team_name"].values,
-            "home_win_probability": proba,
-            "away_win_probability": 1 - proba,
-            "predicted_winner": np.where(proba > 0.5, target["home_team_name"].values,
-                                         target["away_team_name"].values),
-            "confidence_tier": [confidence_tier(p) for p in proba],
-            "model_version": MODEL_VERSION,
-            "predicted_at": datetime.now(timezone.utc),
-            "elo_differential": target["elo_differential"].values,
-            "elo_home_win_prob": target["elo_home_win_prob"].values,
-            "pythag_differential": target["pythag_differential"].values,
-            "home_point_diff_3g": target["home_point_diff_3g"].values,
-            "away_point_diff_3g": target["away_point_diff_3g"].values,
-            "home_current_streak": target["home_current_streak"].values,
-            "away_current_streak": target["away_current_streak"].values,
-            "is_divisional": target["is_divisional"].values,
-            "cross_division": target["cross_division"].values,
-            "neutral_site": target["neutral_site"].values,
-            "home_won": None,
-            "actual_winner": None,
-            "prediction_correct": None,
-        }))
-        logger.info("%s %d wk%d: %d predictions", division, season, week, len(out[-1]))
+        if model == "ridge":
+            tgt = target.merge(rg[["game_id", "neutral", "fbs_diff"]],
+                               on="game_id", how="left")
+            margin = ridge.predict_margin(tgt)
+            proba = mr.win_prob(margin, cfg.sigma)
+            rows = _prediction_rows(target, proba, division, RIDGE_MODEL_VERSION,
+                                    margin=margin, ridge=ridge, scored=False)
+        else:
+            if len(train) < 300:
+                continue
+            xgb = build_xgb()
+            xgb.fit(train[cols].fillna(0.0).values, train["home_won"].astype(int).values)
+            proba = xgb.predict_proba(target[cols].fillna(0.0).values)[:, 1]
+            rows = _prediction_rows(target, proba, division, MODEL_VERSION, scored=False)
+        out.append(rows)
+        logger.info("%s %s %d wk%d: %d predictions", model, division, season, week,
+                    len(rows))
 
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
