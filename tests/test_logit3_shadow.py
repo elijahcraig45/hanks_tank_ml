@@ -1,6 +1,6 @@
 import os
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -121,12 +121,32 @@ def test_run_slate_uses_create_never_and_reports_missing_table():
     df = _frame()
     target = df.game_date.iloc[300]
     bq = _BQ(df)
-    out = L.run_slate(target, bq=bq)
+    early = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    out = L.run_slate(target, bq=bq, now=early)
     assert out["status"] == "ok"
     cfg = bq.loads[0][1]
     assert cfg.create_disposition == "CREATE_NEVER"
     bq2 = _BQ(df, load_exc=Exception("404 Not found: Table hankstank:mlb_2026_season.game_predictions_logit3"))
-    assert L.run_slate(target, bq=bq2)["status"] == "table_missing"
+    assert L.run_slate(target, bq=bq2, now=early)["status"] == "table_missing"
+
+
+def test_run_slate_is_append_only_skips_started_games_and_filters_game_pks():
+    pytest.importorskip("google.cloud.bigquery")
+    df = _frame()
+    target = df.game_date.iloc[300]
+    bq = _BQ(df)
+    sqls = []
+    orig = bq.query
+    bq.query = lambda sql, job_config=None: (sqls.append(sql), orig(sql, job_config))[1]
+    # after every game on the slate has started: nothing written
+    late = datetime(2027, 1, 1, tzinfo=timezone.utc)
+    assert L.run_slate(target, bq=bq, now=late)["status"] == "no_upcoming_games"
+    assert not bq.loads
+    early = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    pk = int(df[df.game_date == target].game_pk.iloc[0])
+    out = L.run_slate(target, bq=bq, now=early, game_pks=[pk])
+    assert out["games"] == 1 and out["status"] == "ok"
+    assert not any("DELETE" in s for s in sqls)
 
 
 def test_run_slate_skips_small_samples_and_dry_run_writes_nothing():

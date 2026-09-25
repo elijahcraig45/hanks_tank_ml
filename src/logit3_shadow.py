@@ -14,7 +14,12 @@ Leakage rules, both enforced in SQL:
     rewritten by backfills, and the latest row overall is the contaminated one;
   * training games are Final regular-season games dated strictly before the target.
 
-Table: mlb_2026_season.game_predictions_logit3. The load uses CREATE_NEVER, so until the
+Table: mlb_2026_season.game_predictions_logit3, APPEND-ONLY: one row per game per run,
+and readers take the latest row written before first pitch. Deleting and rewriting a
+date's slate (the v1 pa_sim pattern) would replace rows for games that have already
+started with post-first-pitch rows, which an honest scoreboard must then discard; it
+also trips BigQuery's streaming-buffer DELETE limit. Games that have started are
+skipped rather than written. The load uses CREATE_NEVER, so until the
 DDL in scripts/gcp/2026_season/create_game_predictions_logit3.sql is approved and run, a
 real run returns status "table_missing" (non-fatal) instead of creating anything.
 """
@@ -143,15 +148,11 @@ def _f(v):
     return None if v is None or (isinstance(v, float) and np.isnan(v)) or pd.isna(v) else float(v)
 
 
-def write(bq, rows: list[dict], target: date) -> int:
-    """DELETE this date's rows for this version, then append with CREATE_NEVER."""
+def write(bq, rows: list[dict]) -> int:
+    """Append (load job, CREATE_NEVER). Never deletes: see the module docstring."""
     from google.cloud import bigquery
 
     tbl = f"{PROJECT}.{DATASET}.{TABLE}"
-    bq.query(f"DELETE FROM `{tbl}` WHERE game_date = @d AND model_version = @m",
-             job_config=bigquery.QueryJobConfig(query_parameters=[
-                 bigquery.ScalarQueryParameter("d", "DATE", target),
-                 bigquery.ScalarQueryParameter("m", "STRING", MODEL_VERSION)])).result()
     bq.load_table_from_dataframe(
         pd.DataFrame(rows), tbl,
         job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND",
@@ -159,12 +160,19 @@ def write(bq, rows: list[dict], target: date) -> int:
     return len(rows)
 
 
+def _utc(v) -> pd.Timestamp:
+    t = pd.Timestamp(v)
+    return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+
+
 def _missing_table(e: Exception) -> bool:
     s = str(e)
     return "Not found: Table" in s or "notFound" in s or "404" in s
 
 
-def run_slate(target: date, dry_run: bool = False, bq=None) -> dict:
+def run_slate(target: date, dry_run: bool = False, bq=None, game_pks=None,
+              now: datetime | None = None) -> dict:
+    """Predict `target`'s slate (or only `game_pks`), writing games not yet started."""
     out = {"step": "logit3", "date": str(target), "table": TABLE, "model_version": MODEL_VERSION}
     if bq is None:
         from google.cloud import bigquery
@@ -179,15 +187,24 @@ def run_slate(target: date, dry_run: bool = False, bq=None) -> dict:
         return {**out, "status": "skipped", "reason": f"only {len(train)} training games"}
     if slate.empty:
         return {**out, "status": "no_games"}
+    if game_pks:
+        slate = slate[slate.game_pk.isin([int(g) for g in game_pks])]
+        if slate.empty:
+            return {**out, "status": "no_games", "game_pks": list(game_pks)}
     model = fit(train)
-    rows = build_rows(model, slate)
+    now = now or datetime.now(timezone.utc)
+    rows = build_rows(model, slate, now)
     out.update(games=len(rows), coef=dict(zip(FEATURES, model["coef"])))
     if dry_run:
         return {**out, "status": "dry_run", "sample": [
             {k: (str(v) if isinstance(v, (datetime, date)) else v) for k, v in r.items()
              if k != "coef_json"} for r in rows[:3]]}
+    upcoming = [r for r in rows if _utc(r["game_time_utc"]) > _utc(now)]
+    out["skipped_started"] = len(rows) - len(upcoming)
+    if not upcoming:
+        return {**out, "status": "no_upcoming_games"}
     try:
-        write(bq, rows, target)
+        write(bq, upcoming)
     except Exception as e:
         if _missing_table(e):
             logger.warning("logit3: %s.%s does not exist (CREATE_NEVER); nothing written",
