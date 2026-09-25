@@ -1,0 +1,57 @@
+cfb: 8195 games, 14011 team-game unit rows
+ridge tuned: alpha=1 tau=16 sigma=15.55
+tuning unit ridges on the ridge tuning period...
+  unit rush: alpha=10 tau=30 wMSE=0.05809
+  unit pass: alpha=10 tau=60 wMSE=0.10040
+  unit tot: alpha=3 tau=30 wMSE=0.04431
+
+CFB results (diff = model - A log loss; negative is better)
+
+wf 2023-24 n=1830
+  model                                 acc      ll   d_vs_A  95% CI
+  A                                   0.731  0.4948  +0.0000  (+0.0000,+0.0000)
+  A_lr (ridge margin, LR)             0.732  0.4953  +0.0006  (-0.0010,+0.0021)
+  B0 scalar EPA units                 0.724  0.5165  +0.0217  (+0.0136,+0.0295)
+  B split rush/pass additive          0.722  0.5306  +0.0358  (+0.0251,+0.0458)
+  C1 mix-weighted                     0.720  0.5285  +0.0337  (+0.0242,+0.0433)
+  C2 B + mix + run rates              0.724  0.5306  +0.0358  (+0.0255,+0.0458)
+  C3 B + products + style             0.720  0.5321  +0.0373  (+0.0264,+0.0475)
+  C3 B + products + style [C=.05]     0.717  0.5341  +0.0393  (+0.0290,+0.0486)
+  D0 ridge + scalar EPA               0.734  0.4931  -0.0017  (-0.0047,+0.0016)
+  D ridge + split (B)                 0.739  0.4945  -0.0003  (-0.0049,+0.0045)
+  D2 ridge + C3                       0.739  0.4956  +0.0008  (-0.0046,+0.0064)
+  D2 ridge + C3 [C=.05]               0.733  0.5021  +0.0073  (+0.0021,+0.0124)
+  D3 ridge + style only               0.736  0.4953  +0.0005  (-0.0011,+0.0021)
+  D3 ridge + style only [C=.05]       0.733  0.5005  +0.0057  (+0.0035,+0.0077)
+
+holdout 2025 n=934
+  model                                 acc      ll   d_vs_A  95% CI
+  A                                   0.758  0.4801  +0.0000  (+0.0000,+0.0000)
+  A_lr (ridge margin, LR)             0.760  0.4783  -0.0018  (-0.0047,+0.0009)
+  B0 scalar EPA units                 0.743  0.5052  +0.0251  (+0.0132,+0.0372)
+  B split rush/pass additive          0.733  0.5132  +0.0331  (+0.0196,+0.0466)
+  C1 mix-weighted                     0.731  0.5144  +0.0343  (+0.0201,+0.0483)
+  C2 B + mix + run rates              0.736  0.5129  +0.0328  (+0.0182,+0.0472)
+  C3 B + products + style             0.729  0.5146  +0.0345  (+0.0205,+0.0488)
+  C3 B + products + style [C=.05]     0.728  0.5159  +0.0358  (+0.0223,+0.0497)
+  D0 ridge + scalar EPA               0.758  0.4767  -0.0034  (-0.0089,+0.0020)
+  D ridge + split (B)                 0.763  0.4778  -0.0023  (-0.0086,+0.0041)
+  D2 ridge + C3                       0.763  0.4791  -0.0010  (-0.0076,+0.0056)
+  D2 ridge + C3 [C=.05]               0.758  0.4811  +0.0010  (-0.0032,+0.0055)
+  D3 ridge + style only               0.762  0.4778  -0.0023  (-0.0052,+0.0005)
+  D3 ridge + style only [C=.05]       0.761  0.4799  -0.0002  (-0.0018,+0.0013)
+
+per-fold log loss (A / B0 / B / C3 / D / D2):
+  2023: n= 911 0.4858 0.5034 0.5179 0.5174 0.4859 0.4843
+  2024: n= 919 0.5037 0.5296 0.5432 0.5467 0.5031 0.5068
+  2025: n= 934 0.4801 0.5052 0.5132 0.5146 0.4778 0.4791
+
+style spread (pre-game, test seasons, per team-game):
+  run rate: mean 0.516 sd 0.061 p10-p90 0.446-0.575
+  offense rating sd: rush 0.0431 pass 0.0707  corr(rush,pass) 0.50
+  defense rating sd: rush 0.0397 pass 0.0644  corr(rush,pass) 0.49
+  style term sd 0.00371; mix vs scalar per-play gap sd 0.0362
+  margin per unit of net EPA/play (OLS): 85.2 pts; mix-minus-scalar net gap sd = 4.61 pts
+
+unit level (test seasons, 5520 team-games): wMSE additive-scalar 0.03761  mix-weighted split 0.03989  (-6.06% )
+  resid ~ style: beta=-0.382 (se~0.703, t=-0.54)

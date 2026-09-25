@@ -1,0 +1,321 @@
+smoothing bw (tuned 2010-16): totals {'c': 0.5, 'a_g': 0.5, 'b_g': 0, 'c_g': 0.5}, margins {'c': 0, 'a_g': 0, 'b_g': 0, 'c_g': 0}; sd market total 13.10, points ridge 13.31, naive 13.75, spread 13.37, ridge 13.56
+
+==================== TUNING 2010-16 (in-sample for smoothing/sigmas; stack trained on <s)  n=1597 games
+
+WINNER  model                 acc     logloss   d(ll) vs ridge [95% CI] (Bonferroni-25 99.8%)
+  ridge                  0.658  0.6176   
+  vegas                  0.662  0.6121   -0.0054 [-0.0142,+0.0029] (Bonf-25 99.8%: [-0.0193,+0.0074])
+  p_c                    0.624  0.6458   +0.0282 [+0.0182,+0.0376] (Bonf-25 99.8%: [+0.0126,+0.0429])
+  cal_c                  0.626  0.6361   +0.0185 [+0.0108,+0.0262] (Bonf-25 99.8%: [+0.0059,+0.0296])
+  stk_c                  0.652  0.6196   +0.0020 [-0.0001,+0.0042] (Bonf-25 99.8%: [-0.0015,+0.0057])
+  p_a_g                  0.645  0.6256   +0.0080 [+0.0029,+0.0128] (Bonf-25 99.8%: [+0.0001,+0.0159])
+  cal_a_g                0.647  0.6245   +0.0069 [+0.0024,+0.0113] (Bonf-25 99.8%: [-0.0004,+0.0139])
+  stk_a_g                0.656  0.6192   +0.0016 [-0.0002,+0.0036] (Bonf-25 99.8%: [-0.0013,+0.0047])
+  p_b_g                  0.638  0.6333   +0.0157 [+0.0083,+0.0227] (Bonf-25 99.8%: [+0.0036,+0.0271])
+  cal_b_g                0.638  0.6295   +0.0119 [+0.0060,+0.0177] (Bonf-25 99.8%: [+0.0018,+0.0213])
+  stk_b_g                0.656  0.6195   +0.0019 [-0.0001,+0.0040] (Bonf-25 99.8%: [-0.0012,+0.0055])
+  p_c_g                  0.642  0.6286   +0.0110 [+0.0053,+0.0163] (Bonf-25 99.8%: [+0.0017,+0.0196])
+  cal_c_g                0.647  0.6277   +0.0101 [+0.0050,+0.0150] (Bonf-25 99.8%: [+0.0013,+0.0179])
+  stk_c_g                0.657  0.6191   +0.0015 [-0.0007,+0.0039] (Bonf-25 99.8%: [-0.0016,+0.0052])
+
+MARGIN  model            MAE     logscore   CRPS
+  spread (market)          10.259  4.0054  7.4176
+  margin ridge             10.416  4.0190  7.5117
+  league pmf@spread        10.259  3.9743  7.4672
+  sim_c                    10.744  3.9405  7.7771
+  sim_c shape@spread       10.259  3.8968  7.4234
+  sim_a_g                  10.464  3.9252  7.5692
+  sim_a_g shape@spread     10.259  3.9075  7.4291
+  sim_b_g                  10.550  3.9423  7.6605
+  sim_b_g shape@spread     10.259  3.9178  7.4557
+  sim_c_g                  10.521  3.9338  7.6097
+  sim_c_g shape@spread     10.259  3.9074  7.4166
+  sim_c vs spread-normal: logscore -0.0649 [-0.0864,-0.0443] (Bonf-25 99.8%: [-0.0993,-0.0319])
+  sim_c shape@spread - spread (market): logscore -0.1087 [-0.1277,-0.0900] (Bonf-25 99.8%: [-0.1383,-0.0787])
+      crps +0.0058 [-0.0068,+0.0183] (Bonf-25 99.8%: [-0.0134,+0.0260])
+  sim_c shape@spread - league pmf@spread: logscore -0.0775 [-0.0965,-0.0587] (Bonf-25 99.8%: [-0.1085,-0.0475])
+      crps -0.0438 [-0.0605,-0.0273] (Bonf-25 99.8%: [-0.0686,-0.0196])
+  sim_c vs ridge MAE: +0.3279 [+0.1597,+0.4935] (Bonf-25 99.8%: [+0.0732,+0.5773])
+  sim_a_g vs spread-normal: logscore -0.0802 [-0.0985,-0.0619] (Bonf-25 99.8%: [-0.1102,-0.0521])
+  sim_a_g shape@spread - spread (market): logscore -0.0979 [-0.1148,-0.0809] (Bonf-25 99.8%: [-0.1253,-0.0710])
+      crps +0.0115 [-0.0001,+0.0227] (Bonf-25 99.8%: [-0.0070,+0.0295])
+  sim_a_g shape@spread - league pmf@spread: logscore -0.0668 [-0.0855,-0.0487] (Bonf-25 99.8%: [-0.0969,-0.0378])
+      crps -0.0381 [-0.0567,-0.0200] (Bonf-25 99.8%: [-0.0687,-0.0117])
+  sim_a_g vs ridge MAE: +0.0482 [-0.0276,+0.1256] (Bonf-25 99.8%: [-0.0802,+0.1734])
+  sim_b_g vs spread-normal: logscore -0.0631 [-0.0831,-0.0435] (Bonf-25 99.8%: [-0.0946,-0.0347])
+  sim_b_g shape@spread - spread (market): logscore -0.0876 [-0.1054,-0.0706] (Bonf-25 99.8%: [-0.1155,-0.0621])
+      crps +0.0381 [+0.0179,+0.0578] (Bonf-25 99.8%: [+0.0072,+0.0687])
+  sim_b_g shape@spread - league pmf@spread: logscore -0.0565 [-0.0748,-0.0383] (Bonf-25 99.8%: [-0.0847,-0.0280])
+      crps -0.0115 [-0.0290,+0.0058] (Bonf-25 99.8%: [-0.0384,+0.0139])
+  sim_b_g vs ridge MAE: +0.1333 [+0.0297,+0.2391] (Bonf-25 99.8%: [-0.0208,+0.3012])
+  sim_c_g vs spread-normal: logscore -0.0716 [-0.0949,-0.0482] (Bonf-25 99.8%: [-0.1082,-0.0329])
+  sim_c_g shape@spread - spread (market): logscore -0.0980 [-0.1181,-0.0777] (Bonf-25 99.8%: [-0.1298,-0.0663])
+      crps -0.0010 [-0.0160,+0.0133] (Bonf-25 99.8%: [-0.0253,+0.0220])
+  sim_c_g shape@spread - league pmf@spread: logscore -0.0669 [-0.0862,-0.0463] (Bonf-25 99.8%: [-0.0979,-0.0350])
+      crps -0.0505 [-0.0775,-0.0239] (Bonf-25 99.8%: [-0.0910,-0.0102])
+  sim_c_g vs ridge MAE: +0.1048 [+0.0178,+0.1936] (Bonf-25 99.8%: [-0.0290,+0.2575])
+
+TOTALS  model                  MAE     logscore   CRPS   (bias = mean pred - actual)
+  naive (trailing mean)      10.848  4.0364  7.7069  bias -0.24
+  points ridge               10.498  3.9992  7.4368  bias -0.09
+  market total_line          10.314  3.9828  7.3072  bias -0.48
+  league pmf@market          10.314  3.9859  7.3267  bias -0.48
+  sim_c raw                  10.548  3.9711  7.4891  bias -0.69
+  sim_c calibrated           10.607  3.9717  7.4955  bias +0.57
+  sim_c shape@market         10.314  3.9479  7.3101  bias -0.48
+  sim_c+market stack         10.390  3.9512  7.3362  bias +0.71
+  sim_a_g raw                10.507  3.9627  7.4234  bias -0.10
+  sim_a_g calibrated         10.520  3.9638  7.4312  bias +0.14
+  sim_a_g shape@market       10.314  3.9483  7.3087  bias -0.48
+  sim_a_g+market stack       10.381  3.9507  7.3289  bias +0.58
+  sim_b_g raw                10.495  3.9535  7.4135  bias -0.37
+  sim_b_g calibrated         10.507  3.9545  7.4186  bias +0.09
+  sim_b_g shape@market       10.314  3.9399  7.3040  bias -0.48
+  sim_b_g+market stack       10.381  3.9425  7.3252  bias +0.55
+  sim_c_g raw                10.510  3.9590  7.4234  bias -0.37
+  sim_c_g calibrated         10.521  3.9598  7.4266  bias +0.13
+  sim_c_g shape@market       10.314  3.9446  7.3059  bias -0.48
+  sim_c_g+market stack       10.386  3.9474  7.3289  bias +0.57
+  sim_c raw - naive (trailing mean): CRPS -0.2178 [-0.3004,-0.1361] (Bonf-25 99.8%: [-0.3426,-0.0886])
+              logscore -0.0654 [-0.0828,-0.0478] (Bonf-25 99.8%: [-0.0899,-0.0383])
+  sim_c calibrated - naive (trailing mean): CRPS -0.2114 [-0.3060,-0.1170] (Bonf-25 99.8%: [-0.3559,-0.0525])
+                     logscore -0.0647 [-0.0829,-0.0462] (Bonf-25 99.8%: [-0.0919,-0.0349])
+  sim_c raw - points ridge: CRPS +0.0523 [+0.0054,+0.1019] (Bonf-25 99.8%: [-0.0198,+0.1246])
+              logscore -0.0281 [-0.0426,-0.0138] (Bonf-25 99.8%: [-0.0490,-0.0064])
+  sim_c calibrated - points ridge: CRPS +0.0587 [+0.0137,+0.1043] (Bonf-25 99.8%: [-0.0087,+0.1274])
+                     logscore -0.0274 [-0.0416,-0.0131] (Bonf-25 99.8%: [-0.0485,-0.0055])
+  sim_c shape@market - market total_line: CRPS +0.0029 [-0.0105,+0.0165] (Bonf-25 99.8%: [-0.0175,+0.0237])
+                       logscore -0.0348 [-0.0484,-0.0212] (Bonf-25 99.8%: [-0.0550,-0.0140])
+  sim_c+market stack - market total_line: CRPS +0.0290 [-0.0078,+0.0676] (Bonf-25 99.8%: [-0.0253,+0.0909])
+                       logscore -0.0316 [-0.0456,-0.0164] (Bonf-25 99.8%: [-0.0526,-0.0089])
+  sim_c shape@market - league pmf@market: CRPS -0.0166 [-0.0277,-0.0057] (Bonf-25 99.8%: [-0.0324,+0.0002])
+                       logscore -0.0380 [-0.0535,-0.0222] (Bonf-25 99.8%: [-0.0618,-0.0135])
+  sim_c+market stack - league pmf@market: CRPS +0.0095 [-0.0371,+0.0552] (Bonf-25 99.8%: [-0.0630,+0.0871])
+                       logscore -0.0347 [-0.0510,-0.0186] (Bonf-25 99.8%: [-0.0590,-0.0096])
+  sim_a_g raw - naive (trailing mean): CRPS -0.2835 [-0.4126,-0.1609] (Bonf-25 99.8%: [-0.4900,-0.0808])
+                logscore -0.0738 [-0.0947,-0.0523] (Bonf-25 99.8%: [-0.1062,-0.0395])
+  sim_a_g calibrated - naive (trailing mean): CRPS -0.2758 [-0.3820,-0.1766] (Bonf-25 99.8%: [-0.4432,-0.1116])
+                       logscore -0.0726 [-0.0913,-0.0536] (Bonf-25 99.8%: [-0.1012,-0.0423])
+  sim_a_g raw - points ridge: CRPS -0.0134 [-0.0646,+0.0360] (Bonf-25 99.8%: [-0.0952,+0.0709])
+                logscore -0.0365 [-0.0505,-0.0226] (Bonf-25 99.8%: [-0.0587,-0.0141])
+  sim_a_g calibrated - points ridge: CRPS -0.0056 [-0.0397,+0.0280] (Bonf-25 99.8%: [-0.0574,+0.0450])
+                       logscore -0.0354 [-0.0482,-0.0220] (Bonf-25 99.8%: [-0.0553,-0.0140])
+  sim_a_g shape@market - market total_line: CRPS +0.0015 [-0.0126,+0.0157] (Bonf-25 99.8%: [-0.0198,+0.0228])
+                         logscore -0.0345 [-0.0468,-0.0217] (Bonf-25 99.8%: [-0.0550,-0.0147])
+  sim_a_g+market stack - market total_line: CRPS +0.0217 [-0.0064,+0.0504] (Bonf-25 99.8%: [-0.0204,+0.0680])
+                         logscore -0.0320 [-0.0446,-0.0185] (Bonf-25 99.8%: [-0.0505,-0.0105])
+  sim_a_g shape@market - league pmf@market: CRPS -0.0180 [-0.0289,-0.0074] (Bonf-25 99.8%: [-0.0354,-0.0013])
+                         logscore -0.0376 [-0.0522,-0.0224] (Bonf-25 99.8%: [-0.0622,-0.0160])
+  sim_a_g+market stack - league pmf@market: CRPS +0.0022 [-0.0350,+0.0384] (Bonf-25 99.8%: [-0.0581,+0.0638])
+                         logscore -0.0352 [-0.0496,-0.0198] (Bonf-25 99.8%: [-0.0573,-0.0121])
+  sim_b_g raw - naive (trailing mean): CRPS -0.2934 [-0.4212,-0.1757] (Bonf-25 99.8%: [-0.4937,-0.0902])
+                logscore -0.0829 [-0.1061,-0.0607] (Bonf-25 99.8%: [-0.1152,-0.0472])
+  sim_b_g calibrated - naive (trailing mean): CRPS -0.2883 [-0.3937,-0.1916] (Bonf-25 99.8%: [-0.4536,-0.1244])
+                       logscore -0.0819 [-0.1031,-0.0613] (Bonf-25 99.8%: [-0.1122,-0.0485])
+  sim_b_g raw - points ridge: CRPS -0.0233 [-0.0751,+0.0275] (Bonf-25 99.8%: [-0.1031,+0.0601])
+                logscore -0.0457 [-0.0630,-0.0277] (Bonf-25 99.8%: [-0.0728,-0.0177])
+  sim_b_g calibrated - points ridge: CRPS -0.0182 [-0.0542,+0.0185] (Bonf-25 99.8%: [-0.0718,+0.0387])
+                       logscore -0.0447 [-0.0616,-0.0268] (Bonf-25 99.8%: [-0.0714,-0.0171])
+  sim_b_g shape@market - market total_line: CRPS -0.0032 [-0.0174,+0.0105] (Bonf-25 99.8%: [-0.0236,+0.0179])
+                         logscore -0.0428 [-0.0590,-0.0253] (Bonf-25 99.8%: [-0.0677,-0.0162])
+  sim_b_g+market stack - market total_line: CRPS +0.0180 [-0.0110,+0.0472] (Bonf-25 99.8%: [-0.0282,+0.0637])
+                         logscore -0.0402 [-0.0572,-0.0219] (Bonf-25 99.8%: [-0.0660,-0.0095])
+  sim_b_g shape@market - league pmf@market: CRPS -0.0228 [-0.0357,-0.0105] (Bonf-25 99.8%: [-0.0419,-0.0046])
+                         logscore -0.0460 [-0.0643,-0.0277] (Bonf-25 99.8%: [-0.0728,-0.0172])
+  sim_b_g+market stack - league pmf@market: CRPS -0.0016 [-0.0393,+0.0363] (Bonf-25 99.8%: [-0.0647,+0.0601])
+                         logscore -0.0434 [-0.0620,-0.0247] (Bonf-25 99.8%: [-0.0719,-0.0130])
+  sim_c_g raw - naive (trailing mean): CRPS -0.2835 [-0.4091,-0.1672] (Bonf-25 99.8%: [-0.4767,-0.0817])
+                logscore -0.0774 [-0.0988,-0.0567] (Bonf-25 99.8%: [-0.1089,-0.0456])
+  sim_c_g calibrated - naive (trailing mean): CRPS -0.2804 [-0.3832,-0.1859] (Bonf-25 99.8%: [-0.4374,-0.1203])
+                       logscore -0.0766 [-0.0955,-0.0579] (Bonf-25 99.8%: [-0.1052,-0.0465])
+  sim_c_g raw - points ridge: CRPS -0.0134 [-0.0690,+0.0402] (Bonf-25 99.8%: [-0.0942,+0.0746])
+                logscore -0.0402 [-0.0555,-0.0252] (Bonf-25 99.8%: [-0.0653,-0.0179])
+  sim_c_g calibrated - points ridge: CRPS -0.0102 [-0.0493,+0.0286] (Bonf-25 99.8%: [-0.0693,+0.0525])
+                       logscore -0.0394 [-0.0537,-0.0247] (Bonf-25 99.8%: [-0.0621,-0.0177])
+  sim_c_g shape@market - market total_line: CRPS -0.0013 [-0.0146,+0.0120] (Bonf-25 99.8%: [-0.0204,+0.0185])
+                         logscore -0.0382 [-0.0515,-0.0244] (Bonf-25 99.8%: [-0.0592,-0.0187])
+  sim_c_g+market stack - market total_line: CRPS +0.0217 [-0.0078,+0.0513] (Bonf-25 99.8%: [-0.0245,+0.0703])
+                         logscore -0.0354 [-0.0494,-0.0209] (Bonf-25 99.8%: [-0.0563,-0.0133])
+  sim_c_g shape@market - league pmf@market: CRPS -0.0208 [-0.0334,-0.0084] (Bonf-25 99.8%: [-0.0392,-0.0023])
+                         logscore -0.0413 [-0.0560,-0.0269] (Bonf-25 99.8%: [-0.0648,-0.0181])
+  sim_c_g+market stack - league pmf@market: CRPS +0.0022 [-0.0367,+0.0400] (Bonf-25 99.8%: [-0.0602,+0.0643])
+                         logscore -0.0385 [-0.0533,-0.0238] (Bonf-25 99.8%: [-0.0614,-0.0164])
+
+CALIBRATION
+  sim_c raw win-prob quintiles (pred->obs): [(np.float64(0.446), np.float64(0.375)), (np.float64(0.517), np.float64(0.48)), (np.float64(0.562), np.float64(0.558)), (np.float64(0.604), np.float64(0.687)), (np.float64(0.675), np.float64(0.772))]
+  sim_c totals PIT: in central 50% 0.507, central 80% 0.796; sim sd 13.56 vs market-resid sd 12.98
+  sim_a_g raw win-prob quintiles (pred->obs): [(np.float64(0.374), np.float64(0.321)), (np.float64(0.493), np.float64(0.506)), (np.float64(0.57), np.float64(0.558)), (np.float64(0.642), np.float64(0.69)), (np.float64(0.752), np.float64(0.797))]
+  sim_a_g totals PIT: in central 50% 0.512, central 80% 0.816; sim sd 13.84 vs market-resid sd 12.98
+  sim_b_g raw win-prob quintiles (pred->obs): [(np.float64(0.396), np.float64(0.353)), (np.float64(0.496), np.float64(0.476)), (np.float64(0.56), np.float64(0.574)), (np.float64(0.618), np.float64(0.69)), (np.float64(0.713), np.float64(0.778))]
+  sim_b_g totals PIT: in central 50% 0.500, central 80% 0.803; sim sd 13.51 vs market-resid sd 12.98
+  sim_c_g raw win-prob quintiles (pred->obs): [(np.float64(0.371), np.float64(0.347)), (np.float64(0.492), np.float64(0.483)), (np.float64(0.566), np.float64(0.564)), (np.float64(0.638), np.float64(0.69)), (np.float64(0.748), np.float64(0.788))]
+  sim_c_g totals PIT: in central 50% 0.494, central 80% 0.804; sim sd 13.47 vs market-resid sd 12.98
+
+BETTING (secondary; breakeven at -110 is 52.4%)
+  sim_c: ATS 0.498 (n=1553)  O/U 0.512 (n=1579)
+  sim_a_g: ATS 0.524 (n=1553)  O/U 0.484 (n=1579)
+  sim_b_g: ATS 0.505 (n=1553)  O/U 0.490 (n=1579)
+  sim_c_g: ATS 0.513 (n=1553)  O/U 0.484 (n=1579)
+  margin ridge ATS 0.516;  points ridge O/U 0.508
+
+RUNTIME sim ms/game: c 55, a_g 55, b_g 53, c_g 53
+
+==================== WALK-FORWARD 2017-24  n=2202 games
+
+WINNER  model                 acc     logloss   d(ll) vs ridge [95% CI] (Bonferroni-25 99.8%)
+  ridge                  0.638  0.6342   
+  vegas                  0.666  0.6086   -0.0256 [-0.0334,-0.0183] (Bonf-25 99.8%: [-0.0386,-0.0141])
+  p_c                    0.636  0.6498   +0.0156 [+0.0071,+0.0241] (Bonf-25 99.8%: [+0.0027,+0.0282])
+  cal_c                  0.642  0.6415   +0.0073 [+0.0004,+0.0142] (Bonf-25 99.8%: [-0.0032,+0.0181])
+  stk_c                  0.639  0.6339   -0.0003 [-0.0012,+0.0006] (Bonf-25 99.8%: [-0.0017,+0.0011])
+  p_a_g                  0.647  0.6354   +0.0012 [-0.0024,+0.0047] (Bonf-25 99.8%: [-0.0046,+0.0067])
+  cal_a_g                0.646  0.6349   +0.0006 [-0.0028,+0.0039] (Bonf-25 99.8%: [-0.0046,+0.0057])
+  stk_a_g                0.640  0.6342   -0.0000 [-0.0005,+0.0004] (Bonf-25 99.8%: [-0.0007,+0.0007])
+  p_b_g                  0.643  0.6370   +0.0028 [-0.0024,+0.0075] (Bonf-25 99.8%: [-0.0053,+0.0104])
+  cal_b_g                0.642  0.6346   +0.0004 [-0.0040,+0.0047] (Bonf-25 99.8%: [-0.0063,+0.0070])
+  stk_b_g                0.641  0.6342   -0.0000 [-0.0006,+0.0005] (Bonf-25 99.8%: [-0.0009,+0.0008])
+  p_c_g                  0.639  0.6335   -0.0008 [-0.0051,+0.0032] (Bonf-25 99.8%: [-0.0074,+0.0052])
+  cal_c_g                0.639  0.6331   -0.0011 [-0.0055,+0.0030] (Bonf-25 99.8%: [-0.0079,+0.0056])
+  stk_c_g                0.639  0.6341   -0.0001 [-0.0008,+0.0006] (Bonf-25 99.8%: [-0.0012,+0.0010])
+
+MARGIN  model            MAE     logscore   CRPS
+  spread (market)          9.896  3.9760  7.1849
+  margin ridge             10.253  4.0035  7.4087
+  league pmf@spread        9.896  3.9433  7.2211
+  sim_c                    10.504  3.9568  7.5917
+  sim_c shape@spread       9.896  3.9078  7.1851
+  sim_a_g                  10.272  3.9478  7.4150
+  sim_a_g shape@spread     9.896  3.9239  7.2000
+  sim_b_g                  10.311  3.9530  7.4526
+  sim_b_g shape@spread     9.896  3.9261  7.2111
+  sim_c_g                  10.290  3.9439  7.4171
+  sim_c_g shape@spread     9.896  3.9148  7.1774
+  sim_c vs spread-normal: logscore -0.0192 [-0.0375,+0.0010] (Bonf-25 99.8%: [-0.0467,+0.0131])
+  sim_c shape@spread - spread (market): logscore -0.0682 [-0.0811,-0.0544] (Bonf-25 99.8%: [-0.0879,-0.0440])
+      crps +0.0002 [-0.0101,+0.0110] (Bonf-25 99.8%: [-0.0165,+0.0173])
+  sim_c shape@spread - league pmf@spread: logscore -0.0354 [-0.0495,-0.0209] (Bonf-25 99.8%: [-0.0567,-0.0127])
+      crps -0.0359 [-0.0493,-0.0225] (Bonf-25 99.8%: [-0.0556,-0.0131])
+  sim_c vs ridge MAE: +0.2515 [+0.1275,+0.3728] (Bonf-25 99.8%: [+0.0725,+0.4384])
+  sim_a_g vs spread-normal: logscore -0.0282 [-0.0442,-0.0103] (Bonf-25 99.8%: [-0.0527,+0.0013])
+  sim_a_g shape@spread - spread (market): logscore -0.0522 [-0.0646,-0.0381] (Bonf-25 99.8%: [-0.0715,-0.0300])
+      crps +0.0151 [+0.0077,+0.0224] (Bonf-25 99.8%: [+0.0038,+0.0260])
+  sim_a_g shape@spread - league pmf@spread: logscore -0.0194 [-0.0351,-0.0041] (Bonf-25 99.8%: [-0.0417,+0.0061])
+      crps -0.0211 [-0.0373,-0.0047] (Bonf-25 99.8%: [-0.0474,+0.0047])
+  sim_a_g vs ridge MAE: +0.0193 [-0.0331,+0.0678] (Bonf-25 99.8%: [-0.0616,+0.0934])
+  sim_b_g vs spread-normal: logscore -0.0230 [-0.0384,-0.0064] (Bonf-25 99.8%: [-0.0469,+0.0007])
+  sim_b_g shape@spread - spread (market): logscore -0.0499 [-0.0620,-0.0375] (Bonf-25 99.8%: [-0.0689,-0.0289])
+      crps +0.0262 [+0.0171,+0.0351] (Bonf-25 99.8%: [+0.0118,+0.0385])
+  sim_b_g shape@spread - league pmf@spread: logscore -0.0172 [-0.0314,-0.0026] (Bonf-25 99.8%: [-0.0395,+0.0065])
+      crps -0.0100 [-0.0246,+0.0047] (Bonf-25 99.8%: [-0.0339,+0.0141])
+  sim_b_g vs ridge MAE: +0.0579 [-0.0083,+0.1251] (Bonf-25 99.8%: [-0.0463,+0.1602])
+  sim_c_g vs spread-normal: logscore -0.0321 [-0.0496,-0.0140] (Bonf-25 99.8%: [-0.0592,-0.0035])
+  sim_c_g shape@spread - spread (market): logscore -0.0612 [-0.0763,-0.0458] (Bonf-25 99.8%: [-0.0845,-0.0373])
+      crps -0.0075 [-0.0213,+0.0067] (Bonf-25 99.8%: [-0.0279,+0.0155])
+  sim_c_g shape@spread - league pmf@spread: logscore -0.0285 [-0.0457,-0.0103] (Bonf-25 99.8%: [-0.0549,-0.0017])
+      crps -0.0437 [-0.0640,-0.0224] (Bonf-25 99.8%: [-0.0759,-0.0112])
+  sim_c_g vs ridge MAE: +0.0369 [-0.0237,+0.0963] (Bonf-25 99.8%: [-0.0564,+0.1295])
+
+TOTALS  model                  MAE     logscore   CRPS   (bias = mean pred - actual)
+  naive (trailing mean)      11.094  4.0603  7.8719  bias +0.00
+  points ridge               10.888  4.0429  7.7286  bias +0.03
+  market total_line          10.533  4.0105  7.4736  bias -0.35
+  league pmf@market          10.533  4.0141  7.4848  bias -0.35
+  sim_c raw                  10.865  4.0237  7.7348  bias -0.44
+  sim_c calibrated           10.916  4.0248  7.7436  bias +0.29
+  sim_c shape@market         10.533  3.9894  7.4703  bias -0.35
+  sim_c+market stack         10.551  3.9887  7.4666  bias +0.07
+  sim_a_g raw                10.865  4.0247  7.7172  bias -0.12
+  sim_a_g calibrated         10.824  4.0198  7.6812  bias -0.01
+  sim_a_g shape@market       10.533  3.9922  7.4674  bias -0.35
+  sim_a_g+market stack       10.551  3.9916  7.4642  bias +0.09
+  sim_b_g raw                10.830  4.0256  7.7078  bias -0.39
+  sim_b_g calibrated         10.811  4.0206  7.6750  bias -0.02
+  sim_b_g shape@market       10.533  3.9928  7.4685  bias -0.35
+  sim_b_g+market stack       10.552  3.9924  7.4661  bias +0.10
+  sim_c_g raw                10.845  4.0313  7.7145  bias -0.29
+  sim_c_g calibrated         10.825  4.0266  7.6826  bias +0.05
+  sim_c_g shape@market       10.533  3.9976  7.4697  bias -0.35
+  sim_c_g+market stack       10.550  3.9970  7.4657  bias +0.08
+  sim_c raw - naive (trailing mean): CRPS -0.1370 [-0.1981,-0.0755] (Bonf-25 99.8%: [-0.2337,-0.0403])
+              logscore -0.0366 [-0.0508,-0.0220] (Bonf-25 99.8%: [-0.0617,-0.0158])
+  sim_c calibrated - naive (trailing mean): CRPS -0.1282 [-0.1929,-0.0623] (Bonf-25 99.8%: [-0.2296,-0.0270])
+                     logscore -0.0356 [-0.0506,-0.0201] (Bonf-25 99.8%: [-0.0614,-0.0131])
+  sim_c raw - points ridge: CRPS +0.0062 [-0.0336,+0.0462] (Bonf-25 99.8%: [-0.0509,+0.0730])
+              logscore -0.0191 [-0.0310,-0.0072] (Bonf-25 99.8%: [-0.0410,+0.0006])
+  sim_c calibrated - points ridge: CRPS +0.0150 [-0.0213,+0.0521] (Bonf-25 99.8%: [-0.0399,+0.0753])
+                     logscore -0.0181 [-0.0300,-0.0060] (Bonf-25 99.8%: [-0.0397,+0.0019])
+  sim_c shape@market - market total_line: CRPS -0.0032 [-0.0148,+0.0081] (Bonf-25 99.8%: [-0.0216,+0.0139])
+                       logscore -0.0212 [-0.0316,-0.0104] (Bonf-25 99.8%: [-0.0398,-0.0049])
+  sim_c+market stack - market total_line: CRPS -0.0069 [-0.0164,+0.0026] (Bonf-25 99.8%: [-0.0205,+0.0087])
+                       logscore -0.0218 [-0.0323,-0.0109] (Bonf-25 99.8%: [-0.0394,-0.0048])
+  sim_c shape@market - league pmf@market: CRPS -0.0144 [-0.0263,-0.0029] (Bonf-25 99.8%: [-0.0329,+0.0040])
+                       logscore -0.0247 [-0.0368,-0.0120] (Bonf-25 99.8%: [-0.0441,-0.0042])
+  sim_c+market stack - league pmf@market: CRPS -0.0181 [-0.0353,-0.0007] (Bonf-25 99.8%: [-0.0459,+0.0084])
+                       logscore -0.0254 [-0.0378,-0.0125] (Bonf-25 99.8%: [-0.0459,-0.0055])
+  sim_a_g raw - naive (trailing mean): CRPS -0.1546 [-0.2609,-0.0515] (Bonf-25 99.8%: [-0.3095,+0.0052])
+                logscore -0.0356 [-0.0535,-0.0169] (Bonf-25 99.8%: [-0.0634,-0.0075])
+  sim_a_g calibrated - naive (trailing mean): CRPS -0.1907 [-0.2717,-0.1123] (Bonf-25 99.8%: [-0.3109,-0.0669])
+                       logscore -0.0405 [-0.0562,-0.0248] (Bonf-25 99.8%: [-0.0650,-0.0148])
+  sim_a_g raw - points ridge: CRPS -0.0114 [-0.0565,+0.0334] (Bonf-25 99.8%: [-0.0839,+0.0586])
+                logscore -0.0181 [-0.0309,-0.0049] (Bonf-25 99.8%: [-0.0395,+0.0044])
+  sim_a_g calibrated - points ridge: CRPS -0.0475 [-0.0772,-0.0181] (Bonf-25 99.8%: [-0.0945,+0.0007])
+                       logscore -0.0231 [-0.0349,-0.0108] (Bonf-25 99.8%: [-0.0414,-0.0030])
+  sim_a_g shape@market - market total_line: CRPS -0.0062 [-0.0186,+0.0057] (Bonf-25 99.8%: [-0.0240,+0.0115])
+                         logscore -0.0183 [-0.0302,-0.0066] (Bonf-25 99.8%: [-0.0370,+0.0002])
+  sim_a_g+market stack - market total_line: CRPS -0.0094 [-0.0190,+0.0003] (Bonf-25 99.8%: [-0.0245,+0.0057])
+                         logscore -0.0189 [-0.0306,-0.0071] (Bonf-25 99.8%: [-0.0367,-0.0010])
+  sim_a_g shape@market - league pmf@market: CRPS -0.0174 [-0.0286,-0.0061] (Bonf-25 99.8%: [-0.0352,-0.0013])
+                         logscore -0.0219 [-0.0339,-0.0095] (Bonf-25 99.8%: [-0.0408,-0.0024])
+  sim_a_g+market stack - league pmf@market: CRPS -0.0206 [-0.0385,-0.0035] (Bonf-25 99.8%: [-0.0486,+0.0062])
+                         logscore -0.0225 [-0.0343,-0.0101] (Bonf-25 99.8%: [-0.0412,-0.0036])
+  sim_b_g raw - naive (trailing mean): CRPS -0.1641 [-0.2694,-0.0577] (Bonf-25 99.8%: [-0.3292,-0.0008])
+                logscore -0.0347 [-0.0547,-0.0143] (Bonf-25 99.8%: [-0.0642,-0.0031])
+  sim_b_g calibrated - naive (trailing mean): CRPS -0.1968 [-0.2796,-0.1146] (Bonf-25 99.8%: [-0.3209,-0.0693])
+                       logscore -0.0397 [-0.0574,-0.0215] (Bonf-25 99.8%: [-0.0675,-0.0112])
+  sim_b_g raw - points ridge: CRPS -0.0209 [-0.0696,+0.0281] (Bonf-25 99.8%: [-0.0972,+0.0572])
+                logscore -0.0172 [-0.0320,-0.0024] (Bonf-25 99.8%: [-0.0402,+0.0077])
+  sim_b_g calibrated - points ridge: CRPS -0.0536 [-0.0869,-0.0205] (Bonf-25 99.8%: [-0.1064,-0.0009])
+                       logscore -0.0222 [-0.0359,-0.0085] (Bonf-25 99.8%: [-0.0434,+0.0006])
+  sim_b_g shape@market - market total_line: CRPS -0.0051 [-0.0174,+0.0070] (Bonf-25 99.8%: [-0.0238,+0.0127])
+                         logscore -0.0177 [-0.0308,-0.0046] (Bonf-25 99.8%: [-0.0378,+0.0025])
+  sim_b_g+market stack - market total_line: CRPS -0.0074 [-0.0164,+0.0013] (Bonf-25 99.8%: [-0.0214,+0.0072])
+                         logscore -0.0182 [-0.0310,-0.0052] (Bonf-25 99.8%: [-0.0392,+0.0022])
+  sim_b_g shape@market - league pmf@market: CRPS -0.0163 [-0.0289,-0.0038] (Bonf-25 99.8%: [-0.0363,+0.0021])
+                         logscore -0.0213 [-0.0347,-0.0075] (Bonf-25 99.8%: [-0.0414,-0.0001])
+  sim_b_g+market stack - league pmf@market: CRPS -0.0186 [-0.0367,-0.0009] (Bonf-25 99.8%: [-0.0463,+0.0098])
+                         logscore -0.0217 [-0.0351,-0.0077] (Bonf-25 99.8%: [-0.0418,-0.0001])
+  sim_c_g raw - naive (trailing mean): CRPS -0.1573 [-0.2629,-0.0557] (Bonf-25 99.8%: [-0.3165,+0.0095])
+                logscore -0.0290 [-0.0479,-0.0099] (Bonf-25 99.8%: [-0.0596,+0.0002])
+  sim_c_g calibrated - naive (trailing mean): CRPS -0.1893 [-0.2702,-0.1099] (Bonf-25 99.8%: [-0.3127,-0.0609])
+                       logscore -0.0337 [-0.0501,-0.0174] (Bonf-25 99.8%: [-0.0608,-0.0077])
+  sim_c_g raw - points ridge: CRPS -0.0141 [-0.0622,+0.0350] (Bonf-25 99.8%: [-0.0914,+0.0671])
+                logscore -0.0115 [-0.0246,+0.0016] (Bonf-25 99.8%: [-0.0325,+0.0112])
+  sim_c_g calibrated - points ridge: CRPS -0.0460 [-0.0793,-0.0126] (Bonf-25 99.8%: [-0.0986,+0.0092])
+                       logscore -0.0163 [-0.0278,-0.0047] (Bonf-25 99.8%: [-0.0341,+0.0039])
+  sim_c_g shape@market - market total_line: CRPS -0.0039 [-0.0165,+0.0084] (Bonf-25 99.8%: [-0.0228,+0.0150])
+                         logscore -0.0130 [-0.0236,-0.0020] (Bonf-25 99.8%: [-0.0313,+0.0054])
+  sim_c_g+market stack - market total_line: CRPS -0.0078 [-0.0170,+0.0009] (Bonf-25 99.8%: [-0.0213,+0.0062])
+                         logscore -0.0136 [-0.0242,-0.0028] (Bonf-25 99.8%: [-0.0323,+0.0042])
+  sim_c_g shape@market - league pmf@market: CRPS -0.0151 [-0.0285,-0.0018] (Bonf-25 99.8%: [-0.0359,+0.0055])
+                         logscore -0.0165 [-0.0291,-0.0039] (Bonf-25 99.8%: [-0.0374,+0.0043])
+  sim_c_g+market stack - league pmf@market: CRPS -0.0190 [-0.0371,-0.0017] (Bonf-25 99.8%: [-0.0466,+0.0098])
+                         logscore -0.0172 [-0.0297,-0.0043] (Bonf-25 99.8%: [-0.0374,+0.0036])
+
+CALIBRATION
+  sim_c raw win-prob quintiles (pred->obs): [(np.float64(0.418), np.float64(0.329)), (np.float64(0.501), np.float64(0.441)), (np.float64(0.551), np.float64(0.577)), (np.float64(0.598), np.float64(0.63)), (np.float64(0.667), np.float64(0.764))]
+  sim_c totals PIT: in central 50% 0.479, central 80% 0.772; sim sd 13.16 vs market-resid sd 13.34
+  sim_a_g raw win-prob quintiles (pred->obs): [(np.float64(0.341), np.float64(0.308)), (np.float64(0.468), np.float64(0.452)), (np.float64(0.55), np.float64(0.557)), (np.float64(0.629), np.float64(0.673)), (np.float64(0.74), np.float64(0.751))]
+  sim_a_g totals PIT: in central 50% 0.497, central 80% 0.795; sim sd 13.51 vs market-resid sd 13.34
+  sim_b_g raw win-prob quintiles (pred->obs): [(np.float64(0.357), np.float64(0.32)), (np.float64(0.474), np.float64(0.442)), (np.float64(0.546), np.float64(0.549)), (np.float64(0.615), np.float64(0.673)), (np.float64(0.717), np.float64(0.757))]
+  sim_b_g totals PIT: in central 50% 0.485, central 80% 0.786; sim sd 13.19 vs market-resid sd 13.34
+  sim_c_g raw win-prob quintiles (pred->obs): [(np.float64(0.331), np.float64(0.297)), (np.float64(0.465), np.float64(0.47)), (np.float64(0.55), np.float64(0.523)), (np.float64(0.631), np.float64(0.705)), (np.float64(0.747), np.float64(0.746))]
+  sim_c_g totals PIT: in central 50% 0.480, central 80% 0.782; sim sd 13.04 vs market-resid sd 13.34
+
+BETTING (secondary; breakeven at -110 is 52.4%)
+  sim_c: ATS 0.510 (n=2143)  O/U 0.511 (n=2181)
+  sim_a_g: ATS 0.506 (n=2143)  O/U 0.500 (n=2181)
+  sim_b_g: ATS 0.509 (n=2143)  O/U 0.497 (n=2181)
+  sim_c_g: ATS 0.507 (n=2143)  O/U 0.494 (n=2181)
+  margin ridge ATS 0.505;  points ridge O/U 0.505
+
+RUNTIME sim ms/game: c 55, a_g 58, b_g 52, c_g 45
