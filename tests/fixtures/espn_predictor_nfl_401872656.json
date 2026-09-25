@@ -1,0 +1,91 @@
+{
+ "name": "New England Patriots at Seattle Seahawks",
+ "shortName": "NE @ SEA",
+ "lastModified": "2026-09-25T09:00Z",
+ "homeTeam": {
+  "team": {
+   "$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/teams/26?lang=en&region=us"
+  },
+  "statistics": [
+   {
+    "name": "gameProjection",
+    "displayName": "WIN PROB",
+    "shortDisplayName": "GP",
+    "description": "Team's predicted win percentage in this game at time of given BPI run",
+    "abbreviation": "GP",
+    "value": 61.112,
+    "displayValue": "61.1"
+   },
+   {
+    "name": "matchupQuality",
+    "displayName": "Matchup Quality",
+    "shortDisplayName": "MQ",
+    "description": "A measure of projected competitiveness and excitement in the game, using a 0 to 100 scale, with 100 as the most exciting",
+    "abbreviation": "MQ",
+    "value": 75.769,
+    "displayValue": "75.8"
+   },
+   {
+    "name": "teamChanceLoss",
+    "displayName": "Team Chance Loss",
+    "shortDisplayName": "TCL",
+    "description": "",
+    "abbreviation": "TCL",
+    "value": 38.578,
+    "displayValue": "38.6"
+   },
+   {
+    "name": "teamPredPtDiff",
+    "displayName": "Team Pred. Point Difference",
+    "shortDisplayName": "TPPD",
+    "description": "",
+    "abbreviation": "TPPD",
+    "value": 3.428,
+    "displayValue": "3.4"
+   }
+  ]
+ },
+ "awayTeam": {
+  "team": {
+   "$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/teams/17?lang=en&region=us"
+  },
+  "statistics": [
+   {
+    "name": "gameProjection",
+    "displayName": "WIN PROB",
+    "shortDisplayName": "GP",
+    "description": "Team's predicted win percentage in this game at time of given BPI run",
+    "abbreviation": "GP",
+    "value": 38.578,
+    "displayValue": "38.6"
+   },
+   {
+    "name": "matchupQuality",
+    "displayName": "Matchup Quality",
+    "shortDisplayName": "MQ",
+    "description": "A measure of projected competitiveness and excitement in the game, using a 0 to 100 scale, with 100 as the most exciting",
+    "abbreviation": "MQ",
+    "value": 75.769,
+    "displayValue": "75.8"
+   },
+   {
+    "name": "teamChanceLoss",
+    "displayName": "Team Chance Loss",
+    "shortDisplayName": "TCL",
+    "description": "",
+    "abbreviation": "TCL",
+    "value": 61.112,
+    "displayValue": "61.1"
+   },
+   {
+    "name": "teamPredPtDiff",
+    "displayName": "Team Pred. Point Difference",
+    "shortDisplayName": "TPPD",
+    "description": "",
+    "abbreviation": "TPPD",
+    "value": -3.428,
+    "displayValue": "-3.4"
+   }
+  ]
+ }
+}
