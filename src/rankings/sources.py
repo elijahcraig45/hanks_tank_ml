@@ -95,9 +95,15 @@ SPORTS: dict[str, SportSpec] = {
         key="cfb", label="College Football",
         dataset_env="CFB_DATASET", default_dataset="cfb_season",
         major_division="fbs", board_divisions=("fbs", "fcs"),
-        # Tuned by 5-fold CV and walk-forward log loss across 2022-2025 in the
-        # original college implementation; carried over unchanged.
-        ridge_C=2.0, prior_w0=1.0, prior_tau=8.0, season_weeks=16,
+        # EXPERIMENT (branch fix/power-rankings, not deployed). Scoring-margin ridge,
+        # chosen by rankings.evaluate on 2017-19+2021 and scored frozen on 2022-2025
+        # (6,317 D1-vs-D1 games): log loss 0.5447 -> 0.5090, -0.036 [95% CI -0.043,
+        # -0.028], better in all four seasons; FBS-vs-FBS 0.584 -> 0.546. Accuracy
+        # 71.0% -> 73.6%. Last season now enters at 0.25 per game decaying with
+        # tau=16 (0.22 at week 2), against the W/L fit's 1.0/tau=8 (0.78). The W/L
+        # constants are kept for model="bt" (re-tuning them gains 0.004).
+        ridge_C=2.0, prior_w0=0.25, prior_tau=16.0, season_weeks=16,
+        model="margin", margin_alpha=0.3, margin_cap=None, margin_scale=10.62,
     ),
     "nfl": SportSpec(
         key="nfl", label="NFL",
@@ -107,7 +113,15 @@ SPORTS: dict[str, SportSpec] = {
         # 0.6451 against a 0.6931 coin flip. tau is flat across 6-10 (0.6451-0.6459,
         # i.e. noise), so 8 is taken as the middle of the plateau rather than the
         # nominal argmin. Heavier penalties are clearly worse: C=8 scores 0.6742.
-        ridge_C=0.5, prior_w0=1.0, prior_tau=8.0, season_weeks=18,
+        #
+        # EXPERIMENT (branch fix/power-rankings, not deployed). Scoring-margin ridge
+        # with margins capped at 21, chosen on 2016-2020 and scored frozen on
+        # 2021-2025 (-0.0049 [-0.014, +0.004], inconclusive alone) and on 2006-2015
+        # (-0.0104 [-0.016, -0.004]); pooled over 15 unseen seasons 0.6398 -> 0.6312,
+        # -0.0085 [-0.0137, -0.0034], better in 12 of 15. Last season enters at 0.5
+        # per game, tau=8 (0.39 at week 2, was 0.78).
+        ridge_C=0.5, prior_w0=0.5, prior_tau=8.0, season_weeks=18,
+        model="margin", margin_alpha=10.0, margin_cap=21.0, margin_scale=4.69,
     ),
     "mlb": SportSpec(
         key="mlb", label="MLB",
@@ -123,6 +137,13 @@ SPORTS: dict[str, SportSpec] = {
         # likelihood is nearly flat and shrinkage is what keeps a 100-win team from
         # being credited with more than the schedule can support. tau barely matters
         # (8 and 20 tie), which is itself evidence there is little signal to carry.
+        #
+        # Re-measured 2026-09-25 with rankings.evaluate (tune 2018-19+2021-22, eval
+        # 2023-2026 to date, 9,674 games): nothing beats this. The run-margin ridge
+        # scores +0.0007 [-0.0007, +0.0023], the BT/margin blend +0.0000, a re-tuned
+        # W/L fit +0.0007, and dropping last season entirely +0.0035 [+0.0017,
+        # +0.0052] — so the prior still carrying 0.26 per game at week 27 is what the
+        # log loss wants, not an oversight.
         ridge_C=0.06, prior_w0=1.0, prior_tau=20.0, season_weeks=27,
     ),
 }
@@ -195,15 +216,19 @@ def cfb_division_conferences(season: int, refresh: bool = False) -> dict[str, st
 
 def cfb_team_divisions(chunk: pd.DataFrame, conf_division: dict[str, str]
                        ) -> dict[str, str | None]:
-    """Team abbreviation -> its own division in this season's games, or None.
+    """Team display name -> its own division in this season's games, or None.
 
     None means "not Division I": the team's conference is in neither the FBS nor the
     FCS tree. Such teams stay in the fit — their games are real evidence about the
     D1 teams they played — but never on a board.
+
+    Keyed on the display name, not ESPN's abbreviation: abbreviations collide
+    (Valdosta State and Valparaiso are both "VAL"), which put a D2 school on the FCS
+    board with Valparaiso's division.
     """
     sides = pd.concat([
-        chunk[["home_team", "home_conference_id"]].set_axis(["team", "conf"], axis=1),
-        chunk[["away_team", "away_conference_id"]].set_axis(["team", "conf"], axis=1),
+        chunk[["home_team_name", "home_conference_id"]].set_axis(["team", "conf"], axis=1),
+        chunk[["away_team_name", "away_conference_id"]].set_axis(["team", "conf"], axis=1),
     ])
     sides["division"] = sides["conf"].map(
         lambda c: conf_division.get(str(c)) if c is not None and pd.notna(c) else None
@@ -214,6 +239,49 @@ def cfb_team_divisions(chunk: pd.DataFrame, conf_division: dict[str, str]
         # A team's conference is constant within a season; the mode guards against a
         # stray row rather than expressing any real ambiguity.
         out[team] = known.mode().iloc[0] if not known.empty else None
+    return out
+
+
+def cfb_renames(games: pd.DataFrame) -> dict[str, str]:
+    """Old display name -> current one, for programs ESPN renamed between seasons.
+
+    "St. Thomas-Minnesota Tommies" became "St. Thomas Tommies" for 2026, which split
+    one program into two entities: its 2025 games could not inform its 2026 rating.
+    A rename is detected only where it is unambiguous — one abbreviation used by
+    exactly one name in consecutive seasons, the old name gone and the new one new —
+    because abbreviations alone are not unique (Valdosta State and Valparaiso share
+    "VAL"). Both names must also belong to Division I conferences in their seasons:
+    without that, lower-division schools that pass an abbreviation between them
+    (UVA Wise and Virginia State) read as a rename.
+    """
+    cols = ["season", "abbr", "name", "conf"]
+    sides = pd.concat([
+        games[["season", "home_team", "home_team_name", "home_conference_id"]].set_axis(cols, axis=1),
+        games[["season", "away_team", "away_team_name", "away_conference_id"]].set_axis(cols, axis=1),
+    ]).dropna(subset=["abbr", "name"])
+    d1 = {int(y): cfb_division_conferences(int(y)) for y in sides["season"].unique()}
+    sides = sides[[
+        str(c) in d1.get(int(y), {}) if c is not None and pd.notna(c) else False
+        for y, c in zip(sides["season"], sides["conf"])
+    ]][["season", "abbr", "name"]].drop_duplicates()
+    names_by_season = sides.groupby("season")["name"].agg(set).to_dict()
+    per = sides.groupby(["abbr", "season"])["name"].agg(set)
+    out: dict[str, str] = {}
+    for abbr, by_season in per.groupby(level="abbr"):
+        seasons = sorted(by_season.index.get_level_values("season"))
+        for a, b in zip(seasons, seasons[1:]):
+            old, new = by_season.loc[(abbr, a)], by_season.loc[(abbr, b)]
+            if b != a + 1 or len(old) != 1 or len(new) != 1 or old == new:
+                continue
+            (o,), (n,) = old, new
+            if o not in names_by_season.get(b, set()) and n not in names_by_season.get(a, set()):
+                out[o] = n
+    # Chain renames so every historical name points at the newest one.
+    for o in list(out):
+        seen = {o}
+        while out[o] in out and out[o] not in seen:
+            seen.add(out[o])
+            out[o] = out[out[o]]
     return out
 
 
@@ -233,23 +301,28 @@ def load_cfb() -> pd.DataFrame:
     from espn_data import load_games, resolve_team_divisions  # noqa: E402
 
     games = load_games().copy()
+    for side in ("home", "away"):
+        games[f"{side}_team_name"] = games[f"{side}_team_name"].replace(
+            cfb_renames(games)
+        )
 
     # Divisions belong to a (team, season) pair, so resolve one season at a time:
-    # Sacramento State and North Dakota State are FCS in 2025 and FBS in 2026. Keyed on
-    # the team ABBREVIATION (`home_team`/`away_team`), not the display name.
+    # Sacramento State and North Dakota State are FCS in 2025 and FBS in 2026.
     home_div, away_div = [], []
     for season, chunk in games.groupby("season"):
         conf_division = cfb_division_conferences(int(season))
         if conf_division:
             div_of = cfb_team_divisions(chunk, conf_division)
+            home_div.append(chunk["home_team_name"].map(div_of))
+            away_div.append(chunk["away_team_name"].map(div_of))
         else:
             # Offline fallback: infer from the feeds. Known to admit non-D1
             # opponents, so it is only used when ESPN's group tree is unreachable.
             logger.warning("CFB %s: no conference tree, inferring divisions from feeds",
                            season)
             div_of = resolve_team_divisions(chunk)
-        home_div.append(chunk["home_team"].map(div_of))
-        away_div.append(chunk["away_team"].map(div_of))
+            home_div.append(chunk["home_team"].map(div_of))
+            away_div.append(chunk["away_team"].map(div_of))
 
     games["home_division"] = pd.concat(home_div).reindex(games.index)
     games["away_division"] = pd.concat(away_div).reindex(games.index)

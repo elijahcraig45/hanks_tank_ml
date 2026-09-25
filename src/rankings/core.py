@@ -207,6 +207,8 @@ def _solve_margin(games: pd.DataFrame, teams: list[str], divisions: dict[str, st
     It is a per-sport constant measured walk-forward, not fitted here, because an
     in-sample fit of it is overconfident by construction.
     """
+    if "margin" not in games.columns or games["margin"].notna().sum() == 0:
+        raise ValueError("margin model needs a `margin` column with scores in it")
     x, _ = _design(games, teams, divisions, major)
     y = games["margin"].to_numpy(dtype=float)
     w = np.ones(len(y)) if weights is None else np.asarray(weights, dtype=float)

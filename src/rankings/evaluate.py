@@ -140,8 +140,16 @@ def run_config(args: tuple) -> dict:
                 strengths, home_adv, _ = core.fit_with_prior(
                     seen, prior, int(week), divisions=divisions, **kw
                 )
-            except Exception as exc:  # pragma: no cover - reported, not hidden
+            except Exception as exc:
+                # e.g. a no-prior fit on an opening series the road team swept: one
+                # class, nothing to fit. The model has no opinion, so it forecasts a
+                # coin flip, and the week stays in the common test set.
                 logger.warning("%s %s wk%s failed: %s", cfg, season, week, exc)
+                out_rows.append(pd.DataFrame({
+                    "season": season, "week": int(week),
+                    "game_idx": test["game_key"].to_numpy(),
+                    "y": test["home_won"].to_numpy(), "raw": np.zeros(len(test)),
+                }))
                 continue
             raw = _predict(strengths, home_adv, test)
             out_rows.append(pd.DataFrame({
@@ -310,12 +318,14 @@ def report(sport: str, out_dir: str, top_k: int = 6) -> dict:
     # Every variant must be judged on the same games. A configuration whose fit
     # failed in some week is dropped from the comparison, not allowed to shrink the
     # common test set for everyone else.
-    complete = wide.notna().mean() >= 0.999
+    # Results written before failed fits were recorded as coin flips have gaps;
+    # treat a gap the same way (raw 0), and drop anything missing more than a sliver.
+    complete = wide.notna().mean() >= 0.95
     dropped = [int(c) for c in wide.columns[~complete]]
     if dropped:
         logger.warning("dropping %d configs with incomplete coverage: %s",
                        len(dropped), dropped)
-    wide = wide.loc[:, complete].dropna(axis=0, how="any").reset_index()
+    wide = wide.loc[:, complete].fillna(0.0).reset_index()
     y = wide["y"].to_numpy().astype(float)
     is_tune = (wide["part"] == "tune").to_numpy()
 
@@ -414,7 +424,7 @@ def report(sport: str, out_dir: str, top_k: int = 6) -> dict:
                        "margin_cfg": cfgs[bm]}
     return {"summary": summary, "per_season": per_season, "early": early,
             "stability": stability, "chosen": chosen, "n_eval": int(len(ev)),
-            "n_tune": int((frame.part == "tune").sum()), "grid": table,
+            "n_tune": int((frame.part == "tune").sum()), "grid": table, "frame": frame,
             "fbs_only": _fbs_only(sport, games, ev) if sport == "cfb" else None}
 
 

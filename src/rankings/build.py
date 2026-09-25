@@ -40,6 +40,14 @@ def _records(games: pd.DataFrame) -> dict[str, list[int]]:
     return rec
 
 
+def _has_margins(*frames) -> bool:
+    """Every non-empty frame the fit will use carries at least some scores."""
+    present = [f for f in frames if f is not None and not f.empty]
+    return bool(present) and all(
+        "margin" in f.columns and f["margin"].notna().any() for f in present
+    )
+
+
 def strength_of_record(games: pd.DataFrame | None, strengths: pd.Series,
                        home_adv: float) -> dict[str, float]:
     """Wins above an average (rating 0) team's expected wins on the same schedule."""
@@ -59,16 +67,24 @@ def strength_of_record(games: pd.DataFrame | None, strengths: pd.Series,
     return out
 
 
-def board_membership(prior: pd.DataFrame | None, current: pd.DataFrame
-                     ) -> dict[str, str | None]:
+# After this many weeks every Division I program has played; one that has not is no
+# longer in the division (Saint Francis dropped to D3 for 2026).
+MEMBERSHIP_GRACE_WEEKS = 3
+
+
+def board_membership(prior: pd.DataFrame | None, current: pd.DataFrame,
+                     week: int = 0) -> dict[str, str | None]:
     """Team -> the board it belongs on, decided by the CURRENT season.
 
     Any team that has played this season is placed by this season's division, and a
     None there (a D2/NAIA opponent) keeps it off every board even if an earlier
-    season's data said otherwise. Only teams yet to play this season fall back to last
-    season, so early-season boards are not missing anybody.
+    season's data said otherwise. Teams yet to play this season fall back to last
+    season, so early-season boards are not missing anybody — but only for the first
+    MEMBERSHIP_GRACE_WEEKS weeks.
     """
     out: dict[str, str | None] = {}
+    if week > MEMBERSHIP_GRACE_WEEKS and current is not None and not current.empty:
+        prior = None
     for frame in (prior, current):
         if frame is None or frame.empty:
             continue
@@ -115,8 +131,16 @@ def build_board(sport: str, season: int, week: int | None = None,
     # Each team's CURRENT division, shared by the fit and every bootstrap replicate so
     # a program that moved up is rated, banded and boarded as what it is now.
     divisions = core.season_divisions(prior, current)
+    model_kw = spec.model_kw()
+    model = spec.model
+    if model != "bt" and not _has_margins(current, prior):
+        # A feed that lost its scores must not take the board down; the W/L fit is
+        # the measured next best. Flagged in `model` so the page says which it got.
+        logger.warning("%s %d: no scores for the margin model; using W/L", sport, season)
+        model = "bt"
+        model_kw["model"] = "bt"
     fit_kw = dict(C=spec.ridge_C, w0=spec.prior_w0, tau=spec.prior_tau, major=major,
-                  divisions=divisions, **spec.model_kw())
+                  divisions=divisions, **model_kw)
     strengths, home_adv, div_gap = core.fit_with_prior(
         current, prior, effective_week, **fit_kw
     )
@@ -127,7 +151,9 @@ def build_board(sport: str, season: int, week: int | None = None,
     record = _records(current) if not current.empty else _records(prior)
     record_season = season if not current.empty else season - 1
 
-    division_of = board_membership(prior, current) if spec.board_divisions else {}
+    division_of = (
+        board_membership(prior, current, effective_week) if spec.board_divisions else {}
+    )
     board_of = (
         {t: d for t, d in division_of.items() if d in spec.board_divisions}
         if spec.board_divisions else None
@@ -197,7 +223,7 @@ def build_board(sport: str, season: int, week: int | None = None,
         ),
         "is_preseason": bool(is_preseason),
         "record_season": record_season,
-        "model": spec.model,
+        "model": model,
         # When the board was computed and the last game it has seen. MLB "weeks" are
         # an internal index for the prior decay, not something a reader counts in, so
         # the UI should show the date rather than "through week 27".
@@ -209,8 +235,13 @@ def build_board(sport: str, season: int, week: int | None = None,
     }
 
     out = pd.DataFrame(rows)
-    for key in ("prior_weight", "home_field_points", "computed_at", "as_of_date"):
+    for key in ("prior_weight", "home_field_points", "computed_at", "as_of_date",
+                "model"):
         out[key] = meta[key]
+    if model == "margin":
+        # The same rating in the sport's own units: expected margin against an
+        # average team on a neutral field.
+        out["rating_points"] = (out["rating"] * spec.margin_scale / core.ELO_SCALE).round(1)
 
     # Strength of record from this board's own ratings: wins minus the wins an average
     # team would expect against the same schedule, at the same venues. Descriptive (it
@@ -294,7 +325,7 @@ def print_board(table: pd.DataFrame, meta: dict, top: int = 25) -> None:
 # whole sport — `division` for the NFL and MLB — comes out of pandas as float64, lands
 # in BigQuery as FLOAT, and the load fails outright because FLOAT cannot be a
 # clustering field.
-TEXT_COLUMNS = ("team", "division", "record", "conference", "division_name")
+TEXT_COLUMNS = ("team", "division", "record", "conference", "division_name", "model")
 
 
 def write_bq(table: pd.DataFrame, meta: dict) -> dict:

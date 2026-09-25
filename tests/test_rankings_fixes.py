@@ -228,7 +228,8 @@ class CollegeMembershipTests(unittest.TestCase):
              "away_conference_id": "104"},
             {"home_team": "DSU", "away_team": "SCSU", "home_conference_id": "24",
              "away_conference_id": None},
-        ])
+        ]).assign(home_team_name=lambda d: d["home_team"],
+                  away_team_name=lambda d: d["away_team"])
 
     def test_division_comes_from_conference_membership(self):
         div = sources.cfb_team_divisions(self.chunk(), self.CONF)
@@ -253,6 +254,48 @@ class CollegeMembershipTests(unittest.TestCase):
                                      games=games, with_fpi=False)
         self.assertNotIn("D2 School", set(table["team"]))
         self.assertEqual(set(table["team"]), set(side))
+
+    def test_abbreviation_collisions_do_not_share_a_division(self):
+        chunk = pd.DataFrame([
+            {"home_team": "CIT", "away_team": "VAL", "home_team_name": "The Citadel",
+             "away_team_name": "Valdosta State", "home_conference_id": "29",
+             "away_conference_id": None},
+            {"home_team": "VAL", "away_team": "BUT", "home_team_name": "Valparaiso",
+             "away_team_name": "Butler", "home_conference_id": "28",
+             "away_conference_id": "28"},
+        ])
+        div = sources.cfb_team_divisions(chunk, {"29": "fcs", "28": "fcs"})
+        self.assertEqual(div["Valparaiso"], "fcs")
+        self.assertIsNone(div["Valdosta State"])
+
+    def test_renamed_program_stays_one_team(self):
+        games = pd.DataFrame([
+            {"season": 2025, "home_team": "STMN", "away_team": "BUT",
+             "home_team_name": "St. Thomas-Minnesota Tommies", "away_team_name": "Butler",
+             "home_conference_id": "28", "away_conference_id": "28"},
+            {"season": 2026, "home_team": "STMN", "away_team": "BUT",
+             "home_team_name": "St. Thomas Tommies", "away_team_name": "Butler",
+             "home_conference_id": "28", "away_conference_id": "28"},
+            # Two lower-division schools passing an abbreviation: not a rename.
+            {"season": 2025, "home_team": "VSU", "away_team": "X",
+             "home_team_name": "UVA Wise", "away_team_name": "X",
+             "home_conference_id": "900", "away_conference_id": None},
+            {"season": 2026, "home_team": "VSU", "away_team": "X",
+             "home_team_name": "Virginia State", "away_team_name": "X",
+             "home_conference_id": "901", "away_conference_id": None},
+        ])
+        with unittest.mock.patch.object(sources, "cfb_division_conferences",
+                                        return_value={"28": "fcs"}):
+            renames = sources.cfb_renames(games)
+        self.assertEqual(renames, {"St. Thomas-Minnesota Tommies": "St. Thomas Tommies"})
+
+    def test_team_that_has_not_played_by_week_four_is_off_the_board(self):
+        prior = pd.DataFrame([{"home_team_name": "Gone", "away_team_name": "Y",
+                               "home_division": "fcs", "away_division": "fcs"}])
+        current = pd.DataFrame([{"home_team_name": "Y", "away_team_name": "Z",
+                                 "home_division": "fcs", "away_division": "fcs"}])
+        self.assertIn("Gone", build.board_membership(prior, current, week=2))
+        self.assertNotIn("Gone", build.board_membership(prior, current, week=5))
 
     def test_current_season_decides_the_board(self):
         prior = pd.DataFrame([{"home_team_name": "X", "away_team_name": "Y",
@@ -350,6 +393,24 @@ class BoardColumnTests(unittest.TestCase):
         self.assertEqual(meta["sor_source"], "model")
         # D beats everyone, so it has the best record against this schedule.
         self.assertEqual(table.loc[table["sor_rank"] == 1, "team"].iloc[0], "D")
+
+
+class ModelSelectionTests(unittest.TestCase):
+    def test_board_without_scores_falls_back_to_win_loss_and_says_so(self):
+        games = round_robin(["A", "B", "C"], season=2026)  # no margin column
+        table, meta = build.build_board("nfl", 2026, n_boot=5, use_prior=False,
+                                        games=games, with_fpi=False)
+        self.assertEqual(meta["model"], "bt")
+        self.assertEqual(set(table["model"]), {"bt"})
+
+    def test_board_with_scores_uses_the_configured_model(self):
+        games = round_robin(["A", "B", "C"], season=2026)
+        games["margin"] = np.where(games["home_won"] == 1, 7, -7)
+        table, meta = build.build_board("nfl", 2026, n_boot=5, use_prior=False,
+                                        games=games, with_fpi=False)
+        self.assertEqual(meta["model"], sources.SPORTS["nfl"].model)
+        if meta["model"] == "margin":
+            self.assertIn("rating_points", table.columns)
 
 
 class MarginModelTests(unittest.TestCase):
