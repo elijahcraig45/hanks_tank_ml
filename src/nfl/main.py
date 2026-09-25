@@ -13,6 +13,10 @@ Modes (POST body {"mode": ...}):
   score         recompute results for completed games and update predictions
   backfill      re-run a whole season week by week
 
+Shadow model: {"shadow_ridge": true} on predict_week (or NFL_RIDGE_SHADOW=1) also writes
+the margin ridge's predictions to nfl_season.game_predictions_ridge_shadow. Nothing reads
+that table; it exists so the ridge can be scored live before adoption.
+
 The derived steps hang off `ingest` rather than taking Scheduler jobs of their own:
 they only make sense after the week's games land, so chaining them in one invocation
 makes that ordering structural rather than a race between cron entries. Both are
@@ -70,6 +74,30 @@ def _next_unplayed_week() -> tuple[int, int]:
     row = upcoming.sort_values("gameday").iloc[0]
     return int(row["season"]), int(row["week"])
 
+
+
+def _shadow_enabled(req: dict) -> bool:
+    """The margin ridge is an experiment: it runs only when asked for, per request
+    ({"shadow_ridge": true}) or per deployment (NFL_RIDGE_SHADOW=1), and writes only
+    to its own table. Off by default."""
+    import os
+
+    return bool(req.get("shadow_ridge")) or os.environ.get("NFL_RIDGE_SHADOW") == "1"
+
+
+def _shadow_ridge_week(season: int, week: int, steps: dict) -> None:
+    """Predict the week with the margin ridge into the shadow table. Never fatal."""
+    try:
+        from bq_io import upsert_week
+        from config import CTX
+        from predict_nfl import SHADOW_TABLE, predict_week
+
+        rows = predict_week(season, week, model="ridge")
+        upsert_week(rows, CTX.season_dataset, SHADOW_TABLE, season, week)
+        steps["shadow_ridge"] = len(rows)
+    except Exception as exc:
+        logger.error("shadow ridge failed: %s", exc)
+        steps["shadow_ridge"] = {"error": str(exc)[:200]}
 
 
 def _refresh_rankings(season: int, steps: dict) -> None:
@@ -170,6 +198,9 @@ def nfl_pipeline(request):
             result["steps"]["predicted"] = len(rows)
             result["season"] = season
             result["week"] = week
+
+            if _shadow_enabled(req):
+                _shadow_ridge_week(int(season), int(week), result["steps"])
 
         elif mode == "score":
             from bq_io import query
