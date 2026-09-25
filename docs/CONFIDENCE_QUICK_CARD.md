@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** V3-era thresholds; live tiers are absolute 0.64/0.57 on V10, and the 2026 backtest recommends quantile tiers. Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # Quick Reference - Confidence Percentiles
 
 ## 📊 At a Glance
