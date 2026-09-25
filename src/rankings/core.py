@@ -99,6 +99,22 @@ def team_divisions(games: pd.DataFrame) -> dict[str, str]:
     return out
 
 
+def season_divisions(prior: pd.DataFrame | None, current: pd.DataFrame | None
+                     ) -> dict[str, str]:
+    """One division per team for the board season: this season's where it has played.
+
+    A team that changed division between seasons (North Dakota State and Sacramento
+    State went FCS to FBS for 2026) must be rated as what it is NOW. Building the map
+    with setdefault over prior-then-current kept the prior season's division, so a
+    mover's rating omitted the division baseline its current games were coded with.
+    Teams yet to play this season fall back to last season's division.
+    """
+    out = dict(team_divisions(prior)) if prior is not None and not prior.empty else {}
+    if current is not None and not current.empty:
+        out.update(team_divisions(current))
+    return out
+
+
 def _design(games: pd.DataFrame, teams: list[str], divisions: dict[str, str],
             major: str | None) -> tuple[csr_matrix, np.ndarray]:
     """Build the sparse design matrix and target.
@@ -148,6 +164,17 @@ def _design(games: pd.DataFrame, teams: list[str], divisions: dict[str, str],
     return x, y
 
 
+def _to_elo(within: pd.Series, div_gap: float, teams: list[str],
+            divisions: dict[str, str], major: str | None) -> pd.Series:
+    """Add each team's division baseline back on, then centre."""
+    if major is not None:
+        baseline = pd.Series(
+            [div_gap if divisions.get(t) == major else 0.0 for t in teams], index=teams
+        )
+        within = within + baseline
+    return within - within.mean()
+
+
 def _solve(games: pd.DataFrame, teams: list[str], divisions: dict[str, str],
            major: str | None, C: float, weights: np.ndarray | None
            ) -> tuple[pd.Series, float, float]:
@@ -161,36 +188,95 @@ def _solve(games: pd.DataFrame, teams: list[str], divisions: dict[str, str],
     div_gap = (
         float(coef[len(teams) + 1] * DIV_SCALE * ELO_SCALE) if major is not None else 0.0
     )
-
-    # Put both ladders on one scale by adding each team's division baseline back on.
-    if major is not None:
-        baseline = pd.Series(
-            [div_gap if divisions.get(t) == major else 0.0 for t in teams], index=teams
-        )
-        within = within + baseline
-
-    strengths = within - within.mean()
+    strengths = _to_elo(within, div_gap, teams, divisions, major)
     return strengths.sort_values(ascending=False), home_adv, div_gap
+
+
+def _solve_margin(games: pd.DataFrame, teams: list[str], divisions: dict[str, str],
+                  major: str | None, alpha: float, cap: float | None, scale: float,
+                  weights: np.ndarray | None) -> tuple[pd.Series, float, float]:
+    """Weighted ridge regression on (capped) home margin, returned on the Elo scale.
+
+    Same design matrix as the Bradley-Terry fit, so strength of schedule, home field
+    and the division term mean the same things; only the target changes from "did the
+    home team win" to "by how much". A 30-point win and a 1-point win are different
+    evidence about strength, and W/L throws that difference away. The cap stops a
+    blowout of a hopeless opponent from counting as more than a comfortable win.
+
+    `scale` is points per unit of log-odds (P(home wins) = sigmoid(margin / scale)).
+    It is a per-sport constant measured walk-forward, not fitted here, because an
+    in-sample fit of it is overconfident by construction.
+    """
+    x, _ = _design(games, teams, divisions, major)
+    y = games["margin"].to_numpy(dtype=float)
+    w = np.ones(len(y)) if weights is None else np.asarray(weights, dtype=float)
+    ok = ~np.isnan(y)
+    if cap is not None:
+        y = np.clip(y, -cap, cap)
+    x, y, w = x[ok], y[ok], w[ok]
+
+    xtw = x.T.multiply(w).tocsr()
+    gram = (xtw @ x).toarray()
+    gram[np.diag_indices_from(gram)] += alpha
+    coef = np.linalg.solve(gram, xtw @ y)
+
+    to_elo = ELO_SCALE / scale
+    k = len(teams)
+    within = pd.Series(coef[:k] * to_elo, index=teams)
+    home_adv = float(coef[k] * to_elo)
+    div_gap = float(coef[k + 1] * DIV_SCALE * to_elo) if major is not None else 0.0
+    strengths = _to_elo(within, div_gap, teams, divisions, major)
+    return strengths.sort_values(ascending=False), home_adv, div_gap
+
+
+# Which likelihood the rating is fitted with. "bt" is W/L only (the original engine);
+# "margin" is the capped-margin ridge; "blend" averages the two on the log-odds scale.
+MODELS = ("bt", "margin", "blend")
+
+
+def _fit(games: pd.DataFrame, teams: list[str], divisions: dict[str, str],
+         major: str | None, C: float, weights: np.ndarray | None,
+         model: str = "bt", margin_alpha: float = 10.0,
+         margin_cap: float | None = None, margin_scale: float = 10.0,
+         blend: float = 0.5) -> tuple[pd.Series, float, float]:
+    if model == "bt":
+        return _solve(games, teams, divisions, major, C, weights)
+    if model == "margin":
+        return _solve_margin(games, teams, divisions, major, margin_alpha,
+                             margin_cap, margin_scale, weights)
+    if model == "blend":
+        s1, h1, d1 = _solve(games, teams, divisions, major, C, weights)
+        s2, h2, d2 = _solve_margin(games, teams, divisions, major, margin_alpha,
+                                   margin_cap, margin_scale, weights)
+        s = blend * s1 + (1 - blend) * s2.reindex(s1.index)
+        return (s.sort_values(ascending=False), blend * h1 + (1 - blend) * h2,
+                blend * d1 + (1 - blend) * d2)
+    raise ValueError(f"unknown model {model!r}; expected one of {MODELS}")
 
 
 def fit_ratings(games: pd.DataFrame, C: float = 2.0,
                 divisions: dict[str, str] | None = None,
-                major: str | None = None) -> tuple[pd.Series, float, float]:
+                major: str | None = None, **model_kw) -> tuple[pd.Series, float, float]:
     """Ratings in Elo-like points, home-field points, and the division gap."""
     validate(games)
     divisions = divisions if divisions is not None else team_divisions(games)
     teams = sorted(set(games["home_team_name"]) | set(games["away_team_name"]))
-    return _solve(games, teams, divisions, major, C, None)
+    return _fit(games, teams, divisions, major, C, None, **model_kw)
 
 
 def prior_weight(week: int, w0: float, tau: float) -> float:
     """How much one last-season game counts, given how deep into this season we are."""
+    if tau <= 0:
+        return 0.0
     return float(w0 * np.exp(-max(week, 0) / tau))
 
 
 def fit_with_prior(current: pd.DataFrame, prior: pd.DataFrame | None, week: int,
                    C: float = 2.0, w0: float = 1.0, tau: float = 8.0,
-                   major: str | None = None) -> tuple[pd.Series, float, float]:
+                   major: str | None = None,
+                   divisions: dict[str, str] | None = None,
+                   recency_tau: float | None = None,
+                   **model_kw) -> tuple[pd.Series, float, float]:
     """Fit this season's games so far, anchored by last season's at a decayed weight.
 
     Rather than blending two rating vectors after the fact, last season's GAMES are
@@ -198,43 +284,97 @@ def fit_with_prior(current: pd.DataFrame, prior: pd.DataFrame | None, week: int,
     schedule intact instead of collapsing each team's season into one number, and it is
     a single solve rather than two plus a merge rule.
 
-    `current` should already be filtered to games played before `week`.
+    `current` should already be filtered to games played before `week`. `divisions`
+    defaults to season_divisions(prior, current) — each team's CURRENT division.
+
+    `recency_tau` (weeks), when set, also down-weights this season's older games by
+    exp(-(week - game_week) / recency_tau). Off by default: it trades the
+    order-independence of the fit for responsiveness, so it is only worth having if
+    it measurably predicts better.
     """
     has_prior = prior is not None and not prior.empty
     has_current = current is not None and not current.empty
+    if divisions is None:
+        divisions = season_divisions(prior if has_prior else None,
+                                     current if has_current else None)
 
-    if not has_prior:
-        return fit_ratings(current, C=C, major=major)
     if not has_current:
+        if not has_prior:
+            raise ValueError("no games to fit")
         # Preseason: last year is all the evidence there is, so use it undecayed.
-        return fit_ratings(prior, C=C, major=major)
+        return fit_ratings(prior, C=C, major=major, divisions=divisions, **model_kw)
 
-    w = prior_weight(week, w0, tau)
+    current_w = np.ones(len(current))
+    if recency_tau:
+        age = np.maximum(week - current["week"].to_numpy(dtype=float), 0.0)
+        current_w = np.exp(-age / recency_tau)
+
+    w = prior_weight(week, w0, tau) if has_prior else 0.0
+    if w <= 0:
+        teams = sorted(set(current["home_team_name"]) | set(current["away_team_name"]))
+        validate(current)
+        return _fit(current, teams, divisions, major, C,
+                    None if not recency_tau else current_w, **model_kw)
     combined = pd.concat([prior, current], ignore_index=True)
-    weights = np.concatenate([np.full(len(prior), w), np.ones(len(current))])
+    weights = np.concatenate([np.full(len(prior), w), current_w])
 
     validate(combined)
-    divisions = team_divisions(combined)
     teams = sorted(set(combined["home_team_name"]) | set(combined["away_team_name"]))
-    return _solve(combined, teams, divisions, major, C, weights)
+    return _fit(combined, teams, divisions, major, C, weights, **model_kw)
 
 
-def bootstrap_ranks(games: pd.DataFrame, n_boot: int = 200, C: float = 2.0,
-                    seed: int = 42, divisions: dict[str, str] | None = None,
-                    major: str | None = None) -> pd.DataFrame:
-    """Resample games with replacement and refit, giving a rank distribution per team."""
+def bootstrap_ranks(current: pd.DataFrame, prior: pd.DataFrame | None = None,
+                    week: int = 0, n_boot: int = 200, C: float = 2.0,
+                    w0: float = 1.0, tau: float = 8.0, seed: int = 42,
+                    divisions: dict[str, str] | None = None,
+                    major: str | None = None,
+                    board_of: dict[str, str] | None = None,
+                    **model_kw) -> pd.DataFrame:
+    """Rank distribution per team from refitting resampled games.
+
+    Every replicate goes through fit_with_prior with the SAME week, decay and
+    divisions as the point estimate, and this season's and last season's games are
+    resampled separately so each replicate keeps the same mix of full-weight and
+    decayed evidence. The previous version pooled both seasons and refit at full
+    weight: it described a different model from the one that produced the ranks, and
+    its bands missed their own point ranks (MLB median 2.4 ranks off; 31 of 344 CFB
+    teams outside their own 5-95% band).
+
+    `board_of` (team -> board) ranks each replicate WITHIN its board, matching how the
+    published rank is numbered; teams absent from it (non-D1 opponents) get no band.
+    Without it, ranks are over every team in the fit.
+    """
     rng = np.random.default_rng(seed)
-    divisions = divisions if divisions is not None else team_divisions(games)
-    ranks: dict[str, list[int]] = {}
+    has_prior = prior is not None and not prior.empty
+    has_current = current is not None and not current.empty
+    if divisions is None:
+        divisions = season_divisions(prior if has_prior else None,
+                                     current if has_current else None)
 
+    def resample(frame):
+        if frame is None or frame.empty:
+            return frame
+        return frame.iloc[rng.integers(0, len(frame), len(frame))]
+
+    ranks: dict[str, list[int]] = {}
     for b in range(n_boot):
-        sample = games.iloc[rng.integers(0, len(games), len(games))]
         try:
-            s, _, _ = fit_ratings(sample, C=C, divisions=divisions, major=major)
+            s, _, _ = fit_with_prior(
+                resample(current), resample(prior) if has_prior else None, week,
+                C=C, w0=w0, tau=tau, major=major, divisions=divisions, **model_kw,
+            )
         except Exception:
             continue
-        for rank, team in enumerate(s.index, start=1):
-            ranks.setdefault(team, []).append(rank)
+        if board_of is None:
+            ordered = {None: list(s.index)}
+        else:
+            ordered = {}
+            for team in s.index:
+                if team in board_of:
+                    ordered.setdefault(board_of[team], []).append(team)
+        for members in ordered.values():
+            for rank, team in enumerate(members, start=1):
+                ranks.setdefault(team, []).append(rank)
         if (b + 1) % 50 == 0:
             logger.info("bootstrap %d/%d", b + 1, n_boot)
 
