@@ -20,7 +20,7 @@ from urllib.parse import urlencode
 import pandas as pd
 import requests
 
-from cfb_config import DIVISION_GROUPS, ESPN_BASE, FIRST_SEASON, RAW_CACHE
+from cfb_config import CTX, DIVISION_GROUPS, ESPN_BASE, FIRST_SEASON, RAW_CACHE
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 GAMES_CACHE = RAW_CACHE / "cfb_games_v2.parquet"
 
 REGULAR_SEASON, POSTSEASON = 2, 3
+
+# How old the cache may be before the season in progress is refetched.
+CACHE_MAX_AGE_HOURS = 3.0
 MAX_REGULAR_WEEK = 16
 MAX_POST_WEEK = 5
 
@@ -99,6 +102,12 @@ def tag_cross_division(df: pd.DataFrame) -> pd.DataFrame:
         return df
     feeds = df.groupby("game_id")["division"].nunique()
     cross = set(feeds[feeds > 1].index)
+    # Rows that come back from the parquet cache were already reduced to one sighting,
+    # so the both-feeds test can no longer see them; keep the flag they were stored
+    # with instead of recomputing it to 0 every time new games are appended.
+    if "cross_division" in df.columns:
+        known = pd.to_numeric(df["cross_division"], errors="coerce").fillna(0)
+        cross |= set(df.loc[known > 0, "game_id"])
     out = df.drop_duplicates(subset=["game_id"], keep="first").copy()
     out["cross_division"] = out["game_id"].isin(cross).astype(int)
     return out
@@ -212,7 +221,15 @@ def fetch_history(first_season: int = FIRST_SEASON, last_season: int = 2025,
     cached = pd.read_parquet(GAMES_CACHE) if GAMES_CACHE.exists() and not refresh \
         else pd.DataFrame()
 
-    # Build the work list, skipping season/division pairs already cached.
+    # Build the work list, skipping season/division pairs already cached — except the
+    # season in progress, whose cache goes stale as games are played. Skipping it on
+    # "more than 100 rows" meant a warm cache never picked up another week. It is
+    # refetched unless the cache file itself is fresh (so the ingest and the rankings
+    # refresh in one invocation fetch it once, not twice).
+    import time
+    cache_fresh = GAMES_CACHE.exists() and (
+        time.time() - GAMES_CACHE.stat().st_mtime < CACHE_MAX_AGE_HOURS * 3600
+    )
     jobs = []
     for division in divisions:
         group = DIVISION_GROUPS[division]
@@ -220,7 +237,8 @@ def fetch_history(first_season: int = FIRST_SEASON, last_season: int = 2025,
             if not cached.empty:
                 have = cached[(cached["season"] == season)
                               & (cached["division"] == division)]
-                if len(have) > 100:
+                in_progress = season >= CTX.season
+                if len(have) > 100 and (not in_progress or cache_fresh):
                     continue
             for seasontype, max_week in ((REGULAR_SEASON, MAX_REGULAR_WEEK),
                                          (POSTSEASON, MAX_POST_WEEK)):
@@ -253,6 +271,15 @@ def fetch_history(first_season: int = FIRST_SEASON, last_season: int = 2025,
             rows.extend(got)
 
     fresh = pd.DataFrame(rows)
+    if not cached.empty and not fresh.empty:
+        # A refetched (season, division) replaces its cached rows outright, so a game
+        # whose score was corrected upstream is not shadowed by the stale copy. Pairs
+        # whose refetch came back empty (a failed request) keep what they had.
+        refetched = set(zip(fresh["season"], fresh["division"]))
+        stale = [
+            (s, d) in refetched for s, d in zip(cached["season"], cached["division"])
+        ]
+        cached = cached[~pd.Series(stale, index=cached.index)]
     combined = pd.concat([cached, fresh], ignore_index=True) if not cached.empty else fresh
     if combined.empty:
         return combined
