@@ -242,7 +242,7 @@ echo "  ✓ mlb-2026-weekly-predict (Friday 5:00 AM ET)"
 _sched_create \
     "mlb-2026-roster-refresh" \
     "0 3 * 3-11 1" \
-    '{"mode":"daily"}' \
+    '{"mode":"rosters"}' \
     "V10: Monday roster refresh"
 echo "  ✓ mlb-2026-roster-refresh (Monday 3:00 AM ET)"
 

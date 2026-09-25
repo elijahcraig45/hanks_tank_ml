@@ -66,6 +66,46 @@ class CloudFunctionMainTests(unittest.TestCase):
         v7_mock.assert_called_once()
         scouting_mock.assert_called_once()
 
+    def _daily_patches(self):
+        names = ["_run_collection", "_run_validation", "_run_features",
+                 "_run_v8_elo_update", "_run_v8_features", "_run_v10_features",
+                 "_run_power_rankings", "_run_weekly_predictions", "_run_v7_features",
+                 "_run_scouting_reports", "_run_weekly_training_v8", "_refresh_sp_gcs",
+                 "_run_rosters"]
+        patchers = {n: patch.object(cloud_function_main, n, return_value={"step": n}) for n in names}
+        mocks = {n: p.start() for n, p in patchers.items()}
+        for p in patchers.values():
+            self.addCleanup(p.stop)
+        return mocks
+
+    def test_daily_skips_post_hoc_v7_scouting_and_training(self):
+        mocks = self._daily_patches()
+        # 2026-09-21 is a Monday, so target = Sunday: the old code trained here
+        body, status, _ = cloud_function_main.daily_pipeline(
+            FakeRequest({"mode": "daily", "date": "2026-09-20", "dry_run": True}))
+        self.assertEqual(200, status)
+        steps = json.loads(body)["steps"]
+        self.assertTrue(all("seconds" in s for s in steps))
+        for n in ("_run_v7_features", "_run_scouting_reports",
+                  "_run_weekly_training_v8", "_refresh_sp_gcs"):
+            mocks[n].assert_not_called()
+        mocks["_run_collection"].assert_called_once()
+        mocks["_run_power_rankings"].assert_called_once()
+
+    def test_rosters_mode_runs_only_rosters(self):
+        mocks = self._daily_patches()
+        body, status, _ = cloud_function_main.daily_pipeline(
+            FakeRequest({"mode": "rosters", "date": "2026-09-21", "dry_run": True}))
+        self.assertEqual(200, status)
+        self.assertEqual(["_run_rosters"], [s["step"] for s in json.loads(body)["steps"]])
+        mocks["_run_collection"].assert_not_called()
+
+    def test_scouting_reports_mode_still_available_on_demand(self):
+        mocks = self._daily_patches()
+        cloud_function_main.daily_pipeline(
+            FakeRequest({"mode": "scouting_reports", "date": "2026-09-24", "dry_run": True}))
+        mocks["_run_scouting_reports"].assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
