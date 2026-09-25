@@ -37,10 +37,14 @@ SRC_DIR=""
 
 DRY_RUN=false
 ONLY_SCHEDULER=false
+# --shadow turns on the shadow writers (margin ridge + pregame FPI snapshots). They write
+# only to their own tables; the served predictions are unchanged.
+SHADOW_ENV=""
 for arg in "$@"; do
     case $arg in
         --dry-run)        DRY_RUN=true ;;
         --only-scheduler) ONLY_SCHEDULER=true ;;
+        --shadow)         SHADOW_ENV=",NFL_RIDGE_SHADOW=1,FPI_SNAPSHOT=1" ;;
     esac
 done
 
@@ -85,7 +89,7 @@ if [ "$ONLY_SCHEDULER" = false ]; then
         --memory="$MEMORY" \
         --timeout="$TIMEOUT" \
         --service-account="$SERVICE_ACCOUNT" \
-        --set-env-vars="GCP_PROJECT=$PROJECT,NFL_DATASET=nfl_season,NFL_HIST_DATASET=nfl_historical" \
+        --set-env-vars="GCP_PROJECT=$PROJECT,NFL_DATASET=nfl_season,NFL_HIST_DATASET=nfl_historical$SHADOW_ENV" \
         --quiet
     echo "  ✓ deployed"
 fi

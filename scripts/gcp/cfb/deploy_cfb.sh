@@ -39,10 +39,14 @@ CFBD_SECRET="${CFBD_SECRET:-cfbd-api-key}"
 
 DRY_RUN=false
 ONLY_SCHEDULER=false
+# --shadow turns on the shadow writers (margin ridge + pregame FPI snapshots). They write
+# only to their own tables; the served predictions are unchanged.
+SHADOW_ENV=""
 for arg in "$@"; do
     case $arg in
         --dry-run)        DRY_RUN=true ;;
         --only-scheduler) ONLY_SCHEDULER=true ;;
+        --shadow)         SHADOW_ENV=",CFB_RIDGE_SHADOW=1,FPI_SNAPSHOT=1" ;;
     esac
 done
 
@@ -125,7 +129,7 @@ EOF
         --trigger-http --no-allow-unauthenticated \
         --memory="$MEMORY" --timeout="$TIMEOUT" \
         --service-account="$SERVICE_ACCOUNT" \
-        --set-env-vars="GCP_PROJECT=$PROJECT,CFB_DATASET=cfb_season,CFB_HIST_DATASET=cfb_historical" \
+        --set-env-vars="GCP_PROJECT=$PROJECT,CFB_DATASET=cfb_season,CFB_HIST_DATASET=cfb_historical$SHADOW_ENV" \
         --set-secrets="CFBD_API_KEY=$CFBD_SECRET:latest" \
         --quiet
 fi

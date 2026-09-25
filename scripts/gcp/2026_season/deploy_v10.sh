@@ -29,6 +29,7 @@ set -euo pipefail
 #   ./deploy_v10.sh --only-upload-model    # only upload model to GCS
 #   ./deploy_v10.sh --only-scheduler       # only update scheduler jobs
 #   ./deploy_v10.sh --dry-run              # preview, no writes
+#   ./deploy_v10.sh --skip-model-upload    # code/scheduler only; leave the GCS model alone
 
 PROJECT="hankstank"
 REGION="us-central1"
@@ -55,6 +56,7 @@ REPO_DIR="$(cd "$SRC_DIR/.." && pwd)"
 SKIP_FUNCTION=false
 ONLY_SCHEDULER=false
 ONLY_UPLOAD_MODEL=false
+SKIP_MODEL_UPLOAD=false
 DRY_RUN=false
 
 for arg in "$@"; do
@@ -63,6 +65,7 @@ for arg in "$@"; do
         --only-scheduler)    ONLY_SCHEDULER=true; SKIP_FUNCTION=true ;;
         --only-upload-model) ONLY_UPLOAD_MODEL=true ;;
         --dry-run)           DRY_RUN=true ;;
+        --skip-model-upload) SKIP_MODEL_UPLOAD=true ;;
     esac
 done
 
@@ -104,12 +107,12 @@ if [ "$ACTIVE" != "$PROJECT" ]; then
 fi
 echo "  ✓ Project: $PROJECT"
 
-# Confirm V10 model artifact exists
-if [ ! -f "$REPO_DIR/$V10_LOCAL_PATH" ]; then
+# Confirm V10 model artifact exists (not needed when the GCS model is left alone)
+if [ "$SKIP_MODEL_UPLOAD" = false ] && [ ! -f "$REPO_DIR/$V10_LOCAL_PATH" ]; then
     echo "ERROR: V10 model artifact not found: $REPO_DIR/$V10_LOCAL_PATH"
     exit 1
 fi
-echo "  ✓ V10 model artifact found ($(du -h "$REPO_DIR/$V10_LOCAL_PATH" | cut -f1))"
+[ "$SKIP_MODEL_UPLOAD" = false ] && echo "  ✓ V10 model artifact found ($(du -h "$REPO_DIR/$V10_LOCAL_PATH" | cut -f1))"
 
 if [ "$ONLY_UPLOAD_MODEL" = true ]; then
     echo ""
@@ -125,9 +128,13 @@ fi
 # 1. Upload V10 model artifact to GCS
 # ------------------------------------------------------------------
 echo ""
-echo "▸ Uploading V10 model to GCS..."
-_dry gsutil cp "$REPO_DIR/$V10_LOCAL_PATH" "gs://$BUCKET/$V10_GCS_PATH"
-echo "  ✓ Model uploaded: gs://$BUCKET/$V10_GCS_PATH"
+if [ "$SKIP_MODEL_UPLOAD" = true ]; then
+    echo "▸ Skipping model upload — gs://$BUCKET/$V10_GCS_PATH is left as it is"
+else
+    echo "▸ Uploading V10 model to GCS..."
+    _dry gsutil cp "$REPO_DIR/$V10_LOCAL_PATH" "gs://$BUCKET/$V10_GCS_PATH"
+    echo "  ✓ Model uploaded: gs://$BUCKET/$V10_GCS_PATH"
+fi
 
 # ------------------------------------------------------------------
 # 2. Redeploy Cloud Function with V10 source
@@ -136,7 +143,20 @@ if [ "$SKIP_FUNCTION" = false ] && [ "$ONLY_SCHEDULER" = false ]; then
     echo ""
     echo "▸ Deploying Cloud Function with V10 support..."
     echo "  Note: xgboost added to requirements.txt — deploy may take 2-3 min"
-    cd "$SRC_DIR"
+    # Deploy only what git tracks under src/. Deploying src/ directly also shipped
+    # untracked work in progress (src/edge/ and the like) and __pycache__.
+    STAGE="$(mktemp -d)/src"
+    mkdir -p "$STAGE"
+    git -C "$REPO_DIR" ls-files src/ | while IFS= read -r f; do
+        rel="${f#src/}"
+        mkdir -p "$STAGE/$(dirname "$rel")"
+        cp "$REPO_DIR/$f" "$STAGE/$rel"
+    done
+    echo "  Staged $(find "$STAGE" -type f | wc -l | tr -d ' ') tracked files into $STAGE"
+    if [ -n "$(cd "$REPO_DIR" && git status --porcelain -- src/ | grep -v '^??')" ]; then
+        echo "  WARNING: src/ has uncommitted changes to tracked files; the staged copy includes them"
+    fi
+    cd "$STAGE"
     _dry gcloud functions deploy "$FUNCTION_NAME" \
         --gen2 \
         --region="$REGION" \
