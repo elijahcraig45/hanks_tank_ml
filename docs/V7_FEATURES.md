@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** V7 is a fallback; its bullpen, moon and venue features do not reach the V10 model. Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # V7 Model — Feature Reference
 
 ## Overview
