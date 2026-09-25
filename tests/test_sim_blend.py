@@ -69,6 +69,18 @@ def test_strength_for_slate_ignores_same_day_results():
     assert np.allclose(a, b)
 
 
+def test_strength_for_slate_scores_games_not_yet_in_the_games_table():
+    """Tonight's games have no games-table row until they are played."""
+    ids = {"A": "101", "B": "102", "C": "103", "D": "104"}
+    g = pd.concat([_season(y, n_days=300) for y in (2022, 2023, 2024)] + [_season(2025, 10)])
+    g["home"] = g.home.map(ids); g["away"] = g.away.map(ids)
+    target = date(2025, 4, 11)
+    slate = pd.DataFrame({"game_pk": [999001], "game_date": [pd.Timestamp(target)],
+                          "home_team_id": [101], "away_team_id": [102]})
+    p = blend.strength_for_slate(g, slate, target)
+    assert len(p) == 1 and 0 < p[0] < 1
+
+
 # ------------------------------------------------------------------ frozen blend math
 def test_frozen_coefficients_load_with_provenance():
     c = blend.load_coefs()
