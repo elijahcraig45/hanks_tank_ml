@@ -311,7 +311,8 @@ def predict_week(season: int, week: int, model: str = "xgb",
                  cfg: "mr.RidgeConfig" = mr.NFL_RIDGE,
                  played: pd.DataFrame | None = None,
                  schedule: pd.DataFrame | None = None,
-                 epa: pd.DataFrame | None = None) -> pd.DataFrame:
+                 epa: pd.DataFrame | None = None,
+                 now: pd.Timestamp | None = None) -> pd.DataFrame:
     """Predict a scheduled (not yet played) week — the weekly cron path.
 
     Trains on every completed game, then emits features for the upcoming slate by
@@ -323,7 +324,7 @@ def predict_week(season: int, week: int, model: str = "xgb",
     """
     played = completed_games() if played is None else played
     schedule = load_schedules() if schedule is None else schedule
-    upcoming = _upcoming(schedule, season, week)
+    upcoming = _upcoming(schedule, season, week, now=now)
 
     if model == "ridge":
         combined = pd.concat([played, upcoming], ignore_index=True)
