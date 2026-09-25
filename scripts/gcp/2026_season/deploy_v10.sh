@@ -246,6 +246,18 @@ _sched_create \
     "V10: Monday roster refresh"
 echo "  ✓ mlb-2026-roster-refresh (Monday 3:00 AM ET)"
 
+# ⑥ Power rankings — Monday 6:30 AM ET
+#   The board also refreshes as step 7 of every daily run, but that run regularly
+#   uses most of its 540s budget, and a truncated run drops the tail steps. This
+#   job guarantees the weekly cadence the board's as_of_week column implies,
+#   independent of whether the daily chain finished.
+_sched_create \
+    "mlb-2026-power-rankings" \
+    "30 6 * 3-11 1" \
+    '{"mode":"power_rankings"}' \
+    "V10: weekly power-ranking board refresh (Monday 6:30 AM ET)"
+echo "  ✓ mlb-2026-power-rankings (Monday 6:30 AM ET)"
+
 echo ""
 echo "  Scheduler summary:"
 _dry gcloud scheduler jobs list --location="$REGION" \
