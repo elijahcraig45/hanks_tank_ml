@@ -702,8 +702,12 @@ class V8LiveFeatureBuilder:
                 ),
                 "home_luck_factor": home_stats["luck_factor"],
                 "away_luck_factor": away_stats["luck_factor"],
+                # home - away, as build_v8_features.py computes it for training.
+                # This was away - home, so every served luck_differential had the
+                # opposite sign to the one the V10 model was trained on (measured
+                # corr -1.000 live vs +1.000 in train_v8_2015_2024.parquet).
                 "luck_differential": round(
-                    away_stats["luck_factor"] - home_stats["luck_factor"], 4
+                    home_stats["luck_factor"] - away_stats["luck_factor"], 4
                 ),
                 # Run differential
                 "home_run_diff_10g": home_stats["run_diff_10g"],

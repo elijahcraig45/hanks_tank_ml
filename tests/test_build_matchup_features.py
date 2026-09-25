@@ -78,5 +78,34 @@ class ProjectedLineupTests(unittest.TestCase):
         self.assertEqual(900, next(row for row in projected_rows if row["position"] == "P")["player_id"])
 
 
+class StarterHandFallbackTests(unittest.TestCase):
+    """A starter with no pitch_hand used to raise UnboundLocalError (game_pitcher_splits
+    was read before assignment), 500-ing every pregame task for that game."""
+
+    def test_missing_starter_hand_does_not_raise(self):
+        builder = object.__new__(MatchupFeatureBuilder)
+        rows = []
+        for team_type, sp in (("home", 900), ("away", 901)):
+            rows.append({"game_pk": 1, "team_type": team_type, "player_id": sp,
+                         "batting_order": None, "position": "P", "bat_side": "R",
+                         "pitch_hand": None, "is_probable_pitcher": True,
+                         "lineup_confirmed": False})
+            for i in range(1, 10):
+                rows.append({"game_pk": 1, "team_type": team_type,
+                             "player_id": sp * 10 + i, "batting_order": i,
+                             "position": "OF", "bat_side": "R", "pitch_hand": None,
+                             "is_probable_pitcher": False, "lineup_confirmed": False})
+        lineups = pd.DataFrame(rows)
+        splits = pd.DataFrame([{"pitcher": 900, "p_throws": "L", "stand": "R",
+                                "events": "single", "game_date": "2026-09-01"}])
+        game = {"game_pk": 1, "game_date": "2026-09-25", "home_team_id": 1, "away_team_id": 2}
+        try:
+            builder.compute_for_game(game, lineups, pd.DataFrame(), splits, pd.DataFrame())
+        except UnboundLocalError as exc:  # the regression
+            self.fail(f"UnboundLocalError: {exc}")
+        except Exception:
+            pass  # downstream helpers may need more fixture data; not what this guards
+
+
 if __name__ == "__main__":
     unittest.main()

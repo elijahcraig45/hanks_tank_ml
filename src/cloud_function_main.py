@@ -11,7 +11,10 @@ Triggered by Cloud Scheduler via HTTP. Runs:
   6. Weekly: rosters refresh, batch predictions
 
 Supported modes (passed in request body as JSON):
-  daily               Full daily pipeline (steps 1-5 + conditionals)
+  daily               Full daily pipeline (steps 1-5, power rankings, Monday rosters).
+                      V7 features and scouting reports are NOT in it: for target =
+                      yesterday they only rebuilt already-final games (~300s).
+  rosters             Roster snapshot only (for mlb-2026-roster-refresh)
   backfill            Historical data collection for a date range
   features            Rebuild V3/V4 game_features only
   v8_features         Build V8 features for today's games only
@@ -35,6 +38,8 @@ Environment variables:
 import json
 import logging
 import os
+import sys
+import time
 import traceback
 from datetime import date, timedelta
 
@@ -43,6 +48,41 @@ import functions_framework
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+
+class _TimedSteps(list):
+    """The results["steps"] list, stamping each step with how long it took.
+
+    Every step is appended right after it returns, so the time since the previous
+    append is that step's duration. Each stamp is also printed as a structured log
+    line, because INFO from `logger` does not reach Cloud Logging in the deployed
+    function -- only WARNING and above show up, without our basicConfig format,
+    so the root logger is evidently configured before that call and it is a
+    no-op. That is why a 504 used to leave no trace of which step was still
+    running when the 540s limit hit.
+    """
+
+    def __init__(self, mode: str):
+        super().__init__()
+        self._mode = mode
+        self._t0 = self._last = time.monotonic()
+
+    def append(self, step):
+        now = time.monotonic()
+        if isinstance(step, dict):
+            step.setdefault("seconds", round(now - self._last, 1))
+        self._last = now
+        super().append(step)
+        name = step.get("step", "?") if isinstance(step, dict) else "?"
+        secs = step.get("seconds") if isinstance(step, dict) else None
+        elapsed = round(now - self._t0, 1)
+        print(json.dumps({
+            "severity": "NOTICE",
+            "message": f"[{self._mode}] step {name} took {secs}s ({elapsed}s elapsed)",
+            "mode": self._mode,
+            "step": name,
+            "step_seconds": secs,
+            "elapsed_seconds": elapsed,
+        }), file=sys.stdout, flush=True)
 
 
 def _run_power_rankings(dry_run: bool) -> dict:
@@ -92,7 +132,8 @@ def daily_pipeline(request):
     yesterday = date.today() - timedelta(days=1)
     target = date.fromisoformat(target_date_str) if target_date_str else yesterday
 
-    results = {"status": "ok", "date": target.isoformat(), "mode": mode, "steps": []}
+    results = {"status": "ok", "date": target.isoformat(), "mode": mode,
+               "steps": _TimedSteps(mode)}
 
     # Game PKs for per-game triggered modes (lineups, matchup_features, predict_today)
     game_pks_raw = req_json.get("game_pks", [])
@@ -151,8 +192,14 @@ def daily_pipeline(request):
         if mode == "matchup_features":
             results["steps"].append(_run_matchup_features(target, game_pks, dry_run))
 
-        # V7 matchup features (bullpen health, moon phase, pitcher venue splits)
-        if mode in ("matchup_v7_features", "pregame_v7", "daily"):
+        # V7 matchup features (bullpen health, moon phase, pitcher venue splits).
+        #
+        # Not part of `daily` any more. There `target` is yesterday, so this rebuilt
+        # V7 rows for games that were already final -- ~150s of BigQuery round
+        # trips (measured 2026-09-25, 12 games) producing post-hoc rows nothing
+        # forward-looking reads. The pregame_v7/v8/v10 tasks already build V7 per
+        # game before first pitch, which is the only copy predictions use.
+        if mode in ("matchup_v7_features", "pregame_v7"):
             results["steps"].append(_run_v7_features(target, game_pks, dry_run))
 
         if mode == "predict_today":
@@ -183,9 +230,15 @@ def daily_pipeline(request):
                 results["steps"].append(_run_pa_sim(target, dry_run, req_json))
             results["steps"].append(_run_scouting_reports(target, dry_run))
 
-        # Weekly model training (Sundays only) — keeps training cost-efficient
+        # Weekly model training — mlb-2026-weekly-train-v10, Sunday 2 AM ET.
         # model_version options: v10 (recommended), v8, v7, v6 (legacy)
-        if mode == "train_weekly" or (mode == "daily" and target.weekday() == 6):
+        #
+        # This used to also fire from `daily` whenever target (yesterday) was a
+        # Sunday, i.e. on Monday's 4 AM run and on the Monday 3 AM roster-refresh
+        # job (whose body is also {"mode":"daily"}). It launches a subprocess with
+        # a 480s timeout inside a 540s request, so both Monday runs 504'd, and the
+        # dedicated Sunday job already does this work.
+        if mode == "train_weekly":
             model_version = req_json.get("model_version", "v10")
             if model_version in ("v10", "v8"):
                 results["steps"].append(_run_weekly_training_v8(dry_run))
@@ -221,13 +274,24 @@ def daily_pipeline(request):
                 dry_run,
             ))
 
-        # Roster refresh on Mondays
-        if mode == "daily" and target.weekday() == 0:
+        # Roster refresh on Mondays, or on its own via {"mode":"rosters"} -- which is
+        # what mlb-2026-roster-refresh should send. Its body is {"mode":"daily"}, so
+        # at Monday 3 AM it re-runs the whole daily chain with target = Sunday and
+        # never reaches this branch: the job named roster-refresh refreshes no rosters.
+        if mode == "rosters":
+            roster_date = date.fromisoformat(target_date_str) if target_date_str else date.today()
+            results["steps"].append(_run_rosters(roster_date, dry_run))
+        elif mode == "daily" and target.weekday() == 0:
             results["steps"].append(_run_rosters(target, dry_run))
 
-        # Daily scouting reports: one JSON blob per game written to BQ.
-        # Runs in daily mode (after predictions) and on-demand.
-        if mode in ("daily", "scouting_reports"):
+        # Scouting reports: one JSON blob per game written to BQ.
+        #
+        # On demand only. `daily` used to run this for `target` = yesterday, i.e.
+        # it rebuilt reports for games already played (~150s, 5 BigQuery queries a
+        # game run serially). It was the last step of the chain and the one still
+        # running when mlb-2026-daily hit the 540s limit. Pregame tasks write each
+        # report before first pitch.
+        if mode == "scouting_reports":
             report_date = date.fromisoformat(req_json.get("date", target.isoformat()))
             results["steps"].append(_run_scouting_reports(report_date, dry_run))
 
