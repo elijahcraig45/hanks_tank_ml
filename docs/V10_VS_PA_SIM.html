@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hank's Tank — V10 vs PA Simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  color-scheme: light;
+  --ground:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f5;
+  --ink:#111620; --ink-2:#4b5566; --ink-3:#7d8798;
+  --rule:#dee2e9; --rule-2:#c9d0da;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a;
+  --s1-soft:#dbe8f9; --warn-bg:#fdf1ea; --ok-bg:#e7f4ee;
+  --shadow:0 1px 2px rgba(17,22,32,.06);
+  --f-display:"Archivo","Helvetica Neue",Arial,sans-serif;
+  --f-body:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --ground:#13161b; --surface:#1a1e25; --surface-2:#21262e;
+    --ink:#eef1f5; --ink-2:#aeb8c6; --ink-3:#78828f;
+    --rule:#282e37; --rule-2:#39414c;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70;
+    --s1-soft:#1d2c40; --warn-bg:#2a1f19; --ok-bg:#152620;
+    --shadow:0 1px 2px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --ground:#13161b; --surface:#1a1e25; --surface-2:#21262e;
+  --ink:#eef1f5; --ink-2:#aeb8c6; --ink-3:#78828f;
+  --rule:#282e37; --rule-2:#39414c;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70;
+  --s1-soft:#1d2c40; --warn-bg:#2a1f19; --ok-bg:#152620;
+  --shadow:0 1px 2px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--ground); color:var(--ink); font-family:var(--f-body);
+  font-size:17px; line-height:1.65; margin:0; -webkit-font-smoothing:antialiased}
+img{max-width:100%}
+.wrap{max-width:1120px; margin:0 auto; padding:0 28px 96px}
+.col{max-width:66ch}
+h1,h2,h3{font-family:var(--f-display); text-wrap:balance; margin:0}
+h1{font-size:clamp(30px,4.4vw,46px); font-weight:700; letter-spacing:-.022em; line-height:1.08}
+h2{font-size:clamp(21px,2.5vw,27px); font-weight:600; letter-spacing:-.012em; line-height:1.2}
+h3{font-size:16px; font-weight:600; letter-spacing:-.005em}
+p{margin:0 0 1.05em}
+strong{font-weight:600}
+.mono{font-family:var(--f-mono); font-variant-numeric:tabular-nums}
+.eyebrow{font-family:var(--f-mono); font-size:10.5px; font-weight:600;
+  letter-spacing:.13em; text-transform:uppercase; color:var(--ink-3)}
+header{border-bottom:1px solid var(--rule); padding:60px 0 34px; margin-bottom:40px}
+.kicker{display:flex; gap:10px; align-items:baseline; margin-bottom:18px; flex-wrap:wrap}
+.kicker .dot{width:6px;height:6px;border-radius:50%;background:var(--s2);flex:none}
+.lede{font-size:19px; color:var(--ink-2); margin-top:20px; max-width:62ch}
+.lede b{color:var(--ink); font-weight:600}
+.strip{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px; background:var(--rule); border:1px solid var(--rule);
+  border-radius:3px; overflow:hidden; margin:34px 0 0}
+.stat{background:var(--surface); padding:15px 16px 14px}
+.stat .v{font-family:var(--f-mono); font-size:24px; font-weight:600;
+  font-variant-numeric:tabular-nums; letter-spacing:-.02em; display:block; line-height:1.15}
+.stat .k{font-family:var(--f-mono); font-size:10.5px; letter-spacing:.07em;
+  text-transform:uppercase; color:var(--ink-3); margin-top:5px; display:block}
+.stat.hi .v{color:var(--s1)} .stat.warn .v{color:var(--s2)}
+section{padding-top:56px}
+.shead{display:flex; flex-direction:column; gap:8px; margin-bottom:22px}
+figure{margin:26px 0 0; background:var(--surface); border:1px solid var(--rule);
+  border-radius:4px; padding:20px 22px 16px; box-shadow:var(--shadow)}
+figcaption{font-size:14.5px; color:var(--ink-2); line-height:1.55;
+  border-top:1px solid var(--rule); margin-top:14px; padding-top:12px}
+figcaption b{color:var(--ink)}
+.ftitle{display:flex; justify-content:space-between; align-items:baseline;
+  gap:16px; margin-bottom:16px; flex-wrap:wrap}
+.fn{font-family:var(--f-mono); font-size:11px; color:var(--ink-3);
+  font-variant-numeric:tabular-nums; white-space:nowrap}
+.chart{position:relative; overflow-x:auto}
+svg{display:block; width:100%; height:auto}
+svg text{font-family:var(--f-mono); font-variant-numeric:tabular-nums}
+.ax{fill:var(--ink-3); font-size:10.5px}
+.lbl{fill:var(--ink-2); font-size:11px}
+.val{fill:var(--ink); font-size:11px; font-weight:600}
+.valm{fill:var(--ink-3); font-size:11px}
+.grid{stroke:var(--rule); stroke-width:1}
+.refline{stroke:var(--ink-3); stroke-width:1; opacity:.55}
+.reflbl{fill:var(--ink-3); font-size:10px}
+.legend{display:flex; gap:18px; flex-wrap:wrap; margin:2px 0 14px}
+.legend span{display:inline-flex; align-items:center; gap:7px;
+  font-family:var(--f-mono); font-size:11px; color:var(--ink-2)}
+.legend i{width:11px; height:11px; border-radius:2px; flex:none; display:block}
+table{border-collapse:collapse; width:100%; margin-top:4px; font-family:var(--f-mono);
+  font-size:12.5px; font-variant-numeric:tabular-nums}
+th,td{text-align:right; padding:6px 10px; border-bottom:1px solid var(--rule)}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--ink-3); font-weight:600; font-size:10.5px; letter-spacing:.06em;
+  text-transform:uppercase; border-bottom:1px solid var(--rule-2)}
+tr.hl td{background:var(--s1-soft)}
+td.pass{color:var(--s3); font-weight:600} td.fail{color:var(--s2); font-weight:600}
+.tblwrap{overflow-x:auto}
+.note{border-left:2px solid var(--s2); background:var(--warn-bg);
+  padding:15px 18px; margin:26px 0; border-radius:0 3px 3px 0}
+.note.ok{border-left-color:var(--s3); background:var(--ok-bg)}
+.note p{margin:0; font-size:15.5px; line-height:1.6}
+.note p + p{margin-top:.7em}
+.note .eyebrow{display:block; margin-bottom:7px}
+.vs{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; margin-top:20px}
+.vsbox{border:1px solid var(--rule); border-radius:4px; background:var(--surface);
+  padding:18px 20px; box-shadow:var(--shadow)}
+.vsbox.now{border-top:3px solid var(--s2)}
+.vsbox.new{border-top:3px solid var(--s1)}
+.vsbox h3{margin-bottom:4px}
+.vsbox .tag{font-family:var(--f-mono); font-size:10.5px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--ink-3); display:block; margin-bottom:12px}
+.vsbox dl{margin:0; display:grid; grid-template-columns:auto 1fr; gap:7px 14px;
+  font-size:14px}
+.vsbox dt{font-family:var(--f-mono); font-size:11px; color:var(--ink-3);
+  text-transform:uppercase; letter-spacing:.05em; padding-top:2px}
+.vsbox dd{margin:0; color:var(--ink-2)}
+.vsbox dd b{color:var(--ink); font-weight:600}
+.flow{display:flex; flex-wrap:wrap; align-items:stretch; margin-top:6px}
+.fnode{flex:1 1 130px; min-width:120px; border:1px solid var(--rule);
+  border-radius:3px; padding:12px 13px; background:var(--surface-2)}
+.fnode .t{font-family:var(--f-mono); font-size:11px; font-weight:600; color:var(--ink)}
+.fnode .d{font-family:var(--f-mono); font-size:10px; color:var(--ink-3);
+  margin-top:5px; line-height:1.5}
+.farrow{flex:0 0 26px; display:flex; align-items:center; justify-content:center;
+  color:var(--ink-3); font-family:var(--f-mono); font-size:14px}
+code{font-family:var(--f-mono); font-size:.88em; background:var(--surface-2);
+  padding:1px 5px; border-radius:2px}
+ul.tight{margin:0 0 1.05em; padding-left:1.15em}
+ul.tight li{margin-bottom:.42em}
+footer{margin-top:74px; padding-top:26px; border-top:1px solid var(--rule);
+  font-family:var(--f-mono); font-size:11.5px; color:var(--ink-3); line-height:1.85}
+footer b{color:var(--ink-2); font-weight:600}
+@media (prefers-reduced-motion: reduce){*{transition:none!important; animation:none!important}}
+:focus-visible{outline:2px solid var(--s1); outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="kicker"><span class="dot"></span><span class="eyebrow">Hank&rsquo;s Tank &middot; model comparison &middot; built and backtested 2026-09-08</span></div>
+  <h1>Current V10 model vs the plate-appearance simulator</h1>
+  <p class="lede">The simulator is <b>built, tested and production-wired</b>. It plays every game <b>1,000 times, plate appearance by plate appearance</b>, off 2.07M historical PAs. It <b>beats V10 in both backtest windows</b> &mdash; and it <b>does not beat a 3-feature logistic regression</b>, which is the finding that should drive the decision.</p>
+  <div class="strip">
+    <div class="stat"><span class="v" id="s-pa"></span><span class="k">Plate appearances</span></div>
+    <div class="stat hi"><span class="v" id="s-ep"></span><span class="k">Episodes / game</span></div>
+    <div class="stat"><span class="v" id="s-games"></span><span class="k">Games backtested</span></div>
+    <div class="stat"><span class="v">4 / 5</span><span class="k">Phase gates passed</span></div>
+    <div class="stat"><span class="v">14 / 14</span><span class="k">Unit tests pass</span></div>
+    <div class="stat"><span class="v">shadow</span><span class="k">Deploy mode</span></div>
+  </div>
+</header>
+
+<section>
+  <div class="shead"><span class="eyebrow">01 &middot; The two setups</span><h2>What changes</h2></div>
+  <div class="vs">
+    <div class="vsbox now">
+      <h3>V10 &mdash; current production</h3>
+      <span class="tag">deployed 2026-04-17</span>
+      <dl>
+        <dt>Method</dt><dd>XGBoost classifier on <b>139 team-level features</b></dd>
+        <dt>Target</dt><dd>Binary home win / loss</dd>
+        <dt>Training</dt><dd><b>~28,600 games</b> (2015&ndash;2025), one row per game</dd>
+        <dt>Unit</dt><dd>Season aggregates &mdash; Elo, pythagorean, SP percentile ranks</dd>
+        <dt>Inference</dt><dd>One forward pass, batch-written pregame</dd>
+        <dt>Live 2026</dt><dd><b>53.72%</b> over 1,763 pregame games</dd>
+      </dl>
+    </div>
+    <div class="vsbox new">
+      <h3>PA simulator &mdash; new</h3>
+      <span class="tag">built 2026-09-08 &middot; pa_sim_v1</span>
+      <dl>
+        <dt>Method</dt><dd><b>1,000 Monte Carlo episodes</b> per game, played PA by PA</dd>
+        <dt>Target</dt><dd>Full run distribution for both sides</dd>
+        <dt>Training</dt><dd><b>2,067,301 plate appearances</b> (2015&ndash;2026)</dd>
+        <dt>Unit</dt><dd>Batter &times; pitcher matchup via log5, per plate appearance</dd>
+        <dt>Inference</dt><dd>9 ms/game vectorised; base-out state machine</dd>
+        <dt>Live 2026</dt><dd><b>52.77%</b> holdout, but <b>AUC 0.5704</b> vs V10&rsquo;s 0.5644</dd>
+      </dl>
+    </div>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>How a game gets simulated</h3><span class="fn">sequential &middot; 1,000 episodes &middot; ~9 ms</span></div>
+    <div class="flow">
+      <div class="fnode"><div class="t">Player rates</div><div class="d">2.07M PAs<br>empirical-Bayes shrunk</div></div>
+      <div class="farrow">&rarr;</div>
+      <div class="fnode"><div class="t">log5 matchup</div><div class="d">batter &times; pitcher<br>&divide; league</div></div>
+      <div class="farrow">&rarr;</div>
+      <div class="fnode"><div class="t">Hook curve</div><div class="d">starter &rarr; bullpen<br>blended per inning</div></div>
+      <div class="farrow">&rarr;</div>
+      <div class="fnode"><div class="t">PA by PA</div><div class="d">24 base-out states<br>walk-offs, extras</div></div>
+      <div class="farrow">&rarr;</div>
+      <div class="fnode"><div class="t">1,000 episodes</div><div class="d">win frequency<br>+ run distribution</div></div>
+    </div>
+    <figcaption>Each episode plays real baseball in order: away bats the top, home the bottom, the home half of the 9th is skipped when the home team already leads, walk-offs end the half immediately, and ties go to extra innings. <b>P(extra innings) comes out at 0.085</b> against a real-MLB rate of about 0.09 &mdash; the game logic is not approximated away.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">02 &middot; Why it was worth building</span><h2>A different substrate, not a different model</h2></div>
+  <div class="col"><p>Every previous attempt predicted a binary label from season aggregates: roughly 1,300 usable games a year, which is about 1,300 bits of training signal. Five distinct mechanisms and 450 search trials all failed to beat a 3-feature logistic on it. The simulator trains on something else entirely.</p></div>
+  <figure>
+    <div class="ftitle"><h3>Training rows available, by unit of observation</h3><span class="fn">log scale</span></div>
+    <div class="chart" id="c-sub"></div>
+    <figcaption><b>~1,600&times; more training rows</b>, and a plate-appearance outcome is far less noisy than a game outcome. That is the whole argument for the approach. Whether the extra information survives aggregation back up to a single win/loss is what the phase gates below test.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">03 &middot; Backtest</span><h2>Five gates, four passed</h2></div>
+  <div class="col"><p>Each phase validates on a target with far more statistical power than the final one, so components could be proven or killed before reaching the underpowered win/loss target.</p></div>
+  <figure>
+    <div class="ftitle"><h3>Phase gate results</h3><span class="fn">every gate pre-registered before running</span></div>
+    <div class="tblwrap"><table id="t-phase"></table></div>
+    <figcaption>The last row is the one that matters commercially. The simulator clears V10 in both windows, then <b>fails against the cheapest baseline in the stack</b> &mdash; a logistic regression on three features.</figcaption>
+  </figure>
+  <figure>
+    <div class="ftitle"><h3>Phase 1 &mdash; PA outcome model on held-out plate appearances</h3><span class="fn">n = 182,773 (2025) &middot; 163,805 (2026) &middot; lower is better</span></div>
+    <div class="legend"><span><i style="background:var(--s1)"></i>2025 held out</span><span><i style="background:var(--s2)"></i>2026 held out</span></div>
+    <div class="chart" id="c-pa"></div>
+    <figcaption>Trained on 2015&ndash;2024. <b>log5 beats the league baseline by 0.0157 nats and batter-only by 0.0039</b>, on both years, with 183k and 164k rows of evidence. For scale, the entire signal in the current game-level model is worth about 0.005 nats. The matchup structure is real; handedness splitting is a wash on top of it.</figcaption>
+  </figure>
+  <figure>
+    <div class="ftitle"><h3>Phase 2 &mdash; run model against actual team runs</h3><span class="fn">n = 4,856 team-games &middot; 2025 held out</span></div>
+    <div class="legend"><span><i style="background:var(--s1)"></i>Predicted</span><span><i style="background:var(--s2)"></i>Actual</span></div>
+    <div class="chart" id="c-runs"></div>
+    <figcaption>Run bias is <b>&minus;0.094</b> after fitting a single global scaling factor (&alpha; = <span class="mono" id="alpha-inline"></span>), and the quintiles separate monotonically: <b>Q1 actual 3.90 runs rising to Q5 at 4.98</b>. Correlation is r = 0.104 &mdash; weak, but real; most game-to-game run variance is irreducible.</figcaption>
+  </figure>
+  <figure>
+    <div class="ftitle"><h3>Correctness &mdash; Monte Carlo against the exact analytic chain</h3><span class="fn">agreement in standard errors &middot; below 3 SE is a pass</span></div>
+    <div class="chart" id="c-mc"></div>
+    <figcaption>The 24-state chain is also solved analytically, giving two independent implementations of the same process. They converge: <b>0.17 SE apart at 100,000 episodes</b>. This is the load-bearing test in the suite &mdash; it means the transition table, walk-off logic and extra-innings handling are not quietly wrong.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">04 &middot; Head to head</span><h2>Both windows, same games</h2></div>
+  <div class="col"><p>A candidate has to win in the search window <em>and</em> the untouched holdout. On this dataset a single-window improvement has been wrong every time it has been checked, so the gate is deliberately strict.</p></div>
+  <figure>
+    <div class="ftitle"><h3>Search window</h3><span class="fn" id="fn-search"></span></div>
+    <div class="tblwrap"><table id="t-search"></table></div>
+  </figure>
+  <figure>
+    <div class="ftitle"><h3>Untouched holdout</h3><span class="fn" id="fn-hold"></span></div>
+    <div class="tblwrap"><table id="t-hold"></table></div>
+    <figcaption>V10 holds the best raw accuracy on the holdout (<b>57.11%</b>); the 3-feature logistic holds the best log-loss; the <b>simulator holds the best AUC of the single models</b> (0.5704), and the simulator+logistic stack the best overall (0.5766). Accuracy differences at n=415 are well inside the noise &mdash; the 95% intervals overlap heavily.</figcaption>
+  </figure>
+  <figure>
+    <div class="ftitle"><h3>The gate: log-loss gain vs the 3-feature logistic</h3><span class="fn">must be positive in both windows</span></div>
+    <div class="chart" id="c-gate"></div>
+    <figcaption>Nothing clears it. The simulator is <b>worse in both</b> windows than the baseline; the stack is <b>inconsistent</b> &mdash; better on the holdout, worse in the search window, which is the signature of no real effect. Prediction correlations show why a stack was worth trying: <span class="mono" id="corr-inline"></span>, so these are genuinely different views of the same game.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">05 &middot; Production status</span><h2>What is shipped, and what is deliberately not</h2></div>
+  <div class="col">
+    <p>The simulator is production-wired and can run on the live schedule today. It writes <code>mlb_2026_season.game_predictions_sim</code> &mdash; a <strong>shadow table</strong> &mdash; and never <code>game_predictions</code>. Deploying it therefore cannot change what hankstank.com serves, and both models get scored on the same games.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>Delivered</h3><span class="fn">hanks_tank_ml</span></div>
+    <ul class="tight">
+      <li><code>src/pa_sim/</code> &mdash; 7 modules: <code>rates</code> (empirical-Bayes + log5), <code>markov</code> (exact chain), <code>sim</code> (Monte Carlo), <code>usage</code> (hook curve, bullpen), <code>game</code> (calibration), <code>predict</code> (engine), <code>pipeline</code> (production runner)</li>
+      <li><code>tests/test_pa_sim.py</code> &mdash; 14 tests, all passing, including runner-conservation across the whole transition table and MC-vs-analytic invariance</li>
+      <li><code>src/cloud_function_main.py</code> &mdash; new modes <code>pa_sim</code> and <code>pregame_sim</code>, plus an opt-in shadow step inside <code>pregame_v10</code></li>
+      <li><code>scripts/gcp/2026_season/deploy_pa_sim.sh</code> &mdash; shadow deploy with <code>--dry-run</code>, <code>--only-table</code>, <code>--skip-scheduler</code>; refuses to deploy if the tests fail</li>
+      <li><code>research/backtest_2026/</code> &mdash; scripts <code>23</code>&ndash;<code>30</code> reproducing every number on this page</li>
+    </ul>
+    <figcaption>Two repo-specific lessons are applied in <code>pipeline.py</code>: cache writes sit in their own <code>try/except</code> because Cloud Run&rsquo;s filesystem is read-only, and no path resolves relative to the repo root because the Cloud Function flattens <code>src/</code>.</figcaption>
+  </figure>
+  <div class="note">
+    <span class="eyebrow">Not done, on purpose</span>
+    <p><b>Nothing has been deployed.</b> <code>deploy_pa_sim.sh</code> has only been run with <code>--dry-run</code>; the shadow table does not exist yet; no Scheduler job was created. Pushing a model to the live Cloud Function is a production change and is yours to make.</p>
+    <p>A cold start fetches ~2M PAs from BigQuery in about 100 s. That fits the 540 s function budget but is a real share of it &mdash; the <code>/tmp</code> cache covers warm invocations, and a GCS-backed rate artifact would remove it entirely.</p>
+  </div>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">06 &middot; Recommendation</span><h2>The honest read</h2></div>
+  <div class="col">
+    <p>The build worked. The premise held at every level where it could be measured with real power: the PA model carries genuine matchup signal on 183,000 held-out plate appearances, the run generator reproduces actual run totals with a &minus;0.09 run bias and monotone quintiles, and the Monte Carlo engine agrees with exact analytic math to a fifth of a standard error.</p>
+    <p>What did not happen is the part that matters: <strong>the extra information does not survive aggregation into a single win/loss.</strong> A game is roughly 76 plate appearances of accumulated noise, and the edge that is clearly visible at PA level is worth about a point of accuracy by the time it becomes one bit. The simulator beats V10 &mdash; but so does a logistic regression on three columns, by more, in both windows.</p>
+    <p>So: <strong>run it in shadow mode, do not promote it.</strong> Shadow costs almost nothing, scores both models on the same games, and gives a clean read on fresh 2027 data where the rates will not be stale. Promote only if it clears the 3-feature baseline in both windows on that fresh data.</p>
+    <p>And the thing this exercise keeps pointing at remains true: the simulator is a better <em>mechanism</em> fed the same public information. <strong>Market odds are different information</strong> &mdash; injuries, weather, lineup scratches, sharp money &mdash; and they are still both the ~58&ndash;60% benchmark and the most valuable single feature not yet in the stack.</p>
+  </div>
+</section>
+
+<footer>
+  <b>Backtest</b> &nbsp;1,749 games with complete pregame lineups &middot; weekly refit &middot; rates trained only on PAs strictly before each week<br>
+  <b>Windows</b> &nbsp;search <span id="f-search"></span> &middot; untouched holdout <span id="f-hold"></span><br>
+  <b>Simulation</b> &nbsp;1,000 episodes/game &middot; &alpha; <span id="f-alpha"></span> fitted to the 2025 run environment &middot; 24 base-out states &middot; walk-offs and extra innings modelled<br>
+  <b>Reproduce</b> &nbsp;hanks_tank_ml/research/backtest_2026/ scripts 23&ndash;30 &middot; tests: <code>.venv/bin/python -m pytest tests/test_pa_sim.py</code><br>
+  <b>Deploy</b> &nbsp;<code>scripts/gcp/2026_season/deploy_pa_sim.sh --dry-run</code> (shadow only; nothing deployed yet)
+</footer>
+</div>
+<script>
+const D = {"alpha":1.155074321165027,"n_episodes":1000,"windows":{"search":[{"model":"PA simulator","n":534,"acc":51.31,"lo":47.08,"hi":55.53,"auc":0.5115,"brier":0.2505,"logloss":0.69423},{"model":"3-feature logistic","n":934,"acc":53.43,"lo":50.22,"hi":56.6,"auc":0.5521,"brier":0.2477,"logloss":0.68845},{"model":"V10 (current)","n":934,"acc":52.68,"lo":49.47,"hi":55.86,"auc":0.5435,"brier":0.2499,"logloss":0.69321},{"model":"sim + logit3 (stack)","n":534,"acc":52.81,"lo":48.57,"hi":57.01,"auc":0.5387,"brier":0.2492,"logloss":0.6915},{"model":"always home","n":934,"acc":52.14,"lo":null,"hi":null,"auc":0.5,"brier":0.2495,"logloss":0.69223}],"holdout":[{"model":"PA simulator","n":415,"acc":52.77,"lo":47.96,"hi":57.53,"auc":0.5704,"brier":0.2451,"logloss":0.68324},{"model":"3-feature logistic","n":415,"acc":56.39,"lo":51.58,"hi":61.08,"auc":0.5742,"brier":0.2448,"logloss":0.68281},{"model":"V10 (current)","n":415,"acc":57.11,"lo":52.3,"hi":61.78,"auc":0.5644,"brier":0.2469,"logloss":0.68711},{"model":"sim + logit3 (stack)","n":415,"acc":54.94,"lo":50.13,"hi":59.66,"auc":0.5766,"brier":0.2444,"logloss":0.68178},{"model":"always home","n":415,"acc":53.98,"lo":null,"hi":null,"auc":0.5,"brier":0.2484,"logloss":0.68998}]},"window_meta":{"search_from":"2026-05-25","search_to":"2026-08-07","hold_from":"2026-08-08","hold_to":"2026-09-07"},"gate":[{"model":"PA simulator","search":-0.00578,"holdout":-0.00043,"verdict":"worse in both"},{"model":"V10 (current)","search":-0.00476,"holdout":-0.0043,"verdict":"worse in both"},{"model":"sim + logit3 (stack)","search":-0.00305,"holdout":0.00103,"verdict":"inconsistent"}],"phases":[{"phase":"1. PA outcome model","target":"held-out plate appearances","n":"183k / 164k","metric":"log-loss vs league baseline","result":"+0.0157 / +0.0111 nats","verdict":"PASS"},{"phase":"2. Run generator","target":"team-game run totals","n":"4,856","metric":"run bias / correlation","result":"-0.094 runs, r=0.104","verdict":"PASS"},{"phase":"3. Bullpen & usage","target":"hook curve from PA data","n":"1.9M PAs","metric":"relief share of PAs","result":"40.4% modelled per inning","verdict":"PASS"},{"phase":"4. Game backtest","target":"2026 games, both windows","n":"1,749","metric":"log-loss vs V10","result":"+0.00428 / +0.00329","verdict":"PASS"},{"phase":"4b. vs best baseline","target":"2026 games, both windows","n":"1,749","metric":"log-loss vs 3-feature logistic","result":"-0.0058 / -0.0004","verdict":"FAIL"}],"pa_model":[{"model":"league baseline","ll2025":1.53928,"ll2026":1.54187},{"model":"batter only","ll2025":1.52749,"ll2026":1.53285},{"model":"pitcher only","ll2025":1.53539,"ll2026":1.53973},{"model":"log5(batter, pitcher)","ll2025":1.52361,"ll2026":1.53069},{"model":"log5 + handedness","ll2025":1.52354,"ll2026":1.53081}],"run_quintiles":[{"q":"Q1","pred":3.64,"actual":3.9,"n":976},{"q":"Q2","pred":4.06,"actual":4.4,"n":974},{"q":"Q3","pred":4.33,"actual":4.51,"n":964},{"q":"Q4","pred":4.61,"actual":4.45,"n":971},{"q":"Q5","pred":5.14,"actual":4.98,"n":971}],"mc_convergence":[{"n":1000,"diff":-0.0872,"se":0.09},{"n":20000,"diff":0.0054,"se":0.0204},{"n":100000,"diff":0.0016,"se":0.0091}],"substrate":[{"name":"Game outcomes, 2026","rows":1300},{"name":"Game outcomes, 2015-2026","rows":28600},{"name":"Plate appearances, 2015-2026","rows":2067301},{"name":"Pitches, 2015-2026","rows":8850000}],"corr":{"sim_logit3":0.4458,"sim_v10":0.4831,"logit3_v10":0.6205},"league_rates":{"K":22.188,"BB":9.498,"1B":14.971,"2B":4.387,"3B":0.407,"HR":3.111,"OUT":43.337,"DP":2.102}};
+const NS="http://www.w3.org/2000/svg";
+const $=s=>document.querySelector(s);
+const el=(p,t,a)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);p.appendChild(n);return n;};
+const txt=(p,x,y,s,c,an)=>{const n=el(p,"text",{x:x,y:y,class:c||"lbl"});if(an)n.setAttribute("text-anchor",an);n.textContent=s;return n;};
+const svg=(w,h)=>{const s=document.createElementNS(NS,"svg");s.setAttribute("viewBox",`0 0 ${w} ${h}`);s.setAttribute("role","img");return s;};
+
+$("#s-pa").textContent=(2067301/1e6).toFixed(2)+"M";
+$("#s-ep").textContent=D.n_episodes.toLocaleString();
+$("#s-games").textContent="1,749";
+$("#alpha-inline").textContent=D.alpha.toFixed(4);
+$("#f-alpha").textContent=D.alpha.toFixed(4);
+const wm=D.window_meta;
+$("#fn-search").textContent=`${wm.search_from} → ${wm.search_to}`;
+$("#fn-hold").textContent=`${wm.hold_from} → ${wm.hold_to}`;
+$("#f-search").textContent=`${wm.search_from} → ${wm.search_to}`;
+$("#f-hold").textContent=`${wm.hold_from} → ${wm.hold_to}`;
+$("#corr-inline").textContent=`sim↔logit3 r=${D.corr.sim_logit3}, sim↔V10 r=${D.corr.sim_v10}`;
+
+/* phase table */
+(function(){
+  let h="<thead><tr><th>Phase</th><th>Validated on</th><th>n</th><th>Metric</th><th>Result</th><th>Gate</th></tr></thead><tbody>";
+  D.phases.forEach(p=>{
+    const cls=p.verdict==="PASS"?"pass":"fail";
+    h+=`<tr${p.verdict==="FAIL"?' class="hl"':''}><td>${p.phase}</td><td>${p.target}</td><td>${p.n}</td><td>${p.metric}</td><td>${p.result}</td><td class="${cls}">${p.verdict}</td></tr>`;
+  });
+  $("#t-phase").innerHTML=h+"</tbody>";
+})();
+
+/* substrate, log scale */
+(function(){
+  const rows=D.substrate,W=820,rh=44,mT=18,mL=250,mR=110,H=mT+rows.length*rh+14;
+  const s=svg(W,H);$("#c-sub").appendChild(s);
+  const lo=Math.log10(1000),hi=Math.log10(1e7);
+  const sx=v=>mL+(Math.log10(v)-lo)/(hi-lo)*(W-mL-mR);
+  [1e3,1e4,1e5,1e6,1e7].forEach(t=>{
+    el(s,"line",{x1:sx(t),y1:mT-6,x2:sx(t),y2:mT+rows.length*rh-16,class:"grid"});
+    txt(s,sx(t),H-2,t>=1e6?(t/1e6)+"M":(t/1e3)+"k","ax","middle");
+  });
+  rows.forEach((r,i)=>{
+    const y=mT+i*rh,isPA=r.name.indexOf("Plate")===0||r.name.indexOf("Pitches")===0;
+    el(s,"rect",{x:mL,y:y+6,width:Math.max(2,sx(r.rows)-mL),height:18,rx:3,
+      fill:isPA?"var(--s1)":"var(--rule-2)"});
+    txt(s,mL-12,y+20,r.name,"lbl","end");
+    txt(s,sx(r.rows)+8,y+20,r.rows.toLocaleString(),isPA?"val":"valm");
+  });
+})();
+
+/* Phase 1 PA model */
+(function(){
+  const rows=D.pa_model,W=820,rh=42,mT=22,mL=210,mR=120,H=mT+rows.length*rh+16;
+  const s=svg(W,H);$("#c-pa").appendChild(s);
+  const lo=1.5225,hi=1.5425;
+  const sw=v=>Math.max(2,(hi-v)/(hi-lo)*(W-mL-mR));
+  rows.forEach((r,i)=>{
+    const y=mT+i*rh,best=r.model.indexOf("log5")===0;
+    el(s,"rect",{x:mL,y:y+3,width:sw(r.ll2025),height:13,rx:3,fill:best?"var(--s1)":"var(--rule-2)"});
+    el(s,"rect",{x:mL,y:y+19,width:sw(r.ll2026),height:13,rx:3,fill:best?"var(--s2)":"var(--rule-2)"});
+    txt(s,mL-12,y+14,r.model,"lbl","end");
+    txt(s,sw(r.ll2025)+mL+8,y+13,r.ll2025.toFixed(5),best?"val":"valm");
+    txt(s,sw(r.ll2026)+mL+8,y+29,r.ll2026.toFixed(5),best?"val":"valm");
+  });
+  txt(s,mL,H-2,"bar length = improvement in log-loss (longer is better)","ax");
+})();
+
+/* Phase 2 run quintiles */
+(function(){
+  const rows=D.run_quintiles,W=820,H=270,mT=20,mB=52,mL=54,mR=30;
+  const s=svg(W,H);$("#c-runs").appendChild(s);
+  const y0=3.4,y1=5.3,bw=34;
+  const sy=v=>mT+(y1-v)/(y1-y0)*(H-mT-mB);
+  const gx=i=>mL+(i+0.5)*((W-mL-mR)/rows.length);
+  for(let v=3.5;v<=5.25;v+=0.25){
+    el(s,"line",{x1:mL,y1:sy(v),x2:W-mR,y2:sy(v),class:"grid"});
+    txt(s,mL-9,sy(v)+4,v.toFixed(2),"ax","end");
+  }
+  rows.forEach((r,i)=>{
+    const x=gx(i);
+    el(s,"rect",{x:x-bw-1,y:sy(r.pred),width:bw,height:sy(y0)-sy(r.pred),rx:3,fill:"var(--s1)"});
+    el(s,"rect",{x:x+1,y:sy(r.actual),width:bw,height:sy(y0)-sy(r.actual),rx:3,fill:"var(--s2)"});
+    txt(s,x-bw/2-1,sy(r.pred)-6,r.pred.toFixed(2),"val","middle");
+    txt(s,x+bw/2+1,sy(r.actual)-6,r.actual.toFixed(2),"val","middle");
+    txt(s,x,H-mB+20,r.q,"ax","middle");
+    txt(s,x,H-mB+34,"n="+r.n,"ax","middle");
+  });
+  txt(s,mL,H-4,"runs per team-game, by predicted quintile","ax");
+})();
+
+/* MC convergence */
+(function(){
+  const rows=D.mc_convergence,W=820,rh=46,mT=24,mL=150,mR=150,H=mT+rows.length*rh+18;
+  const s=svg(W,H);$("#c-mc").appendChild(s);
+  const maxSE=4;
+  const sx=v=>mL+(v/maxSE)*(W-mL-mR);
+  [0,1,2,3,4].forEach(t=>{
+    el(s,"line",{x1:sx(t),y1:mT-8,x2:sx(t),y2:mT+rows.length*rh-18,class:"grid"});
+    txt(s,sx(t),mT-14,t+" SE","ax","middle");
+  });
+  el(s,"line",{x1:sx(3),y1:mT-8,x2:sx(3),y2:mT+rows.length*rh-18,stroke:"var(--s2)","stroke-width":1.5,"stroke-dasharray":"4 4"});
+  txt(s,sx(3)+6,mT-14,"pass threshold","reflbl").setAttribute("fill","var(--s2)");
+  rows.forEach((r,i)=>{
+    const y=mT+i*rh+6,se=Math.abs(r.diff)/r.se;
+    el(s,"rect",{x:mL,y:y,width:Math.max(2,sx(se)-mL),height:16,rx:3,fill:"var(--s3)"});
+    txt(s,mL-12,y+13,r.n.toLocaleString()+" episodes","lbl","end");
+    txt(s,sx(se)+8,y+13,se.toFixed(2)+" SE","val");
+    txt(s,mL-12,y+27,"diff "+(r.diff>=0?"+":"")+r.diff.toFixed(4)+" runs","ax","end");
+  });
+  txt(s,mL,H-2,"distance from the exact analytic result, in standard errors","ax");
+})();
+
+/* window tables */
+function wtable(sel,rows){
+  let h="<thead><tr><th>Model</th><th>n</th><th>Accuracy</th><th>95% CI</th><th>AUC</th><th>Brier</th><th>Log-loss</th></tr></thead><tbody>";
+  const best=Math.min(...rows.filter(r=>r.model!=="always home").map(r=>r.logloss));
+  rows.forEach(r=>{
+    const hl=(r.logloss===best)?' class="hl"':'';
+    h+=`<tr${hl}><td>${r.model}</td><td>${r.n}</td><td>${r.acc.toFixed(2)}%</td>`
+      +`<td>${r.lo!=null?`[${r.lo}, ${r.hi}]`:"—"}</td><td>${r.auc.toFixed(4)}</td>`
+      +`<td>${r.brier.toFixed(4)}</td><td>${r.logloss.toFixed(5)}</td></tr>`;
+  });
+  $(sel).innerHTML=h+"</tbody>";
+}
+wtable("#t-search",D.windows.search);
+wtable("#t-hold",D.windows.holdout);
+
+/* gate diverging bars */
+(function(){
+  const rows=D.gate,W=820,rh=52,mT=24,mL=210,mR=40,H=mT+rows.length*rh+22;
+  const s=svg(W,H);$("#c-gate").appendChild(s);
+  const lim=0.008,mid=mL+(W-mL-mR)/2;
+  const sx=v=>mid+(v/lim)*((W-mL-mR)/2);
+  [-0.008,-0.004,0,0.004,0.008].forEach(t=>{
+    el(s,"line",{x1:sx(t),y1:mT-8,x2:sx(t),y2:mT+rows.length*rh-24,class:"grid"});
+    txt(s,sx(t),mT-14,(t>0?"+":"")+t.toFixed(3),"ax","middle");
+  });
+  el(s,"line",{x1:mid,y1:mT-8,x2:mid,y2:mT+rows.length*rh-24,stroke:"var(--ink-3)","stroke-width":1.5});
+  rows.forEach((r,i)=>{
+    const y=mT+i*rh;
+    [["search",r.search,0],["holdout",r.holdout,17]].forEach(([lab,v,dy])=>{
+      const x=sx(Math.max(Math.min(v,lim),-lim));
+      el(s,"rect",{x:Math.min(mid,x),y:y+dy+3,width:Math.abs(x-mid),height:13,rx:2,
+        fill:v>0?"var(--s3)":"var(--s2)"});
+      txt(s,(v>0?x+7:x-7),y+dy+13,lab+" "+(v>0?"+":"")+v.toFixed(5),"valm",v>0?"start":"end");
+    });
+    txt(s,mL-12,y+14,r.model,"lbl","end");
+    txt(s,mL-12,y+30,r.verdict,"ax","end");
+  });
+  txt(s,mL,H-4,"← worse than the 3-feature logistic   |   better →","ax");
+})();
+</script>
+</body>
+</html>

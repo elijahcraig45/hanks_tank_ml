@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ten ML Lessons From Your MLB Project</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{color-scheme:light;
+ --ground:#f6f7f9;--surface:#fff;--surface-2:#eef1f5;
+ --ink:#111620;--ink-2:#4b5566;--ink-3:#7d8798;
+ --rule:#dee2e9;--rule-2:#c9d0da;
+ --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;
+ --s1-soft:#dbe8f9;--warn-bg:#fdf1ea;--ok-bg:#e7f4ee;
+ --shadow:0 1px 2px rgba(17,22,32,.06);
+ --f-display:"Archivo","Helvetica Neue",Arial,sans-serif;
+ --f-body:"Source Serif 4",Georgia,"Times New Roman",serif;
+ --f-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;
+ --ground:#13161b;--surface:#1a1e25;--surface-2:#21262e;
+ --ink:#eef1f5;--ink-2:#aeb8c6;--ink-3:#78828f;
+ --rule:#282e37;--rule-2:#39414c;
+ --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+ --s1-soft:#1d2c40;--warn-bg:#2a1f19;--ok-bg:#152620;
+ --shadow:0 1px 2px rgba(0,0,0,.3)}}
+:root[data-theme="dark"]{color-scheme:dark;
+ --ground:#13161b;--surface:#1a1e25;--surface-2:#21262e;
+ --ink:#eef1f5;--ink-2:#aeb8c6;--ink-3:#78828f;
+ --rule:#282e37;--rule-2:#39414c;
+ --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+ --s1-soft:#1d2c40;--warn-bg:#2a1f19;--ok-bg:#152620;
+ --shadow:0 1px 2px rgba(0,0,0,.3)}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{background:var(--ground);color:var(--ink);font-family:var(--f-body);
+ font-size:17px;line-height:1.68;margin:0;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:0 28px 96px}
+.col{max-width:64ch}
+h1,h2,h3,h4{font-family:var(--f-display);text-wrap:balance;margin:0}
+h1{font-size:clamp(30px,4.3vw,44px);font-weight:700;letter-spacing:-.022em;line-height:1.09}
+h2{font-size:clamp(22px,2.6vw,29px);font-weight:600;letter-spacing:-.014em;line-height:1.2}
+h3{font-size:17px;font-weight:600}
+h4{font-size:13px;font-weight:600;letter-spacing:.02em}
+p{margin:0 0 1.05em}
+.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.eyebrow{font-family:var(--f-mono);font-size:10.5px;font-weight:600;
+ letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3)}
+header{border-bottom:1px solid var(--rule);padding:60px 0 34px;margin-bottom:16px}
+.kicker{display:flex;gap:10px;align-items:baseline;margin-bottom:18px;flex-wrap:wrap}
+.kicker .dot{width:6px;height:6px;border-radius:50%;background:var(--s2);flex:none}
+.lede{font-size:19px;color:var(--ink-2);margin-top:20px;max-width:62ch}
+.lede b{color:var(--ink);font-weight:600}
+/* lesson block */
+.lesson{border-top:1px solid var(--rule);padding-top:38px;margin-top:44px}
+.lnum{font-family:var(--f-mono);font-size:11px;font-weight:600;color:var(--s1);
+ letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:9px}
+.concept{background:var(--surface-2);border-radius:4px;padding:16px 19px;margin:20px 0 24px;
+ border-left:2px solid var(--s1)}
+.concept h4{color:var(--ink-3);text-transform:uppercase;letter-spacing:.09em;
+ font-family:var(--f-mono);font-size:10.5px;margin-bottom:7px}
+.concept p{margin:0;font-size:15.5px;line-height:1.6}
+.evidence{border-left:2px solid var(--s3);background:var(--ok-bg);
+ padding:15px 18px;margin:22px 0;border-radius:0 3px 3px 0}
+.evidence .eyebrow{display:block;margin-bottom:7px;color:var(--s3)}
+.evidence p{margin:0;font-size:15.5px;line-height:1.6}
+.evidence p+p{margin-top:.7em}
+.pitfall{border-left:2px solid var(--s2);background:var(--warn-bg);
+ padding:15px 18px;margin:22px 0;border-radius:0 3px 3px 0}
+.pitfall .eyebrow{display:block;margin-bottom:7px;color:var(--s2)}
+.pitfall p{margin:0;font-size:15.5px;line-height:1.6}
+.pitfall p+p{margin-top:.7em}
+figure{margin:24px 0 0;background:var(--surface);border:1px solid var(--rule);
+ border-radius:4px;padding:20px 22px 16px;box-shadow:var(--shadow)}
+figcaption{font-size:14.5px;color:var(--ink-2);line-height:1.55;
+ border-top:1px solid var(--rule);margin-top:14px;padding-top:12px}
+figcaption b{color:var(--ink)}
+.ftitle{display:flex;justify-content:space-between;align-items:baseline;
+ gap:16px;margin-bottom:16px;flex-wrap:wrap}
+.fn{font-family:var(--f-mono);font-size:11px;color:var(--ink-3);
+ font-variant-numeric:tabular-nums;white-space:nowrap}
+.chart{position:relative;overflow-x:auto}
+svg{display:block;width:100%;height:auto}
+svg text{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.ax{fill:var(--ink-3);font-size:10.5px}
+.lbl{fill:var(--ink-2);font-size:11px}
+.val{fill:var(--ink);font-size:11px;font-weight:600}
+.valm{fill:var(--ink-3);font-size:11px}
+.grid{stroke:var(--rule);stroke-width:1}
+.reflbl{fill:var(--ink-3);font-size:10px}
+.legend{display:flex;gap:18px;flex-wrap:wrap;margin:2px 0 14px}
+.legend span{display:inline-flex;align-items:center;gap:7px;
+ font-family:var(--f-mono);font-size:11px;color:var(--ink-2)}
+.legend i{width:11px;height:11px;border-radius:2px;flex:none;display:block}
+.tblwrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-family:var(--f-mono);
+ font-size:12.5px;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:7px 10px;border-bottom:1px solid var(--rule);vertical-align:top}
+th:first-child,td:first-child,td.l,th.l{text-align:left}
+th{color:var(--ink-3);font-weight:600;font-size:10.5px;letter-spacing:.06em;
+ text-transform:uppercase;border-bottom:1px solid var(--rule-2)}
+tr.hl td{background:var(--s1-soft)}
+td.good{color:var(--s3);font-weight:600}td.bad{color:var(--s2);font-weight:600}
+td.w{white-space:normal;font-family:var(--f-body);font-size:14px;
+ text-align:left;line-height:1.5;color:var(--ink-2);max-width:38ch}
+code{font-family:var(--f-mono);font-size:.88em;background:var(--surface-2);
+ padding:1px 5px;border-radius:2px}
+ol.check{counter-reset:c;list-style:none;padding:0;margin:18px 0 0}
+ol.check li{counter-increment:c;position:relative;padding:11px 0 11px 42px;
+ border-bottom:1px solid var(--rule);font-size:15.5px;line-height:1.55}
+ol.check li::before{content:counter(c);position:absolute;left:0;top:11px;
+ font-family:var(--f-mono);font-size:11px;font-weight:600;color:var(--s1);
+ border:1px solid var(--rule-2);border-radius:2px;width:24px;height:20px;
+ display:flex;align-items:center;justify-content:center}
+.adv{border:1px solid var(--rule);border-radius:4px;background:var(--surface);
+ padding:16px 18px;margin-top:14px;box-shadow:var(--shadow)}
+.adv h3{margin-bottom:8px}
+.adv .what{font-size:14.5px;color:var(--ink-2);margin:0 0 9px}
+.adv .learn{font-family:var(--f-mono);font-size:12px;color:var(--s1);line-height:1.55}
+footer{margin-top:74px;padding-top:26px;border-top:1px solid var(--rule);
+ font-family:var(--f-mono);font-size:11.5px;color:var(--ink-3);line-height:1.85}
+footer b{color:var(--ink-2);font-weight:600}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+:focus-visible{outline:2px solid var(--s1);outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="kicker"><span class="dot"></span><span class="eyebrow">Hank&rsquo;s Tank &middot; a machine-learning curriculum built from your own results</span></div>
+  <h1>Ten machine-learning lessons your MLB project already taught</h1>
+  <p class="lede">Every concept below is a standard machine-learning idea. Every piece of evidence for it comes from <b>your own models and your own data</b>, not from a textbook example. You built a demonstration of the central problems in applied ML, largely by accident.</p>
+</header>
+
+<!-- 1 -->
+<section class="lesson">
+  <span class="lnum">Lesson 01</span>
+  <h2>Some problems have almost no learnable signal, and knowing that is a skill</h2>
+  <div class="concept">
+    <h4>The concept &mdash; irreducible error</h4>
+    <p>Every prediction problem has a floor: the part of the outcome that is genuinely random. Model quality is not measured against perfection, it is measured against that floor and against the best achievable. In most tutorials the signal is large and the floor is far away. In yours, the floor is almost the whole thing.</p>
+  </div>
+  <div class="col"><p>Accuracy hides this. The home team wins ~53% of games for free, so &ldquo;53% accurate&rdquo; means <em>zero</em> information. The honest unit is <b>nats of log-loss improvement</b> over that free baseline. Measured on one consistent sample:</p></div>
+  <figure>
+    <div class="ftitle"><h3>Information added over &ldquo;always pick home&rdquo;</h3><span class="fn" id="fn-budget"></span></div>
+    <div class="chart" id="c-budget"></div>
+    <figcaption>The betting market, which holds more information than you do, adds only <b>0.019 nats</b>. That is the whole prize, and your models have captured <b>57.1%</b> of it. <b>This one number explains most of what follows.</b></figcaption>
+  </figure>
+  <div class="evidence">
+    <span class="eyebrow">The consequence</span>
+    <p>When total available signal is 0.019 nats, the difference between a good model and a great one is a rounding error. The difference between an honest evaluation and a sloppy one is <b>7 percentage points</b> (see Lesson 3). In low-signal domains, <b>evaluation discipline matters more than model sophistication</b>, the opposite of the usual instinct.</p>
+  </div>
+</section>
+
+<!-- 2 -->
+<section class="lesson">
+  <span class="lnum">Lesson 02</span>
+  <h2>The bias-variance tradeoff, drawn by ten versions of your own model</h2>
+  <div class="concept">
+    <h4>The concept</h4>
+    <p>Adding features reduces <b>bias</b> (the model can express more) but increases <b>variance</b> (each parameter must be estimated from finite data, and estimation error is noise the model then trusts). Total error is the sum. Past some point, more features make predictions worse. Textbooks draw this as a U-curve; you generated one.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>V1 to V10: reported validation vs true live accuracy</h3><span class="fn">your documented figures + independent measurement</span></div>
+    <div class="legend"><span><i style="background:var(--s1)"></i>Validation accuracy</span><span><i style="background:var(--s2)"></i>Live accuracy</span><span><i style="background:var(--ink-3)"></i>V10 measured</span></div>
+    <div class="chart" id="c-biasvar"></div>
+    <figcaption><b>V1&rsquo;s five features reached 54.0%.</b> Nine generations and 134 more features moved validation accuracy 2.8 points and live accuracy about 1.7. The two lines diverge as features are added: that widening gap <i>is</i> variance being added faster than bias is removed.</figcaption>
+  </figure>
+  <div class="evidence">
+    <span class="eyebrow">The decisive test: an automated search was allowed to pick</span>
+    <p>450 Optuna trials searched 7 model families over 174 features, scored by walk-forward log-loss with feature selection inside each fold. It converged on <b>L1 logistic regression over 3 features</b>, and spent 265 of 300 trials there because it kept winning.</p>
+    <p>Ranked by feature strategy: 3 hand-picked features <b>0.68871</b>, top-k by in-fold AUC <b>0.68985</b>, all 161 features <b>0.69315</b>. More features was monotonically worse.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>Log-loss by feature-set size</h3><span class="fn">lower is better &middot; same games, same protocol</span></div>
+    <div class="chart" id="c-feat"></div>
+    <figcaption>At 44 features the model is <b>worse than always picking the home team</b> (0.6920). The signal is roughly three features wide; everything past that is variance you are paying for.</figcaption>
+  </figure>
+</section>
+
+<!-- 3 -->
+<section class="lesson">
+  <span class="lnum">Lesson 03</span>
+  <h2>Leakage is how ML projects lie to themselves, and yours did it five ways</h2>
+  <div class="concept">
+    <h4>The concept &mdash; data leakage</h4>
+    <p>Leakage is when information reaches the model that would not exist at prediction time. It does not look like a bug; it looks like <b>success</b>. Every instance below produced a number someone believed. These are the five archetypes, and you now have a real example of each.</p>
+  </div>
+  <div class="tblwrap"><figure>
+    <div class="ftitle"><h3>Five leaks, and the inflation each produced</h3><span class="fn">all measured</span></div>
+    <table id="t-leaks"></table>
+    <figcaption>The largest leak inflated accuracy by <b>7.76 points</b>, roughly <b>seven times</b> the entire real signal in the problem. In a low-signal domain, a leak does not flatter your model slightly; it invents the whole result.</figcaption>
+  </figure></div>
+  <figure>
+    <div class="ftitle"><h3>Inflation from leakage vs the total real signal</h3><span class="fn">percentage points of accuracy</span></div>
+    <div class="chart" id="c-leak"></div>
+    <figcaption>The dashed line is your model&rsquo;s genuine edge over always-picking-home (<b>0.91pp</b>). Four of five leaks are larger than the thing being measured.</figcaption>
+  </figure>
+  <div class="pitfall">
+    <span class="eyebrow">The two questions that catch all five</span>
+    <p><b>Ask of every training column: what was the timestamp on this value, and would I have had it before first pitch?</b> That one question catches all five. The V8 team-ID failure needs a second question: <b>is this feature an identity or a measurement?</b> Identities memorise; measurements generalise.</p>
+  </div>
+</section>
+
+<!-- 4 -->
+<section class="lesson">
+  <span class="lnum">Lesson 04</span>
+  <h2>How you split your data decides what you learn</h2>
+  <div class="concept">
+    <h4>The concept &mdash; validation protocol</h4>
+    <p>A random train/test split assumes rows are exchangeable. Time-series rows are not: a random split lets the model train on August and test on May, learning from the future. <b>Walk-forward</b> (expanding window, always predicting forward) is the only honest protocol here, and it costs you accuracy on paper.</p>
+  </div>
+  <div class="evidence">
+    <span class="eyebrow">Your V7 generation discovered this the hard way</span>
+    <p>V7&rsquo;s holdout said <b>55.5%</b>. Walk-forward cross-validation on the same model said <b>53.8%</b>. The 1.7-point gap was pure protocol. Your own docs draw the right conclusion: &ldquo;holdout accuracy overstates true generalisation by 1.5&ndash;2%.&rdquo;</p>
+    <p>Today&rsquo;s work added a stricter rule: <b>a candidate must win in two independent windows.</b> On this data, a single-window improvement has been wrong <b>every time it was checked</b>: the margin models, the ensembles, the historical-transfer models and the Elo &ldquo;edge&rdquo; all looked good in one window and died in the other.</p>
+  </div>
+  <div class="pitfall">
+    <span class="eyebrow">The trap I walked into today</span>
+    <p>If you tune anything &mdash; a threshold, a blend weight, a feature set &mdash; on data you then report results from, you have leaked. Today the blend weight was first set at 0.5 by hand and scored <b>P(better)=0.988</b>. Refitting that same weight <i>inside each training fold</i> dropped it to <b>P=0.876</b>. The apparent significance was me having chosen the number while looking at the answer.</p>
+  </div>
+</section>
+
+<!-- 5 -->
+<section class="lesson">
+  <span class="lnum">Lesson 05</span>
+  <h2>Accuracy is usually the wrong metric, and your simulator proves it</h2>
+  <div class="concept">
+    <h4>The concept &mdash; proper scoring rules</h4>
+    <p>Accuracy throws away the probability and keeps only which side of 0.5 it fell on. Near 0.5 that is nearly pure noise. <b>Log-loss</b> and <b>Brier</b> score the probability itself and are <i>proper</i>: they are optimised by telling the truth. <b>AUC</b> scores ranking only, ignoring calibration entirely. They can disagree, and when they disagree the disagreement is the finding.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>One model, four metrics, three different verdicts</h3><span class="fn">PA simulator on the holdout, n=415</span></div>
+    <div class="tblwrap"><table id="t-metrics"></table></div>
+    <figcaption>The simulator was simultaneously the <b>worst model on accuracy and the best on AUC</b>. That is a diagnosis rather than a contradiction: it ranks games well but never commits.</figcaption>
+  </figure>
+  <figure>
+    <div class="ftitle"><h3>How much each model commits</h3><span class="fn">spread of predicted probabilities</span></div>
+    <div class="chart" id="c-spread"></div>
+    <figcaption>The simulator takes a real position on only <b>3.6%</b> of games; V10 on <b>31.1%</b>. When almost every prediction sits within four points of a coin flip, tiny errors flip the accuracy verdict while leaving the ranking intact. <b>Reading only accuracy would have made you throw away the best-ranking model you had.</b></figcaption>
+  </figure>
+</section>
+
+<!-- 6 -->
+<section class="lesson">
+  <span class="lnum">Lesson 06</span>
+  <h2>Calibration is a separate property from accuracy, and it is where your product lives</h2>
+  <div class="concept">
+    <h4>The concept</h4>
+    <p>A model is <b>calibrated</b> if, among games it calls 62%, about 62% happen. Calibration and discrimination are independent: a model can rank perfectly and still print nonsense numbers. Since your product surfaces confidence tiers, calibration <i>is</i> the product.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>V10 reliability &mdash; claimed confidence vs delivered accuracy</h3><span class="fn">n = 1,763 pregame games</span></div>
+    <div class="legend"><span><i style="background:var(--s2)"></i>Claimed</span><span><i style="background:var(--s1)"></i>Delivered</span></div>
+    <div class="chart" id="c-calib"></div>
+    <figcaption><b>Every bucket over-promises</b>, by 1.2 points at the bottom and 15.4 at the top. Walk-forward tuning independently landed on a shrink factor of &lambda;&thinsp;&asymp;&thinsp;0.38: compress each probability to ~38% of its distance from the base rate. The fix costs no retraining.</figcaption>
+  </figure>
+  <div class="pitfall">
+    <span class="eyebrow">Read your own fix carefully</span>
+    <p>That shrinkage also improved accuracy by <b>+1.11pp</b>, which looked like a free win. Inspecting <i>which</i> predictions changed showed all <b>164</b> flipped picks were away&rarr;home, in the narrow band hp&thinsp;&isin;&thinsp;[0.42, 0.50). The trivial rule <i>&ldquo;pick home unless hp &lt; 0.48&rdquo;</i> scored <b>identically</b>.</p>
+    <p>So it was never a calibration fix &mdash; it was a home-field bias correction wearing a calibration costume. <b>Always ask what a change actually did, not just whether the metric moved.</b></p>
+  </div>
+</section>
+
+<!-- 7 -->
+<section class="lesson">
+  <span class="lnum">Lesson 07</span>
+  <h2>Statistical power: how much data a claim needs before you are allowed to make it</h2>
+  <div class="concept">
+    <h4>The concept</h4>
+    <p>Every measured number is an estimate with an interval around it. Small samples produce wide intervals, so a small sample can show a huge effect that is entirely noise. Compute the sample size a claim requires <b>before</b> looking at results.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>What a 60% result can prove, by sample size</h3><span class="fn">95% CI around an observed 60%, vs a 53% base rate</span></div>
+    <div class="chart" id="c-power"></div>
+    <figcaption>To show 60% is genuinely above 53% needs <b>n &ge; 310</b>. At n = 100 the interval is [50.4, 69.6]: it cannot even exclude the base rate. This is why the <code>conf&thinsp;&ge;&thinsp;0.64</code> tier (60.10% on n = 203) is reported as <i>unproven</i> rather than as a 60% model.</figcaption>
+  </figure>
+  <div class="pitfall">
+    <span class="eyebrow">Multiple comparisons &mdash; the reason 67 rules found six &ldquo;winners&rdquo;</span>
+    <p>Testing many hypotheses guarantees false positives. At &alpha; = .05, <b>67 candidate rules manufacture ~3.4 significant results before any real effect exists.</b> The defence is to discover on one window and confirm on another, and to <i>count and report</i> how many things you tried.</p>
+  </div>
+</section>
+
+<!-- 8 -->
+<section class="lesson">
+  <span class="lnum">Lesson 08</span>
+  <h2>A worked example of a false positive being found and killed</h2>
+  <div class="concept">
+    <h4>The concept &mdash; adversarial verification</h4>
+    <p>When a result you want appears, the correct response is to attack it. Not to check it once more the same way &mdash; to attack it from angles that would each independently expose an artifact.</p>
+  </div>
+  <div class="col"><p>Today, Elo used alone showed edge <em>on top of the closing line</em>: +0.00077 nats at <b>P(helps) = 0.970</b>, above the &ldquo;real edge&rdquo; threshold. About fifteen variants had been tried by then, so ~0.45 false positives were expected. Four attacks:</p></div>
+  <figure>
+    <div class="ftitle"><h3>The same claim under four tests</h3><span class="fn">each test is independent of the others</span></div>
+    <div class="tblwrap"><table id="t-fp"></table></div>
+    <figcaption>It died. The walk-forward sign test came back at <b>p = 0.878</b> &mdash; a coin &mdash; and the seven-season ROI was <b>&minus;2.44%</b>. The 2020&ndash;21 window had simply run hot, which is exactly what a 42-fold test is for.</figcaption>
+  </figure>
+  <div class="evidence">
+    <span class="eyebrow">The habit to keep</span>
+    <p>A single-split p-value on this data has been misleading <b>every time</b> it was checked. Treat P &gt; 0.95 from one split as a <i>hypothesis</i>, not a result, and require: full-period evaluation, walk-forward, a held-out season, and an economic test. If it survives all four, believe it.</p>
+  </div>
+</section>
+
+<!-- 9 -->
+<section class="lesson">
+  <span class="lnum">Lesson 09</span>
+  <h2>More features is not more information</h2>
+  <div class="concept">
+    <h4>The concept</h4>
+    <p>A feature helps only if it carries signal <b>that the model does not already have</b>, in enough quantity to pay for the parameter it costs. Those are three separate conditions, and today produced a clean example of each failing on its own.</p>
+  </div>
+  <figure>
+    <div class="ftitle"><h3>Five features, and why each one failed to help</h3><span class="fn">all measured on your data</span></div>
+    <div class="tblwrap"><table id="t-info"></table></div>
+    <figcaption><code>sp_form_k_diff</code> is the instructive one: it has <b>as much standalone signal as the best feature in the model</b> (AUC 0.5457) and is largely <b>independent</b> of it (max r = 0.328) &mdash; and adding it is still a wash. With ~1,300 training games, the parameter costs more in estimation variance than the signal contributes. <b>It satisfies two of the three conditions and still loses.</b></figcaption>
+  </figure>
+  <div class="evidence">
+    <span class="eyebrow">The strongest form of this test: does your model know anything the market doesn&rsquo;t?</span>
+    <p>Fit <code>logit(market_prob)</code> alone, then <code>logit(market) + logit(your_model)</code>, training on one period and testing on another. If your features carry information the market lacks, the second model wins.</p>
+    <p>Result: <b>&minus;0.00065 nats</b>, P(helps) = <b>0.050</b>. Coefficients: market <b>+0.3906</b>, every one of yours <b>&le; 0.041</b> with several wrong-signed. Betting the disagreements returned <b>&minus;10.0% ROI</b>. Your features are a lossy restatement of what the line already knows. It is also why weather and injuries both measured null: they are <i>public</i>, so they are already priced.</p>
+  </div>
+</section>
+
+<!-- 10 -->
+<section class="lesson">
+  <span class="lnum">Lesson 10</span>
+  <h2>Advanced structures, and what each one actually taught</h2>
+  <div class="concept">
+    <h4>The concept</h4>
+    <p>Beyond fitting a classifier there are model <i>structures</i>: simulate the generating process, track a latent state over time, shrink estimates toward a prior, verify one implementation against another. Each was built today, and each taught more than its accuracy score did.</p>
+  </div>
+  <div id="advs"></div>
+</section>
+
+<!-- checklist -->
+<section class="lesson">
+  <span class="lnum">The takeaway</span>
+  <h2>Ten rules, earned rather than read</h2>
+  <div class="col"><p>Each of these exists because something in this project went wrong without it. They transfer to any supervised-learning problem you touch next.</p></div>
+  <ol class="check" id="check"></ol>
+  <div class="evidence" style="margin-top:30px">
+    <span class="eyebrow">What is hard to learn any other way</span>
+    <p>You now know what a <b>low-signal problem</b> feels like from the inside: where ten generations of feature engineering produce less than one evaluation bug, where the simplest model wins, and where the honest answer to &ldquo;can we beat the market&rdquo; is no, with receipts. Most people never get a clean measurement of that. It makes you much harder to fool on the next problem, including by yourself.</p>
+  </div>
+</section>
+
+<footer>
+  <b>Every number here was measured</b> &nbsp;no figure is quoted from the project docs without independent verification<br>
+  <b>Arena</b> &nbsp;14,859 games 2015&ndash;2021 with both closing odds and features &middot; data/odds/arena.parquet<br>
+  <b>Harness</b> &nbsp;src/edge/benchmark.py &mdash; absolute metrics, nats behind the line, orthogonality probe, betting sim<br>
+  <b>Reproduce</b> &nbsp;research/backtest_2026/ scripts 01&ndash;38<br>
+  <b>Companions</b> &nbsp;docs/MODEL_HISTORY.html (inventory) &middot; docs/V10_VS_PA_SIM.html (simulator)
+</footer>
+</div>
+<script>
+const D={"budget":{"home":0.68967,"ours":0.67882,"market":0.67067,"n":3121,"captured":57.1,"ratio":1.75},"biasvar":[{"v":"V1","f":5,"val":54.0,"live":null},{"v":"V2","f":44,"val":54.4,"live":null},{"v":"V3","f":57,"val":54.6,"live":null},{"v":"V4","f":68,"val":54.8,"live":null},{"v":"V5","f":78,"val":55.1,"live":null},{"v":"V6","f":94,"val":55.3,"live":null},{"v":"V7","f":102,"val":55.5,"live":53.0},{"v":"V8","f":112,"val":55.9,"live":53.9},{"v":"V9","f":121,"val":56.2,"live":54.1},{"v":"V10","f":139,"val":56.8,"live":54.7}],"v10_measured":53.72,"featcount":[{"n":"3 features (hand-picked)","ll":0.68845,"auc":0.5521},{"n":"11 features","ll":0.68921,"auc":0.5314},{"n":"44 features (all stored)","ll":0.7098,"auc":0.509},{"n":"161 features (full v10 table)","ll":0.69315,"auc":null}],"leaks":[{"n":"Team IDs as categorical features","claim":"validated fine on 2015-2025","real":"AUC 0.455 on 2026 - worse than random","mag":null,"why":"The embeddings memorised each franchise's 2015-2025 home/away tendencies. That is a property of the era, not of baseball, so it inverted when the era changed."},{"n":"Retrospectively rebuilt features","claim":"61.48%","real":"53.72%","mag":7.76,"why":"End-of-season Statcast percentiles were used to score April games. The model was told how good each pitcher turned out to be."},{"n":"Post-hoc backfilled predictions","claim":"55.02%","real":"53.72%","mag":1.3,"why":"418 of 2,167 rows had predicted_at AFTER first pitch. Deduplicating on the latest timestamp selects exactly the contaminated ones."},{"n":"Averaging Elo across a series","claim":"62.43%","real":"55.97%","mag":6.46,"why":"Elo updates after every game, so games 2-3 of a series already contain game 1's result. The 'prediction' knew part of the answer."},{"n":"Holdout vs walk-forward (V7)","claim":"55.5%","real":"53.8%","mag":1.7,"why":"A random or single holdout split lets the model see the future. Time-ordered evaluation does not."}],"metrics":[{"m":"Accuracy","v":"52.77%","rank":3,"note":"worst of the three"},{"m":"AUC","v":"0.5704","rank":1,"note":"BEST single model"},{"m":"Brier","v":"0.2454","rank":2,"note":"middle"},{"m":"Log-loss","v":"0.68324","rank":1,"note":"best"}],"spread":[["V10",0.0934,31.1],["3-feature logistic",0.044,4.6],["PA simulator",0.0391,3.6]],"calib":[[0.5,0.55,52.49,51.25],[0.55,0.58,56.51,54.92],[0.58,0.6,59.05,53.33],[0.6,0.62,60.94,53.62],[0.62,0.64,62.98,54.47],[0.64,0.7,66.3,61.22],[0.7,1.0,72.5,57.14]],"power":[[50,46.4,73.6,0],[100,50.4,69.6,0],[150,52.2,67.8,0],[200,53.2,66.8,1],[300,54.5,65.5,1],[500,55.7,64.3,1],[800,56.6,63.4,1],[1200,57.2,62.8,1]],"shrink":[["OUT",43.25,94.2,248.1],["K",22.19,null,null],["1B",15.01,213.1,481.7],["HR",3.12,194.2,807.9],["2B",4.43,1112.3,1415.8],["3B",0.42,638.1,2488.1]],"fp":[["single split, probe's own half","+0.00070",0.974],["full test set","+0.00003",0.949],["walk-forward, 42 folds","-0.00006",null],["season holdout 2018","-0.00127",0.006],["ROI, all 7 seasons","-2.44%",null]],"orth":{"gain":-0.00065,"p":0.05,"coef_mkt":0.3906,"coef_ours":0.041,"roi2":-10.02,"roi3":-27.31},"info":[{"n":"sp_form_k_diff (starter K-rate, last 3 starts)","auc":0.5457,"indep":"r=0.328 max vs anything existing","add":"+0.00052 nats = a wash"},{"n":"pythag_differential","auc":0.5457,"indep":"in the model already","add":"the single best feature"},{"n":"Weather (temp/wind/roof)","auc":0.4985,"indep":"fully independent","add":"-0.00054 nats"},{"n":"Injuries / IL burden","auc":0.5106,"indep":"fully independent","add":"+0.00012 nats"},{"n":"Bullpen fatigue","auc":0.5021,"indep":"fully independent","add":"nothing"}],"advanced":[{"t":"Generative simulation","w":"Model the process, not the label: 1,000 PA-by-PA episodes per game off 2.07M plate appearances.","l":"Validated at three levels of decreasing power - 1.9M PAs, then 4,856 run totals, then 1,300 wins. Components can be killed before the underpowered final metric."},{"t":"Cross-implementation verification","w":"The same 24-state chain solved twice: exact analytic recursion and Monte Carlo sampling.","l":"They agree to 0.17 SE at 100k episodes. Two independent implementations agreeing is the strongest correctness evidence available without ground truth."},{"t":"Empirical-Bayes shrinkage","w":"Beta-binomial method of moments estimates the shrinkage constant per outcome class from the data.","l":"k ranges 94 (common outcomes) to 2,488 (triples). Rare events need enormous shrinkage; common ones almost none. Never hand-set this."},{"t":"State-space filtering","w":"Latent team strength as a random walk observed through run margin, with a derived Kalman gain.","l":"Tied Elo exactly (AUC 0.5880 vs 0.5877). A principled estimator of the same quantity is not new information."},{"t":"Orthogonality probe","w":"Fit logit(market) alone, then logit(market)+logit(model), on train only.","l":"The only definition of edge that survives a market. Our features scored P(helps)=0.050."}],"checklist":["Split by TIME, never at random. A random split on time-series data leaks the future.","Require a win in TWO windows. A single-window improvement was wrong every time here.","Compute the sample size a claim needs BEFORE looking. 60% vs 53% needs n>=310.","Count how many variants you tried. 67 rules at a=.05 manufactures ~3.4 winners.","Never use a static identity (team ID, player ID) as a feature.","Check the timestamp on every training row. Ask what was knowable at prediction time.","Read calibration, not just accuracy - plot claimed vs delivered by bucket.","Ask whether a feature is new INFORMATION or a restatement of what you have.","Benchmark against the strongest available baseline, not against your last version.","Write the prediction down before running the experiment. A confirmed null is a result."]};
+const NS="http://www.w3.org/2000/svg";
+const $=s=>document.querySelector(s);
+const el=(p,t,a)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);p.appendChild(n);return n};
+const txt=(p,x,y,s,c,an)=>{const n=el(p,"text",{x,y,class:c||"lbl"});if(an)n.setAttribute("text-anchor",an);n.textContent=s;return n};
+const svg=(w,h)=>{const s=document.createElementNS(NS,"svg");s.setAttribute("viewBox",`0 0 ${w} ${h}`);s.setAttribute("role","img");return s};
+$("#fn-budget").textContent=`n = ${D.budget.n.toLocaleString()} games`;
+
+/* 1 signal budget */
+(function(){
+ const b=D.budget,rows=[["always pick home",0,"var(--rule-2)"],
+  ["your best model",b.home-b.ours,"var(--s1)"],["the betting market",b.home-b.market,"var(--s2)"]];
+ const W=800,rh=54,mT=24,mL=185,mR=155,H=mT+rows.length*rh+16;
+ const s=svg(W,H);$("#c-budget").appendChild(s);
+ const max=0.021,sx=v=>mL+v/max*(W-mL-mR);
+ for(let t=0;t<=0.020;t+=0.005){el(s,"line",{x1:sx(t),y1:mT-8,x2:sx(t),y2:mT+rows.length*rh-20,class:"grid"});
+  txt(s,sx(t),mT-14,t.toFixed(3),"ax","middle")}
+ rows.forEach(([n,v,c],i)=>{const y=mT+i*rh;
+  el(s,"rect",{x:mL,y:y+4,width:Math.max(2,sx(v)-mL),height:20,rx:3,fill:c});
+  txt(s,mL-12,y+19,n,"lbl","end");
+  txt(s,sx(v)+9,y+19,v>0?("+"+v.toFixed(5)):"0 — the free baseline",v>0?"val":"valm");
+  if(i===1)txt(s,mL-12,y+34,D.budget.captured+"% of achievable","ax","end");
+  if(i===2)txt(s,mL-12,y+34,"the entire prize","ax","end")});
+ txt(s,mL,H-2,"nats of log-loss improvement","ax");
+})();
+
+/* 2 bias-variance */
+(function(){
+ const r=D.biasvar,W=800,H=300,mT=22,mB=56,mL=54,mR=44;
+ const s=svg(W,H);$("#c-biasvar").appendChild(s);
+ const y0=52.5,y1=57.5,sy=v=>mT+(y1-v)/(y1-y0)*(H-mT-mB),sx=i=>mL+i/(r.length-1)*(W-mL-mR);
+ for(let v=53;v<=57;v+=1){el(s,"line",{x1:mL,y1:sy(v),x2:W-mR,y2:sy(v),class:"grid"});
+  txt(s,mL-9,sy(v)+4,v+"%","ax","end")}
+ el(s,"polyline",{points:r.map((d,i)=>`${sx(i)},${sy(d.val)}`).join(" "),fill:"none",
+  stroke:"var(--s1)","stroke-width":2});
+ const lv=r.filter(d=>d.live!=null);
+ el(s,"polyline",{points:lv.map(d=>`${sx(r.indexOf(d))},${sy(d.live)}`).join(" "),fill:"none",
+  stroke:"var(--s2)","stroke-width":2});
+ r.forEach((d,i)=>{el(s,"circle",{cx:sx(i),cy:sy(d.val),r:4,fill:"var(--s1)",stroke:"var(--surface)","stroke-width":2});
+  if(d.live!=null)el(s,"circle",{cx:sx(i),cy:sy(d.live),r:4,fill:"var(--s2)",stroke:"var(--surface)","stroke-width":2});
+  txt(s,sx(i),H-mB+20,d.v,"ax","middle");txt(s,sx(i),H-mB+34,d.f+"f","ax","middle")});
+ el(s,"circle",{cx:sx(r.length-1),cy:sy(D.v10_measured),r:5,fill:"var(--ink-3)",stroke:"var(--surface)","stroke-width":2});
+ txt(s,sx(r.length-1)-9,sy(D.v10_measured)+4,D.v10_measured.toFixed(2)+"% measured","val","end");
+ txt(s,mL,H-2,"version / feature count  —  the widening gap IS variance","ax");
+})();
+
+/* 2b feature count */
+(function(){
+ const r=D.featcount,W=800,rh=42,mT=18,mL=250,mR=120,H=mT+r.length*rh+18;
+ const s=svg(W,H);$("#c-feat").appendChild(s);
+ const lo=0.6875,hi=0.7105,sx=v=>mL+(hi-v)/(hi-lo)*(W-mL-mR);
+ el(s,"line",{x1:sx(0.6920),y1:mT-6,x2:sx(0.6920),y2:mT+r.length*rh-14,
+  stroke:"var(--s2)","stroke-width":1.5,"stroke-dasharray":"4 4"});
+ txt(s,sx(0.6920),H-2,"always pick home (0.6920)","reflbl","middle").setAttribute("fill","var(--s2)");
+ r.forEach((d,i)=>{const y=mT+i*rh,best=i===0;
+  el(s,"rect",{x:mL,y:y+6,width:Math.max(2,sx(d.ll)-mL),height:17,rx:3,
+   fill:best?"var(--s1)":"var(--rule-2)"});
+  txt(s,mL-12,y+19,d.n,"lbl","end");
+  txt(s,sx(d.ll)+8,y+19,d.ll.toFixed(5),best?"val":"valm")});
+})();
+
+/* 3 leaks */
+(function(){
+ let h="<thead><tr><th class='l'>The leak</th><th class='l'>What it claimed</th><th class='l'>Reality</th><th>Inflation</th><th class='l'>Why it happened</th></tr></thead><tbody>";
+ D.leaks.forEach(l=>{h+=`<tr><td class='l'>${l.n}</td><td class='l'>${l.claim}</td><td class='l'>${l.real}</td>`
+  +`<td class='bad'>${l.mag?"+"+l.mag.toFixed(2)+"pp":"—"}</td><td class='w'>${l.why}</td></tr>`});
+ $("#t-leaks").innerHTML=h+"</tbody>";
+})();
+(function(){
+ const r=D.leaks.filter(l=>l.mag),W=800,rh=42,mT=20,mL=250,mR=90,H=mT+r.length*rh+20;
+ const s=svg(W,H);$("#c-leak").appendChild(s);
+ const max=8.5,sx=v=>mL+v/max*(W-mL-mR);
+ for(let t=0;t<=8;t+=2){el(s,"line",{x1:sx(t),y1:mT-6,x2:sx(t),y2:mT+r.length*rh-12,class:"grid"});
+  txt(s,sx(t),mT-12,t+"pp","ax","middle")}
+ el(s,"line",{x1:sx(0.91),y1:mT-6,x2:sx(0.91),y2:mT+r.length*rh-12,
+  stroke:"var(--s3)","stroke-width":1.5,"stroke-dasharray":"4 4"});
+ txt(s,sx(0.91)+6,H-2,"your real edge: 0.91pp","reflbl").setAttribute("fill","var(--s3)");
+ r.forEach((d,i)=>{const y=mT+i*rh;
+  el(s,"rect",{x:mL,y:y+6,width:Math.max(2,sx(d.mag)-mL),height:17,rx:3,fill:"var(--s2)"});
+  txt(s,mL-12,y+19,d.n,"lbl","end");
+  txt(s,sx(d.mag)+8,y+19,"+"+d.mag.toFixed(2)+"pp","val")});
+})();
+
+/* 5 metrics */
+(function(){
+ let h="<thead><tr><th class='l'>Metric</th><th>Simulator</th><th>Rank of 3</th><th class='l'>What it says</th></tr></thead><tbody>";
+ D.metrics.forEach(m=>{h+=`<tr><td class='l'>${m.m}</td><td>${m.v}</td>`
+  +`<td class='${m.rank===1?"good":(m.rank===3?"bad":"")}'>#${m.rank}</td><td class='l'>${m.note}</td></tr>`});
+ $("#t-metrics").innerHTML=h+"</tbody>";
+})();
+(function(){
+ const r=D.spread,W=800,rh=48,mT=20,mL=200,mR=180,H=mT+r.length*rh+14;
+ const s=svg(W,H);$("#c-spread").appendChild(s);
+ const max=0.10,sx=v=>mL+v/max*(W-mL-mR);
+ for(let t=0;t<=0.10;t+=0.025){el(s,"line",{x1:sx(t),y1:mT-6,x2:sx(t),y2:mT+r.length*rh-14,class:"grid"});
+  txt(s,sx(t),mT-12,t.toFixed(3),"ax","middle")}
+ r.forEach(([n,sd,pc],i)=>{const y=mT+i*rh,hot=i===0;
+  el(s,"rect",{x:mL,y:y+6,width:Math.max(2,sx(sd)-mL),height:18,rx:3,
+   fill:hot?"var(--s2)":"var(--s1)"});
+  txt(s,mL-12,y+20,n,"lbl","end");
+  txt(s,sx(sd)+9,y+20,"sd "+sd.toFixed(4),"val");
+  txt(s,sx(sd)+9,y+34,pc.toFixed(1)+"% of games committed","ax")});
+ txt(s,mL,H-1,"standard deviation of predicted probability","ax");
+})();
+
+/* 6 calibration */
+(function(){
+ const r=D.calib,W=800,rh=34,mT=30,mL=110,mR=130,H=mT+r.length*rh+22;
+ const s=svg(W,H);$("#c-calib").appendChild(s);
+ const x0=48,x1=76,sx=v=>mL+(v-x0)/(x1-x0)*(W-mL-mR);
+ for(let v=50;v<=75;v+=5){el(s,"line",{x1:sx(v),y1:mT-8,x2:sx(v),y2:mT+r.length*rh-10,class:"grid"});
+  txt(s,sx(v),mT-14,v+"%","ax","middle")}
+ r.forEach(([lo,hi,cl,ac],i)=>{const y=mT+i*rh+4;
+  el(s,"line",{x1:sx(ac),y1:y,x2:sx(cl),y2:y,stroke:"var(--rule-2)","stroke-width":2.5});
+  txt(s,mL-12,y+4,lo.toFixed(2)+"–"+hi.toFixed(2),"lbl","end");
+  el(s,"circle",{cx:sx(ac),cy:y,r:6,fill:"var(--s1)",stroke:"var(--surface)","stroke-width":2});
+  el(s,"circle",{cx:sx(cl),cy:y,r:6,fill:"var(--s2)",stroke:"var(--surface)","stroke-width":2});
+  txt(s,W-mR+12,y+4,(ac-cl).toFixed(1)+"pp","val")});
+ txt(s,mL,H-2,"claimed  →  delivered   (every gap is negative)","ax");
+})();
+
+/* 7 power */
+(function(){
+ const r=D.power,W=800,H=280,mT=24,mB=54,mL=54,mR=40;
+ const s=svg(W,H);$("#c-power").appendChild(s);
+ const y0=44,y1=76,sy=v=>mT+(y1-v)/(y1-y0)*(H-mT-mB),sx=i=>mL+i/(r.length-1)*(W-mL-mR);
+ for(let v=45;v<=75;v+=5){el(s,"line",{x1:mL,y1:sy(v),x2:W-mR,y2:sy(v),class:"grid"});
+  txt(s,mL-9,sy(v)+4,v+"%","ax","end")}
+ el(s,"line",{x1:mL,y1:sy(53),x2:W-mR,y2:sy(53),stroke:"var(--s2)","stroke-width":1.5,"stroke-dasharray":"4 4"});
+ txt(s,mL+4,sy(53)-7,"53% base rate","reflbl").setAttribute("fill","var(--s2)");
+ el(s,"line",{x1:mL,y1:sy(60),x2:W-mR,y2:sy(60),stroke:"var(--ink-3)","stroke-width":1,opacity:.6});
+ txt(s,mL+4,sy(60)-7,"observed 60%","reflbl");
+ r.forEach(([n,lo,hi,ok],i)=>{const x=sx(i);
+  el(s,"line",{x1:x,y1:sy(lo),x2:x,y2:sy(hi),stroke:ok?"var(--s3)":"var(--rule-2)",
+   "stroke-width":7,"stroke-linecap":"round"});
+  el(s,"circle",{cx:x,cy:sy(60),r:4,fill:"var(--ink)",stroke:"var(--surface)","stroke-width":1.5});
+  txt(s,x,H-mB+20,"n="+n,"ax","middle");
+  txt(s,x,H-mB+34,ok?"provable":"—","ax","middle")});
+ txt(s,mL,H-2,"green clears the base rate — that starts at n≈310","ax");
+})();
+
+/* 8 false positive */
+(function(){
+ let h="<thead><tr><th class='l'>Test</th><th class='l'>Result</th><th>P / signif</th><th class='l'>Reading</th></tr></thead><tbody>";
+ const reads=["looked like real edge","effect nearly gone","a coin flip",
+              "significantly HURTS","loses money"];
+ D.fp.forEach((f,i)=>{const bad=i>=2;
+  h+=`<tr><td class='l'>${f[0]}</td><td class='l'>${f[1]}</td>`
+   +`<td>${f[2]!==null?f[2].toFixed(3):"—"}</td>`
+   +`<td class='l ${bad?"bad":"good"}'>${reads[i]}</td></tr>`});
+ $("#t-fp").innerHTML=h+"</tbody>";
+})();
+
+/* 9 info */
+(function(){
+ let h="<thead><tr><th class='l'>Feature</th><th>Own AUC</th><th class='l'>Independent?</th><th class='l'>Effect when added</th></tr></thead><tbody>";
+ D.info.forEach(f=>{h+=`<tr${f.n.indexOf("sp_form")===0?" class='hl'":""}><td class='l'>${f.n}</td>`
+  +`<td>${f.auc.toFixed(4)}</td><td class='l'>${f.indep}</td><td class='l'>${f.add}</td></tr>`});
+ $("#t-info").innerHTML=h+"</tbody>";
+})();
+
+/* 10 advanced */
+(function(){
+ $("#advs").innerHTML=D.advanced.map(a=>`<div class="adv"><h3>${a.t}</h3>`
+  +`<p class="what">${a.w}</p><div class="learn">${a.l}</div></div>`).join("");
+})();
+$("#check").innerHTML=D.checklist.map(c=>`<li>${c}</li>`).join("");
+</script>
+</body>
+</html>

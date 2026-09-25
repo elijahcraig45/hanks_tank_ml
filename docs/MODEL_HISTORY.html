@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hank's Tank — Model History &amp; Data Inventory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{color-scheme:light;
+ --ground:#f6f7f9;--surface:#fff;--surface-2:#eef1f5;
+ --ink:#111620;--ink-2:#4b5566;--ink-3:#7d8798;
+ --rule:#dee2e9;--rule-2:#c9d0da;
+ --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;
+ --s1-soft:#dbe8f9;--warn-bg:#fdf1ea;--ok-bg:#e7f4ee;
+ --shadow:0 1px 2px rgba(17,22,32,.06);
+ --f-display:"Archivo","Helvetica Neue",Arial,sans-serif;
+ --f-body:"Source Serif 4",Georgia,"Times New Roman",serif;
+ --f-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;
+ --ground:#13161b;--surface:#1a1e25;--surface-2:#21262e;
+ --ink:#eef1f5;--ink-2:#aeb8c6;--ink-3:#78828f;
+ --rule:#282e37;--rule-2:#39414c;
+ --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+ --s1-soft:#1d2c40;--warn-bg:#2a1f19;--ok-bg:#152620;
+ --shadow:0 1px 2px rgba(0,0,0,.3)}}
+:root[data-theme="dark"]{color-scheme:dark;
+ --ground:#13161b;--surface:#1a1e25;--surface-2:#21262e;
+ --ink:#eef1f5;--ink-2:#aeb8c6;--ink-3:#78828f;
+ --rule:#282e37;--rule-2:#39414c;
+ --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+ --s1-soft:#1d2c40;--warn-bg:#2a1f19;--ok-bg:#152620;
+ --shadow:0 1px 2px rgba(0,0,0,.3)}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--ground);color:var(--ink);font-family:var(--f-body);
+ font-size:17px;line-height:1.65;margin:0;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1120px;margin:0 auto;padding:0 28px 96px}
+.col{max-width:66ch}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0}
+h1{font-size:clamp(30px,4.4vw,46px);font-weight:700;letter-spacing:-.022em;line-height:1.08}
+h2{font-size:clamp(21px,2.5vw,27px);font-weight:600;letter-spacing:-.012em;line-height:1.2}
+h3{font-size:16px;font-weight:600}
+p{margin:0 0 1.05em}
+.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.eyebrow{font-family:var(--f-mono);font-size:10.5px;font-weight:600;
+ letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3)}
+header{border-bottom:1px solid var(--rule);padding:60px 0 34px;margin-bottom:40px}
+.kicker{display:flex;gap:10px;align-items:baseline;margin-bottom:18px;flex-wrap:wrap}
+.kicker .dot{width:6px;height:6px;border-radius:50%;background:var(--s2);flex:none}
+.lede{font-size:19px;color:var(--ink-2);margin-top:20px;max-width:64ch}
+.lede b{color:var(--ink);font-weight:600}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+ gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:3px;
+ overflow:hidden;margin:34px 0 0}
+.stat{background:var(--surface);padding:15px 16px 14px}
+.stat .v{font-family:var(--f-mono);font-size:24px;font-weight:600;
+ font-variant-numeric:tabular-nums;letter-spacing:-.02em;display:block;line-height:1.15}
+.stat .k{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.07em;
+ text-transform:uppercase;color:var(--ink-3);margin-top:5px;display:block}
+.stat.hi .v{color:var(--s1)}
+section{padding-top:56px}
+.shead{display:flex;flex-direction:column;gap:8px;margin-bottom:22px}
+figure{margin:26px 0 0;background:var(--surface);border:1px solid var(--rule);
+ border-radius:4px;padding:20px 22px 16px;box-shadow:var(--shadow)}
+figcaption{font-size:14.5px;color:var(--ink-2);line-height:1.55;
+ border-top:1px solid var(--rule);margin-top:14px;padding-top:12px}
+figcaption b{color:var(--ink)}
+.ftitle{display:flex;justify-content:space-between;align-items:baseline;
+ gap:16px;margin-bottom:16px;flex-wrap:wrap}
+.fn{font-family:var(--f-mono);font-size:11px;color:var(--ink-3);
+ font-variant-numeric:tabular-nums;white-space:nowrap}
+.chart{position:relative;overflow-x:auto}
+svg{display:block;width:100%;height:auto}
+svg text{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.ax{fill:var(--ink-3);font-size:10.5px}
+.lbl{fill:var(--ink-2);font-size:11px}
+.val{fill:var(--ink);font-size:11px;font-weight:600}
+.valm{fill:var(--ink-3);font-size:11px}
+.grid{stroke:var(--rule);stroke-width:1}
+.reflbl{fill:var(--ink-3);font-size:10px}
+.legend{display:flex;gap:18px;flex-wrap:wrap;margin:2px 0 14px}
+.legend span{display:inline-flex;align-items:center;gap:7px;
+ font-family:var(--f-mono);font-size:11px;color:var(--ink-2)}
+.legend i{width:11px;height:11px;border-radius:2px;flex:none;display:block}
+.tblwrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-family:var(--f-mono);
+ font-size:12.5px;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:6px 10px;border-bottom:1px solid var(--rule)}
+th:first-child,td:first-child,td.l,th.l{text-align:left}
+th{color:var(--ink-3);font-weight:600;font-size:10.5px;letter-spacing:.06em;
+ text-transform:uppercase;border-bottom:1px solid var(--rule-2)}
+tr.hl td{background:var(--s1-soft)}
+td.good{color:var(--s3);font-weight:600}td.bad{color:var(--s2);font-weight:600}
+.pill{display:inline-block;font-family:var(--f-mono);font-size:10px;font-weight:600;
+ letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:2px}
+.pill.open{background:var(--ok-bg);color:var(--s3)}
+.pill.blocked{background:var(--warn-bg);color:var(--s2)}
+.pill.have{background:var(--s1-soft);color:var(--s1)}
+.note{border-left:2px solid var(--s2);background:var(--warn-bg);
+ padding:15px 18px;margin:26px 0;border-radius:0 3px 3px 0}
+.note.ok{border-left-color:var(--s3);background:var(--ok-bg)}
+.note p{margin:0;font-size:15.5px;line-height:1.6}
+.note p+p{margin-top:.7em}
+.note .eyebrow{display:block;margin-bottom:7px}
+.fam{border:1px solid var(--rule);border-radius:4px;background:var(--surface);
+ padding:16px 18px;margin-top:14px;box-shadow:var(--shadow)}
+.fam h3{margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--rule)}
+.fam dl{margin:0;display:grid;grid-template-columns:minmax(180px,auto) 1fr;gap:8px 16px}
+.fam dt{font-family:var(--f-mono);font-size:11.5px;color:var(--ink);font-weight:600}
+.fam dd{margin:0;font-size:14px;color:var(--ink-2);line-height:1.5}
+.gen{border-left:2px solid var(--rule-2);padding:0 0 4px 18px;margin:0 0 26px}
+.gen.g5{border-left-color:var(--s1)}
+.gen .num{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.1em;
+ text-transform:uppercase;color:var(--ink-3);display:block;margin-bottom:5px}
+.gen h3{margin-bottom:6px}
+.gen .lesson{font-family:var(--f-mono);font-size:12px;color:var(--s1);
+ margin-top:8px;display:block}
+code{font-family:var(--f-mono);font-size:.88em;background:var(--surface-2);
+ padding:1px 5px;border-radius:2px}
+footer{margin-top:74px;padding-top:26px;border-top:1px solid var(--rule);
+ font-family:var(--f-mono);font-size:11.5px;color:var(--ink-3);line-height:1.85}
+footer b{color:var(--ink-2);font-weight:600}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+:focus-visible{outline:2px solid var(--s1);outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="kicker"><span class="dot"></span><span class="eyebrow">Hank&rsquo;s Tank &middot; MLB game prediction &middot; reference as of 2026-09-08</span></div>
+  <h1>Ten model generations, and what they&rsquo;re actually worth</h1>
+  <p class="lede">A complete record: every model built, every data source available, every experiment run, and what each one measured. The through-line is a single number &mdash; <b>we have captured 57.1% of the signal the betting market demonstrably has</b>, and ten generations of feature engineering moved that far less than the number of versions suggests.</p>
+  <div class="strip">
+    <div class="stat"><span class="v">10</span><span class="k">Model generations</span></div>
+    <div class="stat"><span class="v">11</span><span class="k">Saved artifacts</span></div>
+    <div class="stat hi"><span class="v" id="s-cap"></span><span class="k">Of market signal</span></div>
+    <div class="stat"><span class="v" id="s-pa"></span><span class="k">Plate appearances</span></div>
+    <div class="stat"><span class="v">12</span><span class="k">Experiments logged</span></div>
+    <div class="stat"><span class="v">8</span><span class="k">Ruled out</span></div>
+  </div>
+</header>
+
+<section>
+  <div class="shead"><span class="eyebrow">01 &middot; The frame</span><h2>The signal budget</h2></div>
+  <div class="col"><p>Accuracy is a poor yardstick here because the home team wins ~53% of games for free. The useful question is how much information a model adds over that free baseline, measured in nats of log-loss. Doing it on one consistent sample makes the whole ten-year project legible at a glance.</p></div>
+  <figure>
+    <div class="ftitle"><h3>Information added over &ldquo;always pick home&rdquo;</h3><span class="fn" id="fn-budget"></span></div>
+    <div class="chart" id="c-budget"></div>
+    <figcaption>The closing line carries <b>1.75&times;</b> our best model&rsquo;s signal. Put the other way: our models have found <b>57.1%</b> of what is demonstrably findable, and the missing 43% is information the market prices and we do not have &mdash; injuries beyond the public report, lineup scratches, and money flow. <b>This is the number to move.</b> Every experiment below is scored against it.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">02 &middot; Lineage</span><h2>V1 through V10</h2></div>
+  <div class="col"><p>Each generation added features and reported a gain. The pattern worth seeing is that reported validation accuracy rose steadily while true out-of-sample accuracy barely moved &mdash; the gap between the two is the project&rsquo;s recurring lesson.</p></div>
+  <figure>
+    <div class="ftitle"><h3>Reported validation vs actual live accuracy</h3><span class="fn">docs&rsquo; own figures, plus my independent measurement</span></div>
+    <div class="legend"><span><i style="background:var(--s1)"></i>Validation (2025 holdout)</span><span><i style="background:var(--s2)"></i>Live 2026 (as documented)</span><span><i style="background:var(--ink-3)"></i>Live 2026 (measured)</span></div>
+    <div class="chart" id="c-lineage"></div>
+    <figcaption>V1&rsquo;s five features already reached 54.0%. Nine generations and <b>134 more features</b> added roughly <b>2.8 points of validation accuracy and about 1.7 points of live accuracy</b>. The independent measurement of V10 comes in <b>below</b> the documented figure.</figcaption>
+  </figure>
+  <div class="tblwrap"><figure><table id="t-lineage"></table></figure></div>
+  <div class="note">
+    <span class="eyebrow">The documentation contradicts itself &mdash; read it with care</span>
+    <p>Three different numbers exist for V10&rsquo;s live 2026 accuracy. <code>MODEL_EVOLUTION_COMPLETE.md</code> says <b>54.7%</b>. <code>V10_EXPERIMENT_COMPLETE.md</code> says <b>61.48%</b>. Measured directly against 1,763 genuine pregame predictions, it is <b>53.72%</b>.</p>
+    <p>The 61.48% figure came from 283 early-season games scored with <i>retrospectively rebuilt</i> Statcast features that were not knowable at first pitch. Feature counts disagree too (V8 is variously 89 and 112). <b>Treat the per-version doc numbers as optimistic and the evolution doc as closer to right.</b></p>
+  </div>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">03 &middot; Why each generation happened</span><h2>The reasoning, and what it taught</h2></div>
+  <div id="gens"></div>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">04 &middot; Inventory</span><h2>Model types available</h2></div>
+  <div class="col"><p>Six families, spanning the ten production generations plus the mechanisms built while testing whether any of it could be beaten. Everything listed is present in the repo and runnable.</p></div>
+  <div id="fams"></div>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">05 &middot; Inventory</span><h2>Data options</h2></div>
+  <div class="col"><p>The warehouse is far richer than the models use. The single largest asset &mdash; 8.59M pitches &mdash; was untouched by every production version through V10.</p></div>
+  <figure>
+    <div class="ftitle"><h3>Training rows by unit of observation</h3><span class="fn">log scale</span></div>
+    <div class="chart" id="c-scale"></div>
+    <figcaption>Models V1&ndash;V10 all train on the <b>game</b> row (~28,600 total). The pitch and plate-appearance rows are two to three orders of magnitude larger, which is what the simulator was built to exploit.</figcaption>
+  </figure>
+  <figure>
+    <div class="ftitle"><h3>BigQuery &middot; mlb_2026_season</h3><span class="fn">current season</span></div>
+    <div class="tblwrap"><table id="t-bq26"></table></div>
+  </figure>
+  <figure>
+    <div class="ftitle"><h3>BigQuery &middot; mlb_historical_data</h3><span class="fn">2015&ndash;2025</span></div>
+    <div class="tblwrap"><table id="t-bqh"></table></div>
+  </figure>
+  <figure>
+    <div class="ftitle"><h3>External sources and their status from this network</h3><span class="fn">verified 2026-09-08</span></div>
+    <div class="tblwrap"><table id="t-ext"></table></div>
+    <figcaption>The corporate proxy blocks gambling domains but not GitHub, which is why <b>historical moneylines are already downloaded</b> while over/under totals are not. Anything blocked here is reachable from Cloud Function egress, which does not pass through the proxy.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">06 &middot; The ledger</span><h2>Every experiment, and its verdict</h2></div>
+  <div class="col"><p>Kept because negative results are the most reusable output here. Eight of twelve closed off a direction permanently, which is worth more than a marginal gain.</p></div>
+  <figure>
+    <div class="ftitle"><h3>Experiment ledger</h3><span class="fn">12 experiments</span></div>
+    <div class="tblwrap"><table id="t-exp"></table></div>
+    <figcaption>The one <b>live lead</b> is temperature against game totals: a 1.48-run spread across quintiles, in a market we have never tested. The one <b>false positive</b> is instructive &mdash; Elo alone showed orthogonal edge at P=0.970, then died under walk-forward (p=0.878) and a seven-season ROI of &minus;2.44%.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">07 &middot; The benchmark</span><h2>What the market does, for calibration</h2></div>
+  <figure>
+    <div class="ftitle"><h3>Closing-line accuracy by its own confidence</h3><span class="fn" id="fn-mkt"></span></div>
+    <div class="chart" id="c-mkt"></div>
+    <figcaption>The line reaches <b>70.37% on its most confident 13.5% of games</b>. It is also honestly calibrated &mdash; every implied-probability bucket lands within about a point of actual. There is no visible mispricing to exploit at this granularity, which is why adding our features on top of it measurably <i>hurts</i>.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="shead"><span class="eyebrow">08 &middot; Where it stands</span><h2>The honest position</h2></div>
+  <div class="col">
+    <p>The pipeline is sound: batch-only writes, an auditable feature row per prediction, a clean year split, no team-identity features after the V8 post-mortem. Ten generations of work produced a system that runs reliably and predicts at roughly <b>54% live</b>.</p>
+    <p>The reason it stopped improving is not a modelling failure. Every experiment that failed, failed for the same reason: <b>the market prices everything in the box score and everything in the public injury report.</b> New public information does not help &mdash; weather and IL status both measured null. A better estimator of information already held does not help either &mdash; the Kalman filter tied Elo exactly. And 450 trials of automated search over 174 features converged on a three-column logistic regression.</p>
+    <p>What is left is not another feature. It is either <b>a market we have not tested</b> (totals, where temperature is a confirmed 1.48-run signal), or <b>information that is genuinely unpriced</b> &mdash; which realistically means acting on a lineup scratch or weather shift before the line moves. That is a latency problem, not a modelling one, and it is a different project.</p>
+  </div>
+</section>
+
+<footer>
+  <b>Measured</b> &nbsp;V10 live = 53.72% on 1,763 pregame predictions &middot; market = 58.50% on 14,859 games &middot; gap = 0.00815 nats<br>
+  <b>Arena</b> &nbsp;data/odds/arena.parquet &mdash; 14,859 games 2015&ndash;2021 with both closing odds and features<br>
+  <b>Harness</b> &nbsp;src/edge/benchmark.py &mdash; absolute metrics, nats behind the line, orthogonality probe, betting sim<br>
+  <b>Reproduce</b> &nbsp;research/backtest_2026/ scripts 01&ndash;38 &middot; docs/V10_VS_PA_SIM.html for the simulator comparison<br>
+  <b>Caution</b> &nbsp;per-version experiment docs overstate results; MODEL_EVOLUTION_COMPLETE.md is closer to correct
+</footer>
+</div>
+<script>
+const D={"budget":{"n":3121,"home":0.68967,"ours":0.67882,"market":0.67067,"ratio":1.75,"captured":57.1},"lineage":[{"v":"V1","alg":"Logistic Regression","f":5,"val":54.0,"live":null,"note":"rolling win%, home field"},{"v":"V2","alg":"Logistic Regression","f":44,"val":54.4,"live":null,"note":"pitcher quality, rest, park, EMA"},{"v":"V3","alg":"XGBoost","f":57,"val":54.6,"live":null,"note":"interaction features; first XGB win"},{"v":"V4","alg":"XGBoost","f":68,"val":54.8,"live":null,"note":"Elo ratings integrated"},{"v":"V5","alg":"XGBoost","f":78,"val":55.1,"live":null,"note":"Statcast basics (barrel%, EV)"},{"v":"V6","alg":"XGB + soft-vote","f":94,"val":55.3,"live":null,"note":"ensemble; minimal gain"},{"v":"V7","alg":"XGBoost","f":102,"val":55.5,"live":53.0,"note":"H2H, bullpen fatigue; WF-CV exposed overfit"},{"v":"V8","alg":"XGB (Optuna)","f":112,"val":55.9,"live":53.9,"note":"500-trial Optuna; team-ID disaster"},{"v":"V9","alg":"XGB (Optuna)","f":121,"val":56.2,"live":54.1,"note":"xERA/xFIP/xwOBA process metrics"},{"v":"V10","alg":"XGB (Optuna)","f":139,"val":56.8,"live":54.7,"note":"per-game SP, park, rest/travel"}],"v10_measured":53.72,"families":[{"fam":"Linear / GLM","items":[["game_outcome_LogisticRegression.pkl","V1 baseline, 5 features, 1.3 KB"],["3-feature logistic","elo_diff + pythag_diff + sp_quality_diff. Best log-loss of anything tested"],["L1 logistic (autosearch winner)","chosen by 450 Optuna trials over 174 features"]]},{"fam":"Tree ensembles","items":[["game_outcome_v3_XGBoost.pkl","V3, 57 features"],["game_outcome_2026_v5.pkl / v6.pkl","V5/V6 lineage, 78-94 features"],["game_outcome_2026_v8*.pkl (5 variants)","incl. nocat + calibrated; the team-ID post-mortem"],["V10 (XGBoost Optuna, 139 feat)","PRODUCTION since 2026-04-17; artifact lives in GCS"],["CatBoost / LightGBM / RF / ExtraTrees","all searched in autosearch; none won"]]},{"fam":"Neural","items":[["MLP (128-64-32)","V9 phase-2 candidate; 55.19% val, lost to GBDT"],["game_outcome_2026_vertex.pkl","Vertex AI trained variant"]]},{"fam":"Simulation","items":[["pa_sim Monte Carlo","1,000 PA-by-PA episodes/game off 2.07M plate appearances"],["pa_sim analytic chain","exact 24-state base-out Markov chain; cross-checks the MC to 0.17 SE"],["two-Poisson / Skellam","run-scoring arms, P(home runs > away runs)"],["margin regression -> P(win)","best holdout AUC of any single model (0.5889)"]]},{"fam":"State-space / filtering","items":[["TeamStateSpace (Kalman)","latent strength on run margin; derived gain, per-team uncertainty, offseason variance inflation"],["Elo","the incumbent: a hand-tuned constant-gain filter"]]},{"fam":"Infrastructure","items":[["edge/benchmark.py","scores any model vs the closing line: absolute, gap in nats, orthogonality probe, betting sim"],["pa_sim/pipeline.py","production runner, shadow table, CF modes pa_sim / pregame_sim"]]}],"data_bq_2026":[["statcast_pitches",772573,"pitch-level, 2026 season"],["lineups",307716,"~3 pregame snapshots/game - dedupe on fetched_at"],["transactions",79660,"incl. IL placements/activations"],["player_stats",34019,"daily snapshots"],["rosters",24178,""],["team_stats",11580,""],["matchup_features",9812,""],["game_predictions",3303,"mixes pregame + backfill - filter predicted_at < game_time_utc"],["game_v10_features",3174,"166 columns - the full feature table"]],"data_bq_hist":[["statcast_pitches",7813531,"2015-2025, 5.5 GB - the richest asset in the warehouse"],["transactions_historical",490520,"includes minor + winter leagues; filter to the 30 MLB team_ids"],["pitcher_game_stats",90159,""],["games_historical",27172,"2015-2025 results"],["matchup_features_historical",26989,""],["player_venue_splits",19780,""],["player_season_splits",6495,"NO handedness breakdown - derive splits from statcast instead"]],"data_external":[["MLB Stats API","OPEN","schedules, lineups, probable pitchers, per-game weather (temp + wind direction), roof type"],["Statcast / Baseball Savant","IN WAREHOUSE","8.59M pitches 2015-2026 already synced to BigQuery"],["Historical moneylines","OPEN","via GitHub (sportsbook domains are blocked): 22,152 games 2012-2021, vig-removed probs. Already downloaded."],["open-meteo archive","OPEN","free historical hourly weather if statsapi is not precise enough"],["Retrosheet / Baseball-Reference","OPEN","reachable from this network"],["Over/under totals lines","BLOCKED","needed for the one live lead; must be fetched from GCP egress"],["Sportsbook APIs (the-odds-api, Pinnacle, DraftKings)","BLOCKED","corporate proxy: 000 / 503"],["FanGraphs","BLOCKED","403 to pybaseball since V9; replaced by MLB API + Statcast percentiles"]],"experiments":[{"e":"V8 team IDs as categoricals","r":"AUC 0.455 on 2026 - worse than random","v":"catastrophic"},{"e":"450-trial autonomous search, 174 features, 7 families","r":"converged on a 3-feature logistic; 300 trials bought 0.0001 nats","v":"exhausted"},{"e":"More history (26.9k games vs 1.3k)","r":"worse at 3 features; helps at 54 features; never beats the small model","v":"joint constraint"},{"e":"Pitch-level SP recent form","r":"sp_form_k_diff AUC 0.5457 - ties the best feature, largely independent","v":"real but unusable"},{"e":"Bullpen fatigue","r":"AUC 0.5021","v":"dead - it was V10's #1 roadmap item"},{"e":"PA-by-PA Monte Carlo simulator","r":"beats V10 in both windows; loses to the 3-feature logistic","v":"built, not promoted"},{"e":"Margin / Poisson / Skellam run targets","r":"best AUC, fails the both-windows gate","v":"inconsistent"},{"e":"Weather (temp, wind, roof)","r":"weather-only AUC 0.4985 for winners","v":"null, as predicted"},{"e":"Weather -> TOTAL runs","r":"temperature moves totals 1.48 runs across quintiles; wind = nothing","v":"LIVE LEAD"},{"e":"Injuries / IL burden","r":"+0.00012 nats","v":"null, as predicted"},{"e":"Kalman state-space strength","r":"AUC 0.5880 vs Elo 0.5877 - a dead heat","v":"null, as predicted"},{"e":"Elo-alone orthogonal edge","r":"P=0.970, then killed: walk-forward p=0.878, 7-season ROI -2.44%","v":"false positive"}],"market":{"acc":58.5,"auc":0.6097,"ll":0.67152,"n":14859,"sel":[[0.55,61.6,65.7],[0.6,64.47,36.2],[0.65,70.37,13.5],[0.7,72.42,4.2]]},"datascale":[["Game outcomes 2026",1300],["Game outcomes 2015-2026",28600],["Closing lines 2012-2021",22152],["Plate appearances 2015-2026",2067301],["Pitches 2015-2026",8586104]]};
+const NS="http://www.w3.org/2000/svg";
+const $=s=>document.querySelector(s);
+const el=(p,t,a)=>{const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);p.appendChild(n);return n};
+const txt=(p,x,y,s,c,an)=>{const n=el(p,"text",{x,y,class:c||"lbl"});if(an)n.setAttribute("text-anchor",an);n.textContent=s;return n};
+const svg=(w,h)=>{const s=document.createElementNS(NS,"svg");s.setAttribute("viewBox",`0 0 ${w} ${h}`);s.setAttribute("role","img");return s};
+
+$("#s-cap").textContent=D.budget.captured.toFixed(1)+"%";
+$("#s-pa").textContent="2.07M";
+$("#fn-budget").textContent=`n = ${D.budget.n.toLocaleString()} games · 2020–21`;
+$("#fn-mkt").textContent=`n = ${D.market.n.toLocaleString()} games · 2015–2021`;
+
+/* signal budget */
+(function(){
+ const b=D.budget, rows=[["always pick home",0,"var(--rule-2)"],
+   ["our best model",b.home-b.ours,"var(--s1)"],["closing line",b.home-b.market,"var(--s2)"]];
+ const W=820,rh=54,mT=24,mL=200,mR=150,H=mT+rows.length*rh+16;
+ const s=svg(W,H);$("#c-budget").appendChild(s);
+ const max=0.021, sx=v=>mL+v/max*(W-mL-mR);
+ for(let t=0;t<=0.020;t+=0.005){el(s,"line",{x1:sx(t),y1:mT-8,x2:sx(t),y2:mT+rows.length*rh-20,class:"grid"});
+  txt(s,sx(t),mT-14,t.toFixed(3),"ax","middle");}
+ rows.forEach(([n,v,c],i)=>{const y=mT+i*rh;
+  el(s,"rect",{x:mL,y:y+4,width:Math.max(2,sx(v)-mL),height:20,rx:3,fill:c});
+  txt(s,mL-12,y+19,n,"lbl","end");
+  txt(s,sx(v)+9,y+19,v>0?("+"+v.toFixed(5)+" nats"):"baseline",v>0?"val":"valm");
+  if(n==="our best model") txt(s,mL-12,y+34,`${D.budget.captured}% of achievable`,"ax","end");
+  if(n==="closing line") txt(s,mL-12,y+34,`${D.budget.ratio}x our signal`,"ax","end");});
+ txt(s,mL,H-2,"nats of log-loss improvement (higher = more information)","ax");
+})();
+
+/* lineage */
+(function(){
+ const r=D.lineage,W=820,H=300,mT=22,mB=58,mL=54,mR=40;
+ const s=svg(W,H);$("#c-lineage").appendChild(s);
+ const y0=52.5,y1=57.5,sy=v=>mT+(y1-v)/(y1-y0)*(H-mT-mB),sx=i=>mL+i/(r.length-1)*(W-mL-mR);
+ for(let v=53;v<=57.5;v+=1){el(s,"line",{x1:mL,y1:sy(v),x2:W-mR,y2:sy(v),class:"grid"});
+  txt(s,mL-9,sy(v)+4,v.toFixed(0)+"%","ax","end");}
+ el(s,"polyline",{points:r.map((d,i)=>`${sx(i)},${sy(d.val)}`).join(" "),
+  fill:"none",stroke:"var(--s1)","stroke-width":2});
+ const lv=r.filter(d=>d.live!=null);
+ el(s,"polyline",{points:lv.map(d=>`${sx(r.indexOf(d))},${sy(d.live)}`).join(" "),
+  fill:"none",stroke:"var(--s2)","stroke-width":2});
+ r.forEach((d,i)=>{el(s,"circle",{cx:sx(i),cy:sy(d.val),r:4,fill:"var(--s1)",stroke:"var(--surface)","stroke-width":2});
+  if(d.live!=null)el(s,"circle",{cx:sx(i),cy:sy(d.live),r:4,fill:"var(--s2)",stroke:"var(--surface)","stroke-width":2});
+  txt(s,sx(i),H-mB+20,d.v,"ax","middle");txt(s,sx(i),H-mB+34,d.f+"f","ax","middle");});
+ const iv=r.length-1;
+ el(s,"circle",{cx:sx(iv),cy:sy(D.v10_measured),r:5,fill:"var(--ink-3)",stroke:"var(--surface)","stroke-width":2});
+ txt(s,sx(iv)-8,sy(D.v10_measured)+4,D.v10_measured.toFixed(2)+"% measured","val","end");
+ txt(s,mL,H-4,"version / feature count","ax");
+})();
+(function(){
+ let h="<thead><tr><th class='l'>Version</th><th class='l'>Algorithm</th><th>Feat</th><th>Val</th><th>Live</th><th class='l'>What it added</th></tr></thead><tbody>";
+ D.lineage.forEach(d=>{h+=`<tr${d.v==="V10"?" class='hl'":""}><td class='l'>${d.v}</td><td class='l'>${d.alg}</td>`
+  +`<td>${d.f}</td><td>${d.val.toFixed(1)}%</td><td>${d.live?d.live.toFixed(1)+"%":"—"}</td><td class='l'>${d.note}</td></tr>`;});
+ $("#t-lineage").innerHTML=h+"</tbody>";
+})();
+
+/* generations narrative */
+(function(){
+ const gens=[
+  {n:"Generation 1 · V1–V3",t:"Baselines",b:"Establish a working pipeline at all. V1 proved five features reach 54%; V2 added 39 more for +0.4%; V3 showed trees only beat linear models once interaction features exist.",l:"Lesson: feature quality over quantity — and the diminishing return was visible from V2 onward."},
+  {n:"Generation 2 · V4–V7",t:"Domain knowledge",b:"Add baseball-specific signal: Elo, Statcast basics, an ensemble attempt, then head-to-head and bullpen fatigue. V6's soft-vote ensemble gained almost nothing for real complexity. V7 was the first to run walk-forward CV, which revealed true generalisation was 53.8% against a 55.5% holdout.",l:"Lesson: holdout accuracy overstates generalisation by 1.5–2 points. Walk-forward or nothing."},
+  {n:"Generation 3 · V8",t:"Statistical rigour",b:"A 500-trial Optuna search and offensive/defensive splits, with WF-CV promoted to the primary metric. V8 also produced the project's worst failure: home and away team IDs used as CatBoost categoricals scored AUC 0.455 on 2026 — worse than random — because the embeddings had memorised 2015–2025 home/away tendencies that no longer held.",l:"Lesson: never use a static team identifier as a feature. Encode team quality as rolling statistics that update."},
+  {n:"Generation 4 · V9",t:"Process over outcome",b:"Replaced result metrics (ERA, WHIP) with quality-independent process metrics (xERA, xFIP, xwOBA, Stuff+). FanGraphs went 403-blocked mid-project, so MLB Stats API plus Statcast percentile ranks replaced it — and turned out better, being cross-season comparable.",l:"Lesson: process metrics generalise; results metrics carry luck. The live test is the only test that counts."},
+  {n:"Generation 5 · V10",t:"Game-level context",b:"Moved starting-pitcher quality from a season average to the actual starter tonight, and added real park factors, rest and travel, and series position. Deployed 2026-04-17 and still in production.",l:"Lesson: who is pitching today matters more than a team's season average — but the gain was ~0.6 points, not the 6.7 the experiment doc claimed."},
+  {n:"Generation 6 · post-V10",t:"Falsification",b:"Rather than a V11, the work turned to testing whether V10's replacement could be found at all: 450 trials of automated search over 174 features, a plate-appearance Monte Carlo simulator, a Kalman state-space model, run-margin and Poisson targets, weather, and injuries. Every one was scored against the real closing line.",l:"Lesson: eleven of twelve directions are now closed. That map is worth more than another half point."}];
+ $("#gens").innerHTML=gens.map((g,i)=>`<div class="gen${i===gens.length-1?" g5":""}">`
+  +`<span class="num">${g.n}</span><h3>${g.t}</h3><p>${g.b}</p>`
+  +`<span class="lesson">${g.l}</span></div>`).join("");
+})();
+
+/* families */
+(function(){
+ $("#fams").innerHTML=D.families.map(f=>`<div class="fam"><h3>${f.fam}</h3><dl>`
+  +f.items.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join("")+`</dl></div>`).join("");
+})();
+
+/* data scale */
+(function(){
+ const r=D.datascale,W=820,rh=40,mT=18,mL=250,mR=110,H=mT+r.length*rh+16;
+ const s=svg(W,H);$("#c-scale").appendChild(s);
+ const lo=Math.log10(1000),hi=Math.log10(1e7),sx=v=>mL+(Math.log10(v)-lo)/(hi-lo)*(W-mL-mR);
+ [1e3,1e4,1e5,1e6,1e7].forEach(t=>{el(s,"line",{x1:sx(t),y1:mT-6,x2:sx(t),y2:mT+r.length*rh-16,class:"grid"});
+  txt(s,sx(t),H-2,t>=1e6?(t/1e6)+"M":(t/1e3)+"k","ax","middle");});
+ r.forEach(([n,v],i)=>{const y=mT+i*rh,big=v>1e6;
+  el(s,"rect",{x:mL,y:y+6,width:Math.max(2,sx(v)-mL),height:17,rx:3,fill:big?"var(--s1)":"var(--rule-2)"});
+  txt(s,mL-12,y+19,n,"lbl","end");txt(s,sx(v)+8,y+19,v.toLocaleString(),big?"val":"valm");});
+})();
+
+/* tables */
+function rowsTable(sel,rows,cols){
+ let h="<thead><tr>"+cols.map((c,i)=>`<th class="${i===0||i===2?'l':''}">${c}</th>`).join("")+"</tr></thead><tbody>";
+ rows.forEach(r=>{h+="<tr><td class='l'>"+r[0]+"</td><td>"+r[1].toLocaleString()+"</td><td class='l'>"+(r[2]||"")+"</td></tr>";});
+ $(sel).innerHTML=h+"</tbody>";
+}
+rowsTable("#t-bq26",D.data_bq_2026,["Table","Rows","Notes"]);
+rowsTable("#t-bqh",D.data_bq_hist,["Table","Rows","Notes"]);
+(function(){
+ let h="<thead><tr><th class='l'>Source</th><th class='l'>Status</th><th class='l'>What it gives</th></tr></thead><tbody>";
+ D.data_external.forEach(([n,st,w])=>{
+  const cls=st==="BLOCKED"?"blocked":(st==="IN WAREHOUSE"?"have":"open");
+  h+=`<tr><td class='l'>${n}</td><td class='l'><span class="pill ${cls}">${st}</span></td><td class='l'>${w}</td></tr>`;});
+ $("#t-ext").innerHTML=h+"</tbody>";
+})();
+(function(){
+ let h="<thead><tr><th class='l'>Experiment</th><th class='l'>Measured result</th><th class='l'>Verdict</th></tr></thead><tbody>";
+ D.experiments.forEach(e=>{
+  const good=/LIVE LEAD/.test(e.v), bad=/dead|catastrophic|false positive/.test(e.v);
+  h+=`<tr${good?" class='hl'":""}><td class='l'>${e.e}</td><td class='l'>${e.r}</td>`
+   +`<td class='l ${good?"good":(bad?"bad":"")}'>${e.v}</td></tr>`;});
+ $("#t-exp").innerHTML=h+"</tbody>";
+})();
+
+/* market selectivity */
+(function(){
+ const r=D.market.sel,W=820,H=250,mT=22,mB=54,mL=54,mR=40;
+ const s=svg(W,H);$("#c-mkt").appendChild(s);
+ const y0=56,y1=74,sy=v=>mT+(y1-v)/(y1-y0)*(H-mT-mB),gx=i=>mL+(i+0.5)*((W-mL-mR)/r.length);
+ for(let v=56;v<=74;v+=3){el(s,"line",{x1:mL,y1:sy(v),x2:W-mR,y2:sy(v),class:"grid"});
+  txt(s,mL-9,sy(v)+4,v+"%","ax","end");}
+ r.forEach(([t,acc,cov],i)=>{const x=gx(i),bw=52;
+  el(s,"rect",{x:x-bw/2,y:sy(acc),width:bw,height:sy(y0)-sy(acc),rx:3,fill:"var(--s2)"});
+  txt(s,x,sy(acc)-7,acc.toFixed(2)+"%","val","middle");
+  txt(s,x,H-mB+20,"conf≥"+t.toFixed(2),"ax","middle");
+  txt(s,x,H-mB+34,cov.toFixed(1)+"% of games","ax","middle");});
+ txt(s,mL,H-4,"the market's own confidence curve — coverage shrinks as accuracy climbs","ax");
+})();
+</script>
+</body>
+</html>
