@@ -264,6 +264,9 @@ def _pace_ridge_sparse(off_col, def_col, ncol, y, w, alpha):
     the dense n x 2T design (~1 GB for college's ~400 teams)."""
     from scipy import sparse as sp
 
+    # plain float arrays: a pandas masked array here breaks `w @ y` under pandas 2.3
+    y = np.asarray(y, dtype=float)
+    w = np.asarray(w, dtype=float)
     n = len(y)
     X = sp.csr_matrix((np.ones(2 * n), (np.r_[np.arange(n), np.arange(n)],
                                          np.r_[off_col, def_col])), shape=(n, ncol))

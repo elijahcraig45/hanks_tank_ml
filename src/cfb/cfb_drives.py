@@ -214,6 +214,25 @@ def ingest(season: int, dry_run: bool = False, weeks: list[int] | None = None) -
     return info
 
 
+def _plain_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    """BigQuery hands back nullable Int64/Float64 extension columns. The simulator does
+    numpy linear algebra on them, and under pandas 2.3 (the Cloud Function's pin) a
+    matrix product with a masked array raises; pandas 3 happens to tolerate it. Convert
+    to plain numpy dtypes: float where there are NULLs, int64 otherwise."""
+    out = df.copy()
+    for c in out.columns:
+        dt = out[c].dtype
+        if isinstance(dt, pd.api.extensions.ExtensionDtype) and pd.api.types.is_numeric_dtype(dt):
+            s = out[c]
+            if pd.api.types.is_integer_dtype(dt) and not s.isna().any():
+                out[c] = s.astype("int64")
+            elif pd.api.types.is_bool_dtype(dt) and not s.isna().any():
+                out[c] = s.astype(bool)
+            else:
+                out[c] = s.astype("float64")
+    return out
+
+
 def load_drives(first_season: int, source: str = "auto") -> pd.DataFrame:
     """Drives for seasons >= first_season: BigQuery, or a local parquet
     (env CFB_DRIVES_PARQUET) when source is "auto" and BigQuery has nothing."""
@@ -230,7 +249,7 @@ def load_drives(first_season: int, source: str = "auto") -> pd.DataFrame:
             df = bigquery.Client(project=cfb_config.CTX.project).query(
                 f"SELECT * FROM `{table}` WHERE season >= @s", job_config=cfg).to_dataframe()
             if not df.empty or source == "bq":
-                return df
+                return _plain_numeric(df)
         except Exception as exc:
             if source == "bq":
                 logger.warning("drives BigQuery read failed (%s)", exc)

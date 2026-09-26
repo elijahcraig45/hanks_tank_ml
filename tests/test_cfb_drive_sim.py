@@ -440,3 +440,32 @@ def test_port_reproduces_research_week():
                                 N=4000, rng=ds.game_rng(r.game_id))
         h = np.bincount(np.clip(hs - aw + 100, 0, 200).astype(int), minlength=201)
         assert np.array_equal(h, np.asarray(ref.loc[r.game_id].mh))
+
+
+def test_bigquery_nullable_columns_become_plain_numpy():
+    """BigQuery returns Int64/Float64 extension columns; pandas 2.3 (the Cloud Function
+    pin) raises on `w @ y` with a masked array, which broke the first cloud run."""
+    import numpy as np
+    import pandas as pd
+    from cfb_drives import _plain_numeric
+
+    df = pd.DataFrame({"a": pd.array([1, 2], dtype="Int64"),
+                       "b": pd.array([1.5, None], dtype="Float64"),
+                       "c": pd.array([1, None], dtype="Int64"),
+                       "s": ["x", "y"]})
+    out = _plain_numeric(df)
+    assert out.a.dtype == np.int64 and out.b.dtype == np.float64 and out.c.dtype == np.float64
+    assert out.s.tolist() == ["x", "y"] and np.isnan(out.c.iloc[1])
+
+
+def test_pace_ridge_accepts_masked_arrays():
+    import numpy as np
+    import pandas as pd
+    import drive_sim as ds
+
+    y = pd.array([0.1, -0.2, 0.3, 0.0], dtype="Float64")
+    w = pd.array([1.0, 1.0, 2.0, 1.0], dtype="Float64")
+    a = ds._pace_ridge_sparse(np.array([0, 1, 0, 1]), np.array([2, 3, 3, 2]), 4, y, w, 1.0)
+    b = ds._pace_ridge_sparse(np.array([0, 1, 0, 1]), np.array([2, 3, 3, 2]), 4,
+                              np.asarray(y, float), np.asarray(w, float), 1.0)
+    assert np.allclose(a, b)
