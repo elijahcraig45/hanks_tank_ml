@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** its version table and live figures (54.7% V10, 139 features) are not re-verified and conflict with other docs. Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # MLB Game Prediction — Model Evolution V1 → V10
 
 Complete history of model development, experiments, and results for the Hank's Tank MLB prediction system.

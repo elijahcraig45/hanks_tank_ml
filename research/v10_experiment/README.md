@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** the 61.48% live figure used retrospectively rebuilt features; it is not what shipped. Current state: [docs/ML_SYSTEM.md](../../docs/ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # V10 Experiment — Game-Level SP Quality + Park Factors + Rest/Travel
 
 **Status:** Complete  

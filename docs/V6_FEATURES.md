@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** V6 is not production (it is a fallback only). Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # V6 Model — Feature Reference
 
 ## Overview

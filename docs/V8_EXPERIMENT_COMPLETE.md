@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** V8 is no longer production (only a fallback); 57.65% is a single-holdout figure. Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # V8 Model — Complete Experiment Documentation
 
 ## Overview

@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** 61.48% was 283 early games scored with rebuilt features; the shipped V10 artifact is a different 73-feature model; honest live accuracy is 53.98% (n=1,984). Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # V10 Model — Complete Experiment Documentation
 
 ## Overview
