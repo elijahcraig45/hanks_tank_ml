@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** a V3-era analysis. Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # V3 Model - Percentile Confidence Analysis Summary
 
 ## 🎯 Key Finding

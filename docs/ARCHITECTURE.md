@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** describes V8 as production. Production is V10 (73-feature artifact) and there are four functions. Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # Architecture Guide — HanksTank MLB Prediction Pipeline
 
 > **Current production model: V8** (deployed 2026-04-08)  

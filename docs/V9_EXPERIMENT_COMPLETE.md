@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** V9 was research only and never deployed. Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # V9 Model — Complete Experiment Documentation
 
 ## Overview
