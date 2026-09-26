@@ -44,8 +44,12 @@ def load_table(
     write_disposition: str = "WRITE_TRUNCATE",
     partition_field: str | None = None,
     cluster_fields: list[str] | None = None,
+    create_disposition: str | None = None,
 ) -> int:
-    """Load a dataframe, replacing the table by default."""
+    """Load a dataframe, replacing the table by default.
+
+    create_disposition="CREATE_NEVER" refuses to create a missing table, for tables whose
+    schema must come from their DDL rather than autodetection."""
     if df.empty:
         logger.warning("%s.%s: nothing to load", dataset, table)
         return 0
@@ -61,6 +65,8 @@ def load_table(
         job_config.time_partitioning = bigquery.TimePartitioning(field=partition_field)
     if cluster_fields:
         job_config.clustering_fields = cluster_fields
+    if create_disposition:
+        job_config.create_disposition = create_disposition
 
     job = c.load_table_from_dataframe(df, table_id, job_config=job_config)
     job.result()
@@ -127,7 +133,8 @@ def delete_week(dataset: str, table: str, season: int, week: int) -> None:
         logger.debug("delete_week skipped (%s)", exc)
 
 
-def upsert_week(df: pd.DataFrame, dataset: str, table: str, season: int, week: int) -> int:
+def upsert_week(df: pd.DataFrame, dataset: str, table: str, season: int, week: int,
+                create_disposition: str | None = None) -> int:
     """Replace the games in `df` for (season, week).
 
     Scoped to the frame's game_ids, not the whole week: a mid-week rerun predicts only
@@ -153,7 +160,8 @@ def upsert_week(df: pd.DataFrame, dataset: str, table: str, season: int, week: i
     except Exception as exc:
         # Table may not exist yet on a first run — that's fine.
         logger.debug("upsert_week delete skipped (%s)", exc)
-    return load_table(df, dataset, table, write_disposition="WRITE_APPEND")
+    return load_table(df, dataset, table, write_disposition="WRITE_APPEND",
+                      create_disposition=create_disposition)
 
 
 def query(sql: str) -> pd.DataFrame:

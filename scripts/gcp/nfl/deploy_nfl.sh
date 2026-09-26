@@ -37,14 +37,16 @@ SRC_DIR=""
 
 DRY_RUN=false
 ONLY_SCHEDULER=false
-# --shadow turns on the shadow writers (margin ridge + pregame FPI snapshots). They write
-# only to their own tables; the served predictions are unchanged.
+# --shadow turns on the shadow writers (margin ridge, drive simulator, pregame FPI
+# snapshots). They write only to their own tables; the served predictions are unchanged.
+# The drive simulator's tables are CREATE_NEVER: run
+# scripts/gcp/football/create_drive_sim_tables.sql and the drives backfill first.
 SHADOW_ENV=""
 for arg in "$@"; do
     case $arg in
         --dry-run)        DRY_RUN=true ;;
         --only-scheduler) ONLY_SCHEDULER=true ;;
-        --shadow)         SHADOW_ENV=",NFL_RIDGE_SHADOW=1,FPI_SNAPSHOT=1" ;;
+        --shadow)         SHADOW_ENV=",NFL_RIDGE_SHADOW=1,FPI_SNAPSHOT=1,NFL_DRIVE_SIM_SHADOW=1" ;;
     esac
 done
 
