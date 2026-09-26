@@ -506,8 +506,35 @@ class Engine:
 PITCH_MEAN = np.array([4.85, 5.40, 3.38, 3.37, 3.45, 3.35, 3.47, 3.36, 3.40])
 
 
-def simulate(engine: Engine, games: list[GameSpec], n: int = 2000, seed: int = 0, stats: bool = True):
-    """Batched PA-by-PA Monte Carlo. Returns per-game summary dict of arrays."""
+TB_OF = np.array([0, 0, 1, 2, 3, 4, 0, 0, 0], np.int8)       # total bases per class
+POPCOUNT = np.array([bin(b).count("1") for b in range(8)], np.int8)
+
+
+def exposure_uniforms(n_lanes: int, seed: int) -> np.ndarray:
+    """One uniform per (lane, batting side, slot) for the substitution draw.
+
+    Drawn from its own stream so passing `exposure` never changes the game itself:
+    the same seed gives identical scores with or without it."""
+    return np.random.default_rng([int(seed), 7919]).random((n_lanes, 2, 9), dtype=np.float32)
+
+
+def simulate(engine: Engine, games: list[GameSpec], n: int = 2000, seed: int = 0, stats: bool = True,
+             exposure: np.ndarray | None = None):
+    """Batched PA-by-PA Monte Carlo. Returns per-lane arrays (one lane = one episode).
+
+    stats=True also accumulates, per lane:
+      batters (by BATTING side, lineup slot): bpa, bh, bhr, bk, btb, bbb -- every PA the
+          slot takes (the sim has no substitutions, so these credit the starter with all
+          of them);
+      starters (by DEFENSIVE side, 0 = away pitcher): sp_k, sp_outs, sp_bf, sp_h, sp_bb,
+          sp_r -- runs charged to the starter: runs scored on his PAs plus inherited
+          runners who score after he leaves (responsibility = min(count, runners on),
+          the scoring-rule convention). Earned and unearned are not separated.
+    exposure: optional (9, K) array, P(the starting batter still holds slot s at the
+          slot's k-th turn), non-increasing in k. When given, the *_x batter arrays
+          (bpa_x, bh_x, ...) count only the turns the starter keeps (one uniform per
+          lane and slot, from a separate stream), i.e. a late-substitution adjustment.
+    """
     rng = np.random.default_rng(seed)
     c = engine.cfg
     G = len(games)
@@ -539,6 +566,14 @@ def simulate(engine: Engine, games: list[GameSpec], n: int = 2000, seed: int = 0
         sp_k = np.zeros((L, 2), np.int8); sp_outs = np.zeros((L, 2), np.int8)
         bh = np.zeros((L, 2, 9), np.int8); bhr = np.zeros((L, 2, 9), np.int8)
         bk = np.zeros((L, 2, 9), np.int8); bpa = np.zeros((L, 2, 9), np.int8)
+        btb = np.zeros((L, 2, 9), np.int8); bbb = np.zeros((L, 2, 9), np.int8)
+        sp_h = np.zeros((L, 2), np.int8); sp_bb = np.zeros((L, 2), np.int8)
+        sp_r = np.zeros((L, 2), np.int16); inh = np.zeros((L, 2), np.int8)
+        if exposure is not None:
+            S_exp = np.minimum.accumulate(np.asarray(exposure, np.float32), axis=1)
+            KX = S_exp.shape[1]
+            u_x = exposure_uniforms(L, seed)
+            xk = {k: np.zeros((L, 2, 9), np.int8) for k in ("bpa_x", "bh_x", "bhr_x", "bk_x", "btb_x", "bbb_x")}
     act = np.arange(L)
     step = 0
     while act.size and step < 400:
@@ -560,6 +595,8 @@ def simulate(engine: Engine, games: list[GameSpec], n: int = 2000, seed: int = 0
             prev = np.where(ii > 0, curve[np.maximum(ii - 1, 0)], 1.0)
             hz = np.where(inn_start[a], 1 - np.clip(curve[ii] / prev, 0, 1), 0.0)
         pull = spin & (rng.random(a.size) < hz)
+        if stats:
+            inh[a[pull], ds[pull]] = POPCOUNT[bases[a[pull]]]
         sp_in[a[pull], ds[pull]] = False
         spin = spin & ~pull
         tto = np.minimum(bf[a, ds] // 9, 2)
@@ -573,6 +610,7 @@ def simulate(engine: Engine, games: list[GameSpec], n: int = 2000, seed: int = 0
         k = (rng.random(a.size)[:, None] >= tc).sum(1).clip(0, tc.shape[1] - 1)
         nb = tnb[b0, o0, ev, k]; no = tno[b0, o0, ev, k]; r = tra[b0, o0, ev, k].astype(np.int16)
         # walk-off cap: runs beyond the winning run don't count (except HR); approximate by full r
+        s_before = score[a, bs].copy()
         score[a, bs] += r
         # a non-HR walk-off only scores the winning run
         wo = (bs == 1) & (inn[a] >= sched[a]) & (score[a, 1] > score[a, 0]) & (ev != HR_)
@@ -587,7 +625,25 @@ def simulate(engine: Engine, games: list[GameSpec], n: int = 2000, seed: int = 0
             np.add.at(bh, (a, bs, sl), ishit.astype(np.int8))
             np.add.at(bhr, (a, bs, sl), (ev == HR_).astype(np.int8))
             np.add.at(bk, (a, bs, sl), (ev == K_).astype(np.int8))
+            turn = bpa[a, bs, sl].astype(np.int64)            # prior turns of this slot
             np.add.at(bpa, (a, bs, sl), 1)
+            tb = TB_OF[ev]; isbb = (ev == BB_).astype(np.int8)
+            np.add.at(btb, (a, bs, sl), tb)
+            np.add.at(bbb, (a, bs, sl), isbb)
+            sp_h[a, ds] += (spin & ishit)
+            sp_bb[a, ds] += (spin & (ev == BB_))
+            # runs charged to the starter: his own PAs, then inherited runners
+            rel = ~spin & (inh[a, ds] > 0)
+            r_eff = (score[a, bs] - s_before).astype(np.int16)   # after the walk-off cap
+            chg = np.where(spin, r_eff, np.where(rel, np.minimum(r_eff, inh[a, ds]), 0)).astype(np.int16)
+            sp_r[a, ds] += chg
+            left = np.where(no >= 3, 0, np.minimum(inh[a, ds] - np.where(rel, chg, 0), POPCOUNT[nb]))
+            inh[a, ds] = np.where(spin, inh[a, ds], left).astype(np.int8)
+            if exposure is not None:
+                keep = (u_x[a, bs, sl] <= S_exp[sl, np.minimum(turn, KX - 1)]).astype(np.int8)
+                for key, val in (("bpa_x", 1), ("bh_x", ishit), ("bhr_x", ev == HR_), ("bk_x", ev == K_),
+                                 ("btb_x", tb), ("bbb_x", isbb)):
+                    np.add.at(xk[key], (a, bs, sl), (keep * np.asarray(val, np.int8)).astype(np.int8))
         slot[a, bs] = (sl + 1) % 9
         end_half = no >= 3
         bases[a] = np.where(end_half, 0, nb); outs[a] = np.where(end_half, 0, no)
@@ -620,9 +676,13 @@ def simulate(engine: Engine, games: list[GameSpec], n: int = 2000, seed: int = 0
     # games ending before the F5 snapshot (never in regulation) -> use final
     miss = f5[:, 0] < 0
     f5[miss] = score[miss]
-    res = dict(gi=gi, n=n, away=score[:, 0], home=score[:, 1], f5a=f5[:, 0], f5h=f5[:, 1])
+    res = dict(gi=gi, n=n, away=score[:, 0], home=score[:, 1], f5a=f5[:, 0], f5h=f5[:, 1],
+               innings=inn.copy(), sched=sched)
     if stats:
-        res.update(sp_k=sp_k, sp_outs=sp_outs, bh=bh, bhr=bhr, bk=bk, bpa=bpa)
+        res.update(sp_k=sp_k, sp_outs=sp_outs, bh=bh, bhr=bhr, bk=bk, bpa=bpa,
+                   btb=btb, bbb=bbb, sp_bf=bf.copy(), sp_h=sp_h, sp_bb=sp_bb, sp_r=sp_r)
+        if exposure is not None:
+            res.update(xk)
     return res
 
 
