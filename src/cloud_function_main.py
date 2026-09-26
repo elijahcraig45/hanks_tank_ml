@@ -144,7 +144,7 @@ def daily_pipeline(request):
             results["steps"].append(_run_collection(target, mode, dry_run, req_json))
 
         if mode in ("daily", "validate"):
-            results["steps"].append(_run_validation())
+            results["steps"].append(_run_validation(dry_run))
 
         if mode in ("daily", "features"):
             results["steps"].append(_run_features(dry_run))
@@ -482,10 +482,11 @@ def _run_collection(target: date, mode: str, dry_run: bool, req_json: dict) -> d
     }, "errors": pipeline.stats["errors"]}
 
 
-def _run_validation() -> dict:
+def _run_validation(dry_run: bool = False) -> dict:
     from data_validation import DataValidator
 
-    v = DataValidator(fix_duplicates=True)
+    # The duplicate fix DELETEs rows from games, so a dry run only reports duplicates.
+    v = DataValidator(fix_duplicates=not dry_run)
     code = v.run()
     return {"step": "validation", "exit_code": code,
             "errors": v.errors, "warnings": v.warnings}
