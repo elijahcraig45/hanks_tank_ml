@@ -636,9 +636,10 @@ def _run_logit3(target: date, game_pks: list, dry_run: bool) -> dict:
 
 
 def _run_sim_blend(target: date, game_pks: list, dry_run: bool, req_json: dict) -> dict:
-    """v2 PA sim + team-strength blend; writes game_predictions_sim_blend and
-    game_props_sim only. Refuses (insufficient_memory) below SIM_BLEND_MIN_MEMORY_MB,
-    which the current 1 GB function is."""
+    """v2 PA sim + team-strength blend; writes game_predictions_sim_blend, game_props_sim,
+    game_sim_distributions and player_sim_projections only (append, this run's pregame
+    games only; nothing under dry_run). Refuses (insufficient_memory) below
+    SIM_BLEND_MIN_MEMORY_MB, which the current 1 GB function is."""
     def go():
         from pa_sim.blend import memory_ok, run_slate
         ok, have, need = memory_ok()
