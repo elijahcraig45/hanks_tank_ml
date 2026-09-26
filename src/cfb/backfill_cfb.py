@@ -57,7 +57,8 @@ def ensure_datasets() -> None:
 def load(df: pd.DataFrame, dataset: str, table: str,
          partition_field: str | None = None,
          cluster_fields: list[str] | None = None,
-         write_disposition: str = "WRITE_APPEND") -> int:
+         write_disposition: str = "WRITE_APPEND",
+         create_disposition: str | None = None) -> int:
     """Append a frame to a BigQuery table.
 
     Defaults to WRITE_APPEND, not WRITE_TRUNCATE. A truncating default is how the
@@ -77,6 +78,10 @@ def load(df: pd.DataFrame, dataset: str, table: str,
         cfg.time_partitioning = bigquery.TimePartitioning(field=partition_field)
     if cluster_fields:
         cfg.clustering_fields = cluster_fields
+    # CREATE_NEVER: refuse to create a missing table, for tables whose schema must come
+    # from their DDL (autodetect once turned a naive game_date into INT64).
+    if create_disposition:
+        cfg.create_disposition = create_disposition
 
     table_id = f"{cfb_config.CTX.project}.{dataset}.{table}"
     _bq().load_table_from_dataframe(df, table_id, job_config=cfg).result()
@@ -159,7 +164,8 @@ def replace_seasons(df: pd.DataFrame, dataset: str, table: str,
 
 def replace_game_ids(df: pd.DataFrame, dataset: str, table: str,
                      partition_field: str | None = None,
-                     cluster_fields: list[str] | None = None) -> int:
+                     cluster_fields: list[str] | None = None,
+                     create_disposition: str | None = None) -> int:
     """Replace exactly the games present in `df`, leaving every other row alone.
 
     Predictions need game-level scoping, not season-level: the table carries rows for
@@ -176,7 +182,7 @@ def replace_game_ids(df: pd.DataFrame, dataset: str, table: str,
 
     client = _bq()
     table_id = f"{cfb_config.CTX.project}.{dataset}.{table}"
-    ids = df["game_id"].astype(str).tolist()
+    ids = df["game_id"].astype(str).unique().tolist()   # drive tables repeat game_ids
 
     try:
         client.query(
@@ -192,7 +198,8 @@ def replace_game_ids(df: pd.DataFrame, dataset: str, table: str,
         logger.info("%s: pre-delete skipped (%s)", table_id, str(exc)[:120])
 
     return load(df, dataset, table, partition_field=partition_field,
-                cluster_fields=cluster_fields, write_disposition="WRITE_APPEND")
+                cluster_fields=cluster_fields, write_disposition="WRITE_APPEND",
+                create_disposition=create_disposition)
 
 
 def main() -> int:
