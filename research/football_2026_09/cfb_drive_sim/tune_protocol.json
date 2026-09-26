@@ -1,0 +1,8 @@
+{"written_at": "2026-09-25, before any simulation run on any season",
+ "tune_season": 2022, "score_seasons": [2023, 2024, 2025], "holdout": 2025,
+ "grid": {"variant": ["b", "c"], "C": [0.01, 0.03, 0.1], "tau_weeks": [8, 16, 32], "prior_w": [1.0]},
+ "then": "prior_w in {0.5} tried once at the best grid point (1 extra variant)",
+ "objective": "2022 all-games: margin CRPS + total CRPS of the raw simulated distributions (game-level, as in the NFL frozen config); winner log loss reported alongside",
+ "fixed": {"ktau_weeks": 6, "pace_alpha": 200, "window_seasons": 2, "N": 4000, "P2PT": 0.45},
+ "post_hoc_calibration": "Platt / linear on prior seasons only (2023 uses 2022; 2025 uses 2022-24)",
+ "smoothing_and_sigmas": "chosen on 2022 only"}

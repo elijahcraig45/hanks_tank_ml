@@ -15,10 +15,21 @@ Modes (POST body {"mode": ...}):
   backfill      re-run a completed season week by week, per division
                 ({"model": "ridge"} writes the shadow ridge to its own table)
   fpi_snapshot  record ESPN FPI's pregame win probability for the next unplayed week
+  drives        fetch CFBD /drives for completed weeks not yet stored, into
+                cfb_historical.drives (game_id-scoped; honours dry_run: fetches, writes nothing)
 
 Shadow model: {"shadow_ridge": true} on predict_week/predict_next (or CFB_RIDGE_SHADOW=1)
 also writes the margin ridge's predictions to cfb_season.game_predictions_ridge_shadow.
 Nothing reads that table; it exists so the ridge can be scored live before adoption.
+
+Drive-sim shadow: {"shadow_drive_sim": true} on predict_week/predict_next (or
+CFB_DRIVE_SIM_SHADOW=1, which deploy_cfb.sh --shadow sets) also runs the college drive
+simulator (cfb_drive_sim.py) and writes cfb_season.game_sim_distributions and
+cfb_season.game_predictions_drive_sim: pregame games only, game_id-scoped replaces into
+tables that must already exist (CREATE_NEVER; DDL in
+scripts/gcp/football/create_cfb_drive_sim_tables.sql), nothing under dry_run. It trains
+on cfb_historical.drives, which `drives` mode keeps current. Experimental: it loses to
+the margin ridge on winners in the backtest; its validated use is the margin shape.
 
 FPI snapshot: {"fpi_snapshot": true} on ingest/predict_week (or FPI_SNAPSHOT=1) also
 appends ESPN FPI's pregame predictions to cfb_season.fpi_game_predictions, for the model
@@ -78,6 +89,33 @@ def _shadow_ridge_week(season: int, week: int, steps: dict) -> None:
     except Exception as exc:
         logger.error("shadow ridge failed: %s", exc)
         steps["shadow_ridge"] = {"error": str(exc)[:200]}
+
+
+def _drive_sim_enabled(req: dict) -> bool:
+    """The drive simulator is a shadow: per request ({"shadow_drive_sim": true}) or per
+    deployment (CFB_DRIVE_SIM_SHADOW=1). Off by default."""
+    import os
+
+    return bool(req.get("shadow_drive_sim")) or os.environ.get("CFB_DRIVE_SIM_SHADOW") == "1"
+
+
+def _drive_sim_week(season: int, week: int, steps: dict, dry_run: bool = False) -> None:
+    """Drive-sim shadow for one week. Never fatal; under dry_run computes, writes nothing."""
+    try:
+        import cfb_drive_sim
+
+        dist, pred, info = cfb_drive_sim.predict_week_drive_sim(season, week)
+        games = dist["game_id"].astype(str).tolist() if len(dist) else []
+        if dry_run or not len(dist):
+            steps["shadow_drive_sim"] = {**info, "written": 0, "games": games}
+            return
+        from backfill_cfb import ensure_datasets
+
+        ensure_datasets()
+        steps["shadow_drive_sim"] = {**info, "written": cfb_drive_sim.write(dist, pred)}
+    except (Exception, SystemExit) as exc:
+        logger.error("shadow drive_sim failed: %s", exc)
+        steps["shadow_drive_sim"] = {"error": str(exc)[:200]}
 
 
 def _fpi_snapshot(season: int, week: int | None, steps: dict) -> None:
@@ -193,9 +231,11 @@ def cfb_pipeline(request):
     # dry_run used to be ignored here, so {"dry_run": true} ran for real and replaced
     # a week of production predictions. Now only the predict modes support it (they
     # compute and return, writing nothing); any other mode refuses rather than run.
+    # `drives` also honours it: it fetches and transforms, and skips every BigQuery write.
     dry_run = bool(req.get("dry_run"))
-    if dry_run and mode not in ("predict_week", "predict_next"):
-        return ({"mode": mode, "error": "dry_run is only supported for predict_week and predict_next"}, 400)
+    if dry_run and mode not in ("predict_week", "predict_next", "drives"):
+        return ({"mode": mode, "error": "dry_run is only supported for predict_week, "
+                 "predict_next and drives"}, 400)
 
     try:
         if mode == "ingest":
@@ -241,6 +281,27 @@ def cfb_pipeline(request):
 
         elif mode == "score":
             _score_predictions(result["steps"])
+
+        elif mode == "drives":
+            # CollegeFootballData /drives for the drive-sim shadow: one call per completed
+            # week that has no drives stored yet, capped per run.
+            import cfb_config
+            from stats import cfbd
+
+            season = int(req.get("season", cfb_config.CTX.season))
+            cfbd.reset_call_counter()
+            if not cfbd.has_api_key():
+                result["steps"]["drives"] = {"skipped": "no CFBD_API_KEY configured"}
+            else:
+                from cfb_drives import ingest as ingest_drives
+
+                weeks = req.get("weeks")
+                result["steps"]["drives"] = ingest_drives(
+                    season, dry_run=dry_run,
+                    weeks=[int(w) for w in weeks] if weeks else None)
+                result["steps"]["cfbd_calls"] = cfbd.calls_used()
+            if dry_run:
+                result["dry_run"] = True
 
         elif mode == "rankings":
             import cfb_config
@@ -317,6 +378,8 @@ def cfb_pipeline(request):
                             predict_week(season, int(week), model="ridge"))
                     except Exception as exc:
                         result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
+                if _drive_sim_enabled(req):
+                    _drive_sim_week(season, int(week), result["steps"], dry_run=True)
                 result["status"] = "ok"
                 return (result, 200)
             if not rows.empty:
@@ -334,6 +397,8 @@ def cfb_pipeline(request):
 
             if _shadow_enabled(req):
                 _shadow_ridge_week(season, int(week), result["steps"])
+            if _drive_sim_enabled(req):
+                _drive_sim_week(season, int(week), result["steps"])
 
             from rankings import fpi_games
 

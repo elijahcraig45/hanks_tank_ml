@@ -1,0 +1,7 @@
+{"frozen_at": "2026-09-26T00:59:58Z", "note": "frozen after 2022 tuning, before any 2023-2025 simulation was run",
+ "run_tag": "c_C0.1_t16_pw1", "variant": "c (field position + game-script states + division covariates)",
+ "C": 0.1, "tau_weeks": 16, "prior_w": 1.0, "ktau_weeks": 6, "pace_alpha": 200, "window_seasons": 2, "N": 4000, "P2PT": 0.45,
+ "objective": "2022 margin CRPS + total CRPS (game level)", "objective_value": 19.9689, "tune_win_ll_raw": 0.5649, "tune_ridge_ll": 0.5233,
+ "variants_tried": 21, "variants_detail": "pre-registered 18 (b,c x C{0.01,0.03,0.1} x tau{8,16,32}); +2 grid extension C{0.3,1.0} (c, tau16) because the optimum sat at the edge; +1 prior_w=0.5",
+ "primary_uses": {"winner": "cal (Platt on prior seasons)", "winner_alt": "stk (sim logit + ridge margin, prior seasons)",
+                  "margin_distribution": "sim shape tilted to spread/ridge", "totals": "sim calibrated mean / shape tilted to market total"}}
