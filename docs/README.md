@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** the directory structure shown is from 2025. Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # MLB Prediction ML Pipeline
 
 Machine learning pipeline for predicting MLB game outcomes and player performance.

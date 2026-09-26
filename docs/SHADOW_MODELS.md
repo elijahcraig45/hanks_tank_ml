@@ -1,3 +1,9 @@
+> **Status update (2026-09-25):** the "Enabling" steps below have been carried out. The three tables exist but hold 0 rows so far.
+> `mlb-2026-sim-blend` is deployed (rev 00002, 4Gi).
+> Backend `20260925t180718` enqueues `run_logit3` on every `pregame_v10` task, plus one `sim_blend` task per game at T-90m.
+> PA sim v1 (`game_predictions_sim`) was never enabled.
+> See [ML_SYSTEM.md](ML_SYSTEM.md) and [MODEL_CARDS.md](MODEL_CARDS.md).
+
 # MLB shadow models
 
 Shadow models write their own tables and never `game_predictions`, so turning one on

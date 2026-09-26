@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** the scheduler and mode setup described here has been replaced. Current state: [docs/ML_SYSTEM.md](ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # Hank's Tank V7 Model Setup & Autonomous Prediction Guide
 
 ## Overview
