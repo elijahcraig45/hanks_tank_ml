@@ -53,7 +53,7 @@ WHERE e.ev IS NOT NULL
 
 SLATE_SQL = """
 WITH snap AS (
-  SELECT game_pk, game_date, team_type, batting_order, player_id, fetched_at, game_time_utc,
+  SELECT game_pk, game_date, team_type, batting_order, player_id, player_name, fetched_at, game_time_utc,
          ROW_NUMBER() OVER (PARTITION BY game_pk, team_type, batting_order
                             ORDER BY fetched_at DESC) rn
   FROM `{proj}.{ds}.lineups`
@@ -74,7 +74,7 @@ pf AS (
            ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY computed_at DESC) rn
     FROM `{proj}.{ds}.game_v10_features` WHERE game_date = @d) WHERE rn=1
 )
-SELECT lu.game_pk, lu.game_date, lu.team_type, lu.batting_order, lu.player_id,
+SELECT lu.game_pk, lu.game_date, lu.team_type, lu.batting_order, lu.player_id, lu.player_name,
        sp.home_starter_id, sp.away_starter_id, sp.home_starter_name, sp.away_starter_name,
        sp.game_time_utc, sp.home_team_id, sp.away_team_id,
        sp.home_team_name, sp.away_team_name,
