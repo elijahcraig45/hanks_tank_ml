@@ -39,14 +39,17 @@ CFBD_SECRET="${CFBD_SECRET:-cfbd-api-key}"
 
 DRY_RUN=false
 ONLY_SCHEDULER=false
-# --shadow turns on the shadow writers (margin ridge + pregame FPI snapshots). They write
-# only to their own tables; the served predictions are unchanged.
+# --shadow turns on the shadow writers (margin ridge, drive simulator, pregame FPI
+# snapshots) and the Sunday cfb-weekly-drives job the drive simulator trains from. They
+# write only to their own tables; the served predictions are unchanged. The drive
+# simulator's tables are CREATE_NEVER: run scripts/gcp/football/create_cfb_drive_sim_tables.sql
+# and the drives backfill (python src/cfb/cfb_drives.py ... --write) first.
 SHADOW_ENV=""
 for arg in "$@"; do
     case $arg in
         --dry-run)        DRY_RUN=true ;;
         --only-scheduler) ONLY_SCHEDULER=true ;;
-        --shadow)         SHADOW_ENV=",CFB_RIDGE_SHADOW=1,FPI_SNAPSHOT=1" ;;
+        --shadow)         SHADOW_ENV=",CFB_RIDGE_SHADOW=1,FPI_SNAPSHOT=1,CFB_DRIVE_SIM_SHADOW=1" ;;
     esac
 done
 
@@ -93,6 +96,8 @@ if [ "$ONLY_SCHEDULER" = false ]; then
     # The shared football core: the causal feature builder and the model/eval helpers.
     # models.py exists precisely so this does not have to drag in NFL's data loader.
     cp "$NFL_DIR/features.py" "$NFL_DIR/models.py" "$NFL_DIR/margin_ridge.py" "$STAGE"/
+    # The shared drive simulator (config CFB) and the CFBD name -> ESPN id crosswalk.
+    cp "$NFL_DIR/drive_sim.py" "$CFB_DIR/cfbd_team_crosswalk.json" "$STAGE"/
     # features.py reads its default Elo constants from a module named `config`; in the
     # staged tree that name belongs to CFB, which defines the same constants. CFB
     # passes EloParams explicitly anyway, so the defaults are never what's used.
@@ -175,6 +180,15 @@ echo "  ✓ cfb-weekly-predict (Tue 6:00 AM ET)"
 _sched "cfb-weekly-cfbd" "0 7 * 8-12,1 0" \
     '{"mode":"cfbd"}' "CFB: CollegeFootballData advanced stats, players and lines"
 echo "  ✓ cfb-weekly-cfbd (Sun 7:00 AM ET)"
+
+# Sunday 7:30 AM ET — CFBD /drives for completed weeks not yet stored (at most 3 calls),
+# for the drive-simulator shadow. After the 6 AM ingest because it joins to the games
+# that ingest loads. Only with --shadow: nothing else reads cfb_historical.drives.
+if [ -n "$SHADOW_ENV" ]; then
+    _sched "cfb-weekly-drives" "30 7 * 8-12,1 0" \
+        '{"mode":"drives"}' "CFB: CollegeFootballData drives for the drive-sim shadow"
+    echo "  ✓ cfb-weekly-drives (Sun 7:30 AM ET)"
+fi
 
 # Rankings and ESPN stats are refreshed inside the Sunday ingest, not on their own jobs:
 # they are derived from the games it loads, so chaining them makes the ordering

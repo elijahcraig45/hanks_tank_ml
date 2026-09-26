@@ -1,0 +1,4 @@
+n=4953; MC sd per run: p 0.0068 (theory 0.0067), margin mean 0.259 pts, total mean 0.266 pts
+log loss seed0 0.53728 seed1 0.53793
+model error scale: sd(p_sim - p_ridge) 0.0928; RMSE margin 17.97, total 16.73
+runtime: sim ms/game 55 (N=4000), fit s/block 159 (11 parallel fits)

@@ -1,0 +1,116 @@
+2022-tuned: sd ridge 17.21, spread 15.19, mkt total 16.08, pts ridge 16.50, naive 17.71; smooth margin 0, total 0
+league pmf smoothing (2022): margin 0.5, total 0.5
+
+==================== 2023-24 all  n=3267
+WINNER               acc    logloss  d(ll) vs ridge [95% CI]
+  ridge              0.724  0.5184  
+  p_raw              0.714  0.5396  +0.0212 [+0.0143, +0.0278]
+  cal                0.715  0.5393  +0.0209 [+0.0138, +0.0278]
+  stk                0.722  0.5192  +0.0009 [-0.0003, +0.0020]
+  -- on 2970 games with market: market acc 0.744 ll 0.4929; ridge ll 0.5170
+     ridge - market: ll +0.0241 [+0.0148, +0.0339]   (ll 0.5170)
+     cal - market: ll +0.0430 [+0.0296, +0.0559]   (ll 0.5359)
+     stk - market: ll +0.0246 [+0.0150, +0.0349]   (ll 0.5175)
+MARGIN (all n=3267; market rows n=2970)   MAE    logscore   CRPS
+  ridge normal             13.318  4.2553  9.5082
+  sim raw                  13.949  4.1946  9.9740
+  sim calibrated mean      13.982  4.1917  9.9579
+  sim shape@ridge          13.318  4.1432  9.4912
+  league pmf@ridge         13.318  4.1900  9.7695
+  sim shape@ridge - league pmf@ridge: logscore -0.0469 [-0.0681, -0.0244]  CRPS -0.2783 [-0.3339, -0.2242]
+  sim raw - ridge normal: MAE +0.6319 [+0.4863, +0.7859]  logscore -0.0608 [-0.0845, -0.0361]  CRPS +0.4658 [+0.3556, +0.5820]
+  sim calibrated mean - ridge normal: MAE +0.6644 [+0.5204, +0.8051]  logscore -0.0637 [-0.0868, -0.0406]  CRPS +0.4497 [+0.3522, +0.5474]
+  sim shape@ridge - ridge normal: MAE +0.0000 [+0.0000, +0.0000]  logscore -0.1122 [-0.1301, -0.0946]  CRPS -0.0170 [-0.0317, -0.0022]
+  market rows: MAE spread 11.987, ridge 12.865, sim-cal 13.475; sim-cal - spread MAE +1.4880 [+1.0990, +1.9103]
+  SHAPE: sim shape@spread - normal@spread: logscore -0.0883 [-0.1082, -0.0687]  CRPS +0.0466 [+0.0189, +0.0742]
+  SHAPE: sim shape@spread - league pmf@spread: logscore -0.0759 [-0.0919, -0.0598]  CRPS -0.3826 [-0.4248, -0.3386]   (logscores: normal 4.1465, league 4.1342, sim 4.0583)
+TOTALS    MAE    logscore  CRPS   bias
+  naive            13.669  4.2615  9.6486  +0.80
+  points ridge     13.053  4.2172  9.2316  +0.33
+  sim raw          13.453  4.2150  9.4699  +1.42
+  sim calibrated   13.120  4.1930  9.2519  +0.97
+  sim raw - naive: CRPS -0.1787 [-0.3569, +0.0070]  MAE -0.2157 [-0.4828, +0.0596]
+  sim raw - points ridge: CRPS +0.2383 [+0.1432, +0.3349]  MAE +0.4001 [+0.2580, +0.5367]
+  sim calibrated - naive: CRPS -0.3967 [-0.5123, -0.2739]  MAE -0.5494 [-0.7107, -0.3832]
+  sim calibrated - points ridge: CRPS +0.0202 [-0.0364, +0.0740]  MAE +0.0664 [-0.0236, +0.1528]
+  market rows n=2964: MAE market 12.778, sim-cal 13.113, sim+market stack 12.782
+   sim-cal - market MAE +0.3354 [+0.1944, +0.4896]; stack - market MAE +0.0044 [-0.0367, +0.0486]
+   sim shape@market - normal@market: CRPS +0.0214 [+0.0003, +0.0432] logscore -0.0300 [-0.0472, -0.0138]; stack CRPS -0.0074 [-0.0305, +0.0183]
+   sim shape@market - league pmf@market: CRPS -0.0042 [-0.0215, +0.0148] logscore +0.0096 [-0.0028, +0.0211]
+raw win-prob quintiles pred->obs [(np.float64(0.29), np.float64(0.284)), (np.float64(0.493), np.float64(0.475)), (np.float64(0.627), np.float64(0.608)), (np.float64(0.759), np.float64(0.775)), (np.float64(0.907), np.float64(0.928))]; margin slope (actual on sim mean) 1.06; sim P(OT) 0.034; sim ms/game 59; fit s/block 174.8
+
+==================== 2023-24 FBS-tagged  n=1830
+WINNER               acc    logloss  d(ll) vs ridge [95% CI]
+  ridge              0.731  0.4951  
+  p_raw              0.732  0.5108  +0.0157 [+0.0084, +0.0232]
+  cal                0.733  0.5096  +0.0145 [+0.0068, +0.0227]
+  stk                0.729  0.4953  +0.0002 [-0.0011, +0.0015]
+  -- on 1812 games with market: market acc 0.750 ll 0.4744; ridge ll 0.4992
+     ridge - market: ll +0.0248 [+0.0136, +0.0362]   (ll 0.4992)
+     cal - market: ll +0.0394 [+0.0247, +0.0537]   (ll 0.5138)
+     stk - market: ll +0.0250 [+0.0130, +0.0370]   (ll 0.4994)
+MARGIN (all n=1830; market rows n=1812)   MAE    logscore   CRPS
+  ridge normal             13.002  4.2162  9.2177
+  sim raw                  13.417  4.1509  9.5253
+  sim calibrated mean      13.399  4.1451  9.4836
+  sim shape@ridge          13.002  4.1163  9.2013
+  league pmf@ridge         13.002  4.1660  9.5122
+  sim shape@ridge - league pmf@ridge: logscore -0.0497 [-0.0732, -0.0278]  CRPS -0.3108 [-0.3754, -0.2477]
+  sim raw - ridge normal: MAE +0.4143 [+0.2133, +0.6206]  logscore -0.0653 [-0.0986, -0.0324]  CRPS +0.3076 [+0.1661, +0.4587]
+  sim calibrated mean - ridge normal: MAE +0.3969 [+0.1992, +0.5900]  logscore -0.0711 [-0.1036, -0.0400]  CRPS +0.2658 [+0.1337, +0.4030]
+  sim shape@ridge - ridge normal: MAE +0.0000 [+0.0000, +0.0000]  logscore -0.1000 [-0.1256, -0.0767]  CRPS -0.0164 [-0.0372, +0.0047]
+  market rows: MAE spread 12.032, ridge 13.011, sim-cal 13.401; sim-cal - spread MAE +1.3690 [+0.9166, +1.8216]
+  SHAPE: sim shape@spread - normal@spread: logscore -0.0846 [-0.1114, -0.0592]  CRPS +0.0332 [+0.0016, +0.0634]
+  SHAPE: sim shape@spread - league pmf@spread: logscore -0.0745 [-0.0935, -0.0559]  CRPS -0.3991 [-0.4543, -0.3440]   (logscores: normal 4.1468, league 4.1367, sim 4.0622)
+TOTALS    MAE    logscore  CRPS   bias
+  naive            13.413  4.2462  9.4858  -0.05
+  points ridge     12.933  4.2127  9.1781  -0.19
+  sim raw          13.270  4.2189  9.4055  -0.49
+  sim calibrated   12.951  4.1951  9.1890  -0.52
+  sim raw - naive: CRPS -0.0804 [-0.3334, +0.1753]  MAE -0.1425 [-0.5080, +0.2173]
+  sim raw - points ridge: CRPS +0.2273 [+0.0891, +0.3683]  MAE +0.3370 [+0.1441, +0.5226]
+  sim calibrated - naive: CRPS -0.2969 [-0.4668, -0.1284]  MAE -0.4618 [-0.6984, -0.2298]
+  sim calibrated - points ridge: CRPS +0.0109 [-0.0929, +0.1166]  MAE +0.0177 [-0.1275, +0.1647]
+  market rows n=1811: MAE market 12.638, sim-cal 13.000, sim+market stack 12.620
+   sim-cal - market MAE +0.3617 [+0.1828, +0.5438]; stack - market MAE -0.0183 [-0.0677, +0.0337]
+   sim shape@market - normal@market: CRPS +0.0461 [+0.0192, +0.0739] logscore -0.0159 [-0.0353, +0.0032]; stack CRPS +0.0088 [-0.0259, +0.0457]
+   sim shape@market - league pmf@market: CRPS +0.0076 [-0.0193, +0.0361] logscore +0.0133 [-0.0044, +0.0315]
+raw win-prob quintiles pred->obs [(np.float64(0.301), np.float64(0.259)), (np.float64(0.506), np.float64(0.501)), (np.float64(0.648), np.float64(0.612)), (np.float64(0.787), np.float64(0.828)), (np.float64(0.928), np.float64(0.951))]; margin slope (actual on sim mean) 1.15; sim P(OT) 0.033; sim ms/game 58; fit s/block 175.8
+
+==================== 2023-24 FBS-vs-FBS  n=1593
+WINNER               acc    logloss  d(ll) vs ridge [95% CI]
+  ridge              0.697  0.5488  
+  p_raw              0.700  0.5627  +0.0139 [+0.0059, +0.0224]
+  cal                0.701  0.5623  +0.0134 [+0.0050, +0.0229]
+  stk                0.696  0.5486  -0.0003 [-0.0017, +0.0012]
+  -- on 1593 games with market: market acc 0.720 ll 0.5233; ridge ll 0.5488
+     ridge - market: ll +0.0255 [+0.0128, +0.0395]   (ll 0.5488)
+     cal - market: ll +0.0389 [+0.0232, +0.0555]   (ll 0.5623)
+     stk - market: ll +0.0252 [+0.0120, +0.0399]   (ll 0.5486)
+MARGIN (all n=1593; market rows n=1593)   MAE    logscore   CRPS
+  ridge normal             12.934  4.2091  9.1553
+  sim raw                  13.231  4.1361  9.3806
+  sim calibrated mean      13.259  4.1354  9.3809
+  sim shape@ridge          12.934  4.1089  9.1361
+  league pmf@ridge         12.934  4.1579  9.4307
+  sim shape@ridge - league pmf@ridge: logscore -0.0489 [-0.0735, -0.0236]  CRPS -0.2947 [-0.3636, -0.2224]
+  sim raw - ridge normal: MAE +0.2969 [+0.1166, +0.4763]  logscore -0.0729 [-0.1048, -0.0418]  CRPS +0.2253 [+0.1144, +0.3426]
+  sim calibrated mean - ridge normal: MAE +0.3248 [+0.1473, +0.5098]  logscore -0.0737 [-0.1058, -0.0428]  CRPS +0.2256 [+0.1144, +0.3428]
+  sim shape@ridge - ridge normal: MAE +0.0000 [+0.0000, +0.0000]  logscore -0.1002 [-0.1271, -0.0748]  CRPS -0.0192 [-0.0388, +0.0016]
+  market rows: MAE spread 12.094, ridge 12.934, sim-cal 13.259; sim-cal - spread MAE +1.1643 [+0.7852, +1.5802]
+  SHAPE: sim shape@spread - normal@spread: logscore -0.0873 [-0.1147, -0.0600]  CRPS +0.0258 [-0.0051, +0.0574]
+  SHAPE: sim shape@spread - league pmf@spread: logscore -0.0687 [-0.0904, -0.0480]  CRPS -0.3734 [-0.4325, -0.3153]   (logscores: normal 4.1511, league 4.1324, sim 4.0638)
+TOTALS    MAE    logscore  CRPS   bias
+  naive            13.528  4.2506  9.5455  +0.23
+  points ridge     12.991  4.2115  9.1921  +0.07
+  sim raw          13.295  4.2229  9.3916  -0.40
+  sim calibrated   13.032  4.2026  9.2019  -0.35
+  sim raw - naive: CRPS -0.1540 [-0.3862, +0.0960]  MAE -0.2328 [-0.5492, +0.1112]
+  sim raw - points ridge: CRPS +0.1995 [+0.0711, +0.3271]  MAE +0.3037 [+0.1303, +0.4701]
+  sim calibrated - naive: CRPS -0.3436 [-0.5023, -0.1729]  MAE -0.4963 [-0.7044, -0.2733]
+  sim calibrated - points ridge: CRPS +0.0098 [-0.1009, +0.1186]  MAE +0.0402 [-0.1130, +0.1935]
+  market rows n=1593: MAE market 12.742, sim-cal 13.032, sim+market stack 12.705
+   sim-cal - market MAE +0.2898 [+0.1027, +0.4901]; stack - market MAE -0.0371 [-0.0856, +0.0135]
+   sim shape@market - normal@market: CRPS +0.0426 [+0.0095, +0.0764] logscore -0.0078 [-0.0258, +0.0110]; stack CRPS -0.0047 [-0.0444, +0.0383]
+   sim shape@market - league pmf@market: CRPS +0.0046 [-0.0232, +0.0367] logscore +0.0177 [-0.0017, +0.0383]
+raw win-prob quintiles pred->obs [(np.float64(0.285), np.float64(0.245)), (np.float64(0.476), np.float64(0.464)), (np.float64(0.604), np.float64(0.567)), (np.float64(0.731), np.float64(0.736)), (np.float64(0.877), np.float64(0.896))]; margin slope (actual on sim mean) 1.11; sim P(OT) 0.035; sim ms/game 58; fit s/block 174.9
