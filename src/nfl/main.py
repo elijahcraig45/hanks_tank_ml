@@ -18,6 +18,13 @@ Shadow model: {"shadow_ridge": true} on predict_week (or NFL_RIDGE_SHADOW=1) als
 the margin ridge's predictions to nfl_season.game_predictions_ridge_shadow. Nothing reads
 that table; it exists so the ridge can be scored live before adoption.
 
+Drive-sim shadow: {"shadow_drive_sim": true} on predict_week (or NFL_DRIVE_SIM_SHADOW=1,
+which deploy_nfl.sh --shadow sets) also runs the drive simulator (drive_sim.py) and writes
+nfl_season.game_sim_distributions and nfl_season.game_predictions_drive_sim. Pregame games
+only, game_id-scoped upserts into tables that must already exist (CREATE_NEVER; DDL in
+scripts/gcp/football/create_drive_sim_tables.sql), and nothing under dry_run. It trains on
+nfl_historical.drives, which `ingest` refreshes for the current season only.
+
 FPI snapshot: {"fpi_snapshot": true} on ingest/predict_week (or FPI_SNAPSHOT=1) also
 appends ESPN FPI's pregame predictions to nfl_season.fpi_game_predictions, for the model
 comparison page. Off by default; the table must be created first (it is loaded with
@@ -89,6 +96,50 @@ def _shadow_enabled(req: dict) -> bool:
     import os
 
     return bool(req.get("shadow_ridge")) or os.environ.get("NFL_RIDGE_SHADOW") == "1"
+
+
+def _drive_sim_enabled(req: dict) -> bool:
+    """The drive simulator is a shadow too: per request ({"shadow_drive_sim": true}) or
+    per deployment (NFL_DRIVE_SIM_SHADOW=1). Off by default."""
+    import os
+
+    return bool(req.get("shadow_drive_sim")) or os.environ.get("NFL_DRIVE_SIM_SHADOW") == "1"
+
+
+def _drive_sim_week(season: int, week: int, steps: dict, dry_run: bool = False) -> None:
+    """Drive-sim shadow for the week. Never fatal; under dry_run computes and writes nothing."""
+    try:
+        from predict_nfl import (DRIVE_SIM_DIST_TABLE, DRIVE_SIM_PRED_TABLE,
+                                 predict_week_drive_sim)
+
+        dist, pred, info = predict_week_drive_sim(season, week)
+        if dry_run:
+            steps["shadow_drive_sim"] = {**info, "written": 0,
+                                         "games": dist["game_id"].tolist() if len(dist) else []}
+            return
+        from bq_io import upsert_week
+        from config import CTX
+
+        n1 = upsert_week(dist, CTX.season_dataset, DRIVE_SIM_DIST_TABLE, season, week,
+                         create_disposition="CREATE_NEVER")
+        n2 = upsert_week(pred, CTX.season_dataset, DRIVE_SIM_PRED_TABLE, season, week,
+                         create_disposition="CREATE_NEVER")
+        steps["shadow_drive_sim"] = {**info, "written": {DRIVE_SIM_DIST_TABLE: n1,
+                                                         DRIVE_SIM_PRED_TABLE: n2}}
+    except (Exception, SystemExit) as exc:  # _upcoming raises SystemExit on an empty slate
+        logger.error("shadow drive_sim failed: %s", exc)
+        steps["shadow_drive_sim"] = {"error": str(exc)[:200]}
+
+
+def _refresh_drives(season: int, steps: dict) -> None:
+    """Current season's drives -> nfl_historical.drives (that season only). Never fatal."""
+    try:
+        from drives import ingest_season
+
+        steps["drives"] = ingest_season(season)
+    except Exception as exc:
+        logger.error("drives refresh failed: %s", exc)
+        steps["drives"] = {"error": str(exc)[:200]}
 
 
 def _shadow_ridge_week(season: int, week: int, steps: dict) -> None:
@@ -185,6 +236,9 @@ def nfl_pipeline(request):
             # writing the current season.
             result["steps"]["epa"] = backfill_epa(seasons=[season])
 
+            # Drive rows for the drive-sim shadow, same one-season scope as EPA.
+            _refresh_drives(season, result["steps"])
+
             # Derived from the games that just landed, so they belong in this call.
             _refresh_rankings(season, result["steps"])
             _refresh_stats(season, result["steps"])
@@ -243,6 +297,8 @@ def nfl_pipeline(request):
                             predict_week(int(season), int(week), model="ridge"))
                     except Exception as exc:
                         result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
+                if _drive_sim_enabled(req):
+                    _drive_sim_week(int(season), int(week), result["steps"], dry_run=True)
                 result["status"] = "ok"
                 return (result, 200)
             ensure_dataset(CTX.season_dataset)
@@ -254,6 +310,8 @@ def nfl_pipeline(request):
 
             if _shadow_enabled(req):
                 _shadow_ridge_week(int(season), int(week), result["steps"])
+            if _drive_sim_enabled(req):
+                _drive_sim_week(int(season), int(week), result["steps"])
 
             from rankings import fpi_games
 

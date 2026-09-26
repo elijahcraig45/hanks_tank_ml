@@ -363,6 +363,51 @@ def predict_week(season: int, week: int, model: str = "xgb",
     return build_prediction_rows(target, proba)
 
 
+# Drive simulator shadow (drive_sim.py). Two tables, both game_id-scoped upserts:
+DRIVE_SIM_DIST_TABLE = "game_sim_distributions"
+DRIVE_SIM_PRED_TABLE = "game_predictions_drive_sim"
+_FLOAT_COLS = ("p_home_cover", "spread_line", "total_line", "vegas_implied_home_prob",
+               "model_vs_vegas_edge")
+
+
+def predict_week_drive_sim(season: int, week: int,
+                           schedule: pd.DataFrame | None = None,
+                           drives: pd.DataFrame | None = None,
+                           now: pd.Timestamp | None = None,
+                           n_sims: int | None = None):
+    """Drive-sim shadow for one week: (distribution rows, prediction rows, info).
+
+    Pregame only: the slate comes from _upcoming, which drops finished and started
+    games. Drives come from nfl_historical.drives (two prior seasons + this one) —
+    never from play-by-play — so a cold container needs ~15k rows, not 20 seasons.
+    """
+    import drive_sim as ds
+    from drives import load_drives
+
+    schedule = load_schedules() if schedule is None else schedule
+    upcoming = _upcoming(schedule, season, week, now=now)
+    if drives is None:
+        drives = load_drives(season - ds.FIT_SEASONS)
+    if drives is None or drives.empty or (drives["season"] == season - 1).sum() == 0:
+        raise RuntimeError(f"drive_sim: no {season - 1} drives in nfl_historical.drives — "
+                           "run the drives backfill/ingest before the shadow")
+    played_weeks = set(schedule.loc[(schedule["season"] == season) & schedule["result"].notna()
+                                    & (schedule["week"] < week), "week"].astype(int))
+    have_weeks = set(drives.loc[drives["season"] == season, "week"].astype(int))
+    lag = len(played_weeks - have_weeks)
+    if lag:
+        logger.warning("drives are %d week(s) behind the %d results", lag, season)
+    dist, pred, timing = ds.simulate_slate(
+        upcoming, ds.prep_drives(drives, schedule), schedule, season, week,
+        n=n_sims or ds.N_SIMS,
+        now=(now.to_pydatetime() if now is not None else None))
+    for df in (dist, pred):
+        for c in _FLOAT_COLS:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
+    return dist, pred, {**timing, "drives_week_lag": lag, "games": len(dist)}
+
+
 def _epa_lag_weeks(played: pd.DataFrame, epa: pd.DataFrame, season: int) -> int:
     """How many played weeks of `season` have no EPA rows yet."""
     done = set(played.loc[played["season"] == season, "week"].astype(int))

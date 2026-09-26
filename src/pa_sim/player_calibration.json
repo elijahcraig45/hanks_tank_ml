@@ -1,0 +1,181 @@
+{
+ "version": "player_cal_v1",
+ "fitted_at": "2026-09-25",
+ "source": "research/backtest_2026/54_player_props_calibration.py (frozen full_x50 sim, N=3000, weekly refit)",
+ "gate": "test seasons, each: |mean ratio-1|<=0.03, randomized-PIT central 90% within 0.02 of 0.90 and central 50% within 0.03 of 0.50; batters also |P(>=1) - observed|<=0.01 and 10-bin ECE<=0.01",
+ "exposure": {
+  "years": [
+   2022,
+   2023
+  ],
+  "S": [
+   [
+    1.0,
+    0.9964,
+    0.98848,
+    0.95069,
+    0.90938,
+    0.80616,
+    0.80616,
+    0.80616
+   ],
+   [
+    1.0,
+    0.99794,
+    0.99084,
+    0.96194,
+    0.92508,
+    0.77694,
+    0.77694,
+    0.77694
+   ],
+   [
+    1.0,
+    0.99743,
+    0.98981,
+    0.95762,
+    0.91622,
+    0.74205,
+    0.74205,
+    0.74205
+   ],
+   [
+    1.0,
+    0.99774,
+    0.98703,
+    0.94954,
+    0.90167,
+    0.90167,
+    0.90167,
+    0.90167
+   ],
+   [
+    1.0,
+    0.99691,
+    0.97797,
+    0.92536,
+    0.87308,
+    0.87308,
+    0.87308,
+    0.87308
+   ],
+   [
+    1.0,
+    0.99784,
+    0.97024,
+    0.90881,
+    0.85707,
+    0.85707,
+    0.85707,
+    0.85707
+   ],
+   [
+    1.0,
+    0.9966,
+    0.95459,
+    0.88774,
+    0.84958,
+    0.84958,
+    0.84958,
+    0.84958
+   ],
+   [
+    1.0,
+    0.99733,
+    0.92572,
+    0.82781,
+    0.80513,
+    0.80513,
+    0.80513,
+    0.80513
+   ],
+   [
+    1.0,
+    0.99455,
+    0.90015,
+    0.79047,
+    0.79047,
+    0.79047,
+    0.79047,
+    0.79047
+   ]
+  ],
+  "note": "S[slot][k] = P(starting batter holds slot at its (k+1)-th turn | turn happens); k>=7 pooled"
+ },
+ "batter": {
+  "PA": {
+   "calibrated": true,
+   "apply_thin": true,
+   "thin": 0.9838,
+   "note": "PA: slot-survival exposure (late substitutions, fit 2022-23) + binomial thinning x0.9838 (fit 2024). Out of sample 2025 mean 4.021 vs 4.025 (ratio 0.999), PIT90 0.909, PIT50 0.510, P(>=1) 1.000 vs 1.000, ECE 0.0001; 2026 mean 4.028 vs 4.010 (ratio 1.005), PIT90 0.900, PIT50 0.501, P(>=1) 1.000 vs 1.000, ECE 0.0001. Raw sim 2025/2026: mean 4.241 vs 4.025 (ratio 1.054), PIT90 0.829, PIT50 0.447; mean 4.250 vs 4.010 (ratio 1.060), PIT90 0.815, PIT50 0.435. Passes the gate: calibrated."
+  },
+  "H": {
+   "calibrated": false,
+   "apply_thin": true,
+   "thin": 0.9551,
+   "note": "H: slot-survival exposure (late substitutions, fit 2022-23) + binomial thinning x0.9551 (fit 2024). Out of sample 2025 mean 0.889 vs 0.887 (ratio 1.003), PIT90 0.897, PIT50 0.497, P(>=1) 0.618 vs 0.612, ECE 0.0062; 2026 mean 0.881 vs 0.877 (ratio 1.005), PIT90 0.896, PIT50 0.497, P(>=1) 0.614 vs 0.606, ECE 0.0108. Raw sim 2025/2026: mean 0.966 vs 0.887 (ratio 1.089), PIT90 0.901, PIT50 0.501, P(>=1) 0.651 vs 0.612, ECE 0.0390; mean 0.957 vs 0.877 (ratio 1.091), PIT90 0.900, PIT50 0.499, P(>=1) 0.647 vs 0.606, ECE 0.0411. Fails the gate (2026: ECE 0.0108): not calibrated."
+  },
+  "HR": {
+   "calibrated": true,
+   "apply_thin": true,
+   "thin": 0.8622,
+   "note": "HR: slot-survival exposure (late substitutions, fit 2022-23) + binomial thinning x0.8622 (fit 2024). Out of sample 2025 mean 0.125 vs 0.126 (ratio 0.994), PIT90 0.900, PIT50 0.506, P(>=1) 0.118 vs 0.117, ECE 0.0049; 2026 mean 0.123 vs 0.124 (ratio 0.996), PIT90 0.898, PIT50 0.503, P(>=1) 0.116 vs 0.116, ECE 0.0029. Raw sim 2025/2026: mean 0.150 vs 0.126 (ratio 1.194), PIT90 0.908, PIT50 0.519, P(>=1) 0.140 vs 0.117, ECE 0.0229; mean 0.148 vs 0.124 (ratio 1.197), PIT90 0.907, PIT50 0.516, P(>=1) 0.138 vs 0.116, ECE 0.0220. Passes the gate: calibrated."
+  },
+  "TB": {
+   "calibrated": true,
+   "apply_thin": true,
+   "thin": 0.9283,
+   "note": "TB: slot-survival exposure (late substitutions, fit 2022-23) + binomial thinning x0.9283 (fit 2024). Out of sample 2025 mean 1.465 vs 1.464 (ratio 1.000), PIT90 0.896, PIT50 0.503, P(>=1) 0.617 vs 0.612, ECE 0.0055; 2026 mean 1.447 vs 1.442 (ratio 1.003), PIT90 0.896, PIT50 0.502, P(>=1) 0.613 vs 0.606, ECE 0.0095. Raw sim 2025/2026: mean 1.636 vs 1.464 (ratio 1.117), PIT90 0.904, PIT50 0.507, P(>=1) 0.651 vs 0.612, ECE 0.0390; mean 1.617 vs 1.442 (ratio 1.121), PIT90 0.904, PIT50 0.505, P(>=1) 0.647 vs 0.606, ECE 0.0411. Passes the gate: calibrated."
+  },
+  "BB": {
+   "calibrated": true,
+   "apply_thin": true,
+   "thin": 0.9661,
+   "note": "BB: slot-survival exposure (late substitutions, fit 2022-23) + binomial thinning x0.9661 (fit 2024). Out of sample 2025 mean 0.372 vs 0.381 (ratio 0.978), PIT90 0.895, PIT50 0.503, P(>=1) 0.315 vs 0.318, ECE 0.0065; 2026 mean 0.389 vs 0.396 (ratio 0.980), PIT90 0.894, PIT50 0.499, P(>=1) 0.327 vs 0.329, ECE 0.0058. Raw sim 2025/2026: mean 0.400 vs 0.381 (ratio 1.051), PIT90 0.900, PIT50 0.510, P(>=1) 0.335 vs 0.318, ECE 0.0176; mean 0.418 vs 0.396 (ratio 1.054), PIT90 0.898, PIT50 0.508, P(>=1) 0.347 vs 0.329, ECE 0.0189. Passes the gate: calibrated. BB here includes HBP and catcher's interference."
+  },
+  "K": {
+   "calibrated": true,
+   "apply_thin": true,
+   "thin": 0.9635,
+   "note": "K: slot-survival exposure (late substitutions, fit 2022-23) + binomial thinning x0.9635 (fit 2024). Out of sample 2025 mean 0.885 vs 0.889 (ratio 0.995), PIT90 0.900, PIT50 0.499, P(>=1) 0.616 vs 0.619, ECE 0.0080; 2026 mean 0.884 vs 0.879 (ratio 1.006), PIT90 0.896, PIT50 0.495, P(>=1) 0.615 vs 0.610, ECE 0.0051. Raw sim 2025/2026: mean 0.954 vs 0.889 (ratio 1.073), PIT90 0.901, PIT50 0.501, P(>=1) 0.648 vs 0.619, ECE 0.0288; mean 0.953 vs 0.879 (ratio 1.084), PIT90 0.899, PIT50 0.500, P(>=1) 0.646 vs 0.610, ECE 0.0362. Passes the gate: calibrated."
+  }
+ },
+ "starter": {
+  "K": {
+   "calibrated": false,
+   "apply_thin": true,
+   "thin": 0.9631,
+   "note": "K: binomial thinning x0.9631 (fit 2024). Out of sample 2025 mean 4.718 vs 4.783 (ratio 0.986), PIT90 0.856, PIT50 0.451; 2026 mean 4.676 vs 4.708 (ratio 0.993), PIT90 0.843, PIT50 0.449. Raw sim 2025/2026: mean 4.899 vs 4.783 (ratio 1.024), PIT90 0.855, PIT50 0.455; mean 4.855 vs 4.708 (ratio 1.031), PIT90 0.848, PIT50 0.452. Fails the gate (2025: PIT50 0.451; 2025: PIT90 0.856; 2026: PIT50 0.449; 2026: PIT90 0.843): not calibrated."
+  },
+  "BF": {
+   "calibrated": false,
+   "apply_thin": true,
+   "thin": 0.9911,
+   "note": "BF: binomial thinning x0.9911 (fit 2024). Out of sample 2025 mean 21.848 vs 21.920 (ratio 0.997), PIT90 0.893, PIT50 0.540; 2026 mean 21.509 vs 21.518 (ratio 1.000), PIT90 0.854, PIT50 0.481. Raw sim 2025/2026: mean 22.043 vs 21.920 (ratio 1.006), PIT90 0.897, PIT50 0.547; mean 21.701 vs 21.518 (ratio 1.009), PIT90 0.859, PIT50 0.492. Fails the gate (2025: PIT50 0.540; 2026: PIT90 0.854): not calibrated."
+  },
+  "IP_outs": {
+   "calibrated": true,
+   "apply_thin": false,
+   "thin": 1.0,
+   "note": "IP_outs: no thinning (sim under-predicts; left as is). Out of sample 2025 mean 15.425 vs 15.567 (ratio 0.991), PIT90 0.884, PIT50 0.529. Raw sim 2025: mean 15.425 vs 15.567 (ratio 0.991), PIT90 0.884, PIT50 0.529. Passes the gate: calibrated. Tested on 2025 only: the 2026 statcast table has no per-PA outs/runs."
+  },
+  "ER": {
+   "calibrated": false,
+   "apply_thin": true,
+   "thin": 0.9371,
+   "note": "ER: binomial thinning x0.9371 (fit 2024). Out of sample 2025 mean 2.614 vs 2.596 (ratio 1.007), PIT90 0.883, PIT50 0.471. Raw sim 2025: mean 2.790 vs 2.596 (ratio 1.075), PIT90 0.893, PIT50 0.479. Checked against runs CHARGED to the starter (own PAs + inherited runners, earned and unearned); official earned runs are not in the backtest data, so not marked calibrated. Tested on 2025 only: the 2026 statcast table has no per-PA outs/runs."
+  },
+  "H_allowed": {
+   "calibrated": false,
+   "apply_thin": true,
+   "thin": 0.9757,
+   "note": "H_allowed: binomial thinning x0.9757 (fit 2024). Out of sample 2025 mean 4.931 vs 4.903 (ratio 1.006), PIT90 0.885, PIT50 0.483; 2026 mean 4.795 vs 4.781 (ratio 1.003), PIT90 0.877, PIT50 0.468. Raw sim 2025/2026: mean 5.053 vs 4.903 (ratio 1.031), PIT90 0.887, PIT50 0.481; mean 4.914 vs 4.781 (ratio 1.028), PIT90 0.875, PIT50 0.471. Fails the gate (2026: PIT50 0.468; 2026: PIT90 0.877): not calibrated."
+  },
+  "BB_allowed": {
+   "calibrated": true,
+   "apply_thin": true,
+   "thin": 0.9533,
+   "note": "BB_allowed: binomial thinning x0.9533 (fit 2024). Out of sample 2025 mean 1.908 vs 1.927 (ratio 0.990), PIT90 0.888, PIT50 0.493; 2026 mean 1.952 vs 1.988 (ratio 0.982), PIT90 0.894, PIT50 0.497. Raw sim 2025/2026: mean 2.002 vs 1.927 (ratio 1.039), PIT90 0.891, PIT50 0.499; mean 2.047 vs 1.988 (ratio 1.030), PIT90 0.894, PIT50 0.504. Passes the gate: calibrated."
+  }
+ }
+}

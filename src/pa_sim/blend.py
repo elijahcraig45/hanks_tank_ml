@@ -15,6 +15,17 @@ What gets written, per game on the target slate:
       research's "sim shape at the market mean" (+0.010 log score) applies where a line
       exists and is done at read time, not here.
 
+  game_sim_distributions       one row per game: home/away/total/margin run Dists and
+      P(home win), P(extra innings), P(home -1.5), P(over) at 6.5..11.5, all computed from the
+      episodes under the same totals correction (each episode reweighted by exp(theta*total)
+      so the weighted mean total is raw mean - totals_bias_runs; totals_calibrated says so).
+  player_sim_projections       one row per (player, stat): batter PA/H/HR/TB/BB/K for all
+      18 lineup slots and starter K/BF/IP_outs/ER/H_allowed/BB_allowed, as Dists. Batter
+      lines are exposure-adjusted for late substitutions (player_calibration.json);
+      `calibrated` is true only for stats that passed the out-of-sample gate in
+      research/backtest_2026/54_player_props_calibration.py. R and RBI are not written: the
+      sim's base state is a bitmask with no runner identities, so it cannot say who scored.
+
 Nothing here runs by default. The Cloud Function dispatches it only for mode=sim_blend or
 {"run_sim_blend": true}, and it refuses (status insufficient_memory) in a container
 below SIM_BLEND_MIN_MEMORY_MB (default 3072): peak memory measured 1.3-2.2 GB and the live
@@ -39,13 +50,25 @@ PROJECT = os.environ.get("GCP_PROJECT", "hankstank")
 DATASET = os.environ.get("MLB_2026_DATASET", "mlb_2026_season")
 PRED_TABLE = os.environ.get("SIM_BLEND_TABLE", "game_predictions_sim_blend")
 PROPS_TABLE = os.environ.get("SIM_PROPS_TABLE", "game_props_sim")
+DIST_TABLE = os.environ.get("SIM_DIST_TABLE", "game_sim_distributions")
+PLAYER_TABLE = os.environ.get("SIM_PLAYER_TABLE", "player_sim_projections")
 COEFS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blend_coefs.json")
+PLAYER_CAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "player_calibration.json")
 EPS = 1e-4
 
 
 def load_coefs(path: str = COEFS_PATH) -> dict:
     with open(path) as f:
         return json.load(f)
+
+
+def load_player_calibration(path: str = PLAYER_CAL_PATH) -> dict | None:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        logger.warning("sim_blend: no player calibration at %s; player rows go out uncalibrated", path)
+        return None
 
 
 def logit(p):
@@ -174,6 +197,87 @@ def _batter_props(summary, i, r) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------- distributions
+def _lanes(res: dict, i: int) -> slice:
+    n = int(res["n"])
+    return slice(i * n, (i + 1) * n)                    # simulate() repeats games lane-major
+
+
+def distribution_rows(res: dict, slate: pd.DataFrame, coefs: dict, n_episodes: int,
+                      now: datetime) -> list:
+    """game_sim_distributions rows (one per game) from simulate()'s per-lane arrays."""
+    from pa_sim import dists
+
+    bias = float(coefs["totals_bias_runs"])
+    rows = []
+    for i, r in enumerate(slate.itertuples()):
+        sl = _lanes(res, i)
+        row = dict(game_pk=int(r.game_pk), game_date=r.game_date, game_time_utc=r.game_time_utc,
+                   predicted_at=now, model_version=coefs["model_version"], n_sims=int(n_episodes))
+        row.update(dists.game_distribution_row(res["home"][sl], res["away"][sl], res["innings"][sl],
+                                               res["sched"][sl], bias, apply_bias=True))
+        rows.append(row)
+    return rows
+
+
+def _stat_cal(cal: dict | None, role: str, stat: str) -> dict:
+    c = ((cal or {}).get(role) or {}).get(stat) or {}
+    return dict(thin=float(c.get("thin", 1.0)) if c.get("apply_thin") else 1.0,
+                calibrated=bool(c.get("calibrated", False)),
+                note=c.get("note") or "no calibration file: raw simulator output, not checked")
+
+
+def player_rows(res: dict, slate: pd.DataFrame, coefs: dict, n_episodes: int, now: datetime,
+                cal: dict | None) -> list:
+    """player_sim_projections rows: 18 batters x 6 stats + 2 starters x 6 stats per game.
+
+    Batter stats use the exposure-adjusted (_x) arrays when simulate() had an exposure
+    table, then any per-stat thinning the calibration file says to apply."""
+    from pa_sim import dists
+
+    mv = coefs["model_version"]
+    rows = []
+    use_x = "bpa_x" in res
+    for i, r in enumerate(slate.itertuples()):
+        sl = _lanes(res, i)
+        base = dict(game_pk=int(r.game_pk), game_date=r.game_date, predicted_at=now,
+                    model_version=mv, n_sims=int(n_episodes))
+        for side, name in ((0, "away"), (1, "home")):          # batting side
+            lineup = getattr(r, f"{name}_lineup")
+            names = getattr(r, f"{name}_lineup_names", None) or [None] * 9
+            team_id = int(getattr(r, f"{name}_team_id"))
+            for j, pid in enumerate(lineup):
+                for stat, key in dists.BATTER_STATS.items():
+                    arr = res[key + "_x"] if use_x else res[key]
+                    pmf = np.bincount(np.clip(arr[sl, side, j].astype(np.int64), 0, dists.CAPS[stat]),
+                                      minlength=dists.CAPS[stat] + 1) / float(n_episodes)
+                    c = _stat_cal(cal, "batter", stat)
+                    if c["thin"] < 1.0:
+                        pmf = dists.thin(pmf, c["thin"])
+                    d = dists.dist_from_pmf(pmf, n=int(n_episodes))
+                    rows.append(dict(**base, player_id=int(pid), player_name=names[j], team_id=team_id,
+                                     role="batter", batting_order=j + 1, stat=stat,
+                                     **{k: d[k] for k in dists.DIST_FIELDS},
+                                     p_at_least_1=dists.p_at_least_1(pmf),
+                                     calibrated=c["calibrated"], calibration_note=c["note"]))
+        for side, name in ((0, "away"), (1, "home")):          # defensive side: 0 = away SP
+            pid = int(getattr(r, f"{name}_starter_id"))
+            team_id = int(getattr(r, f"{name}_team_id"))
+            for stat, key in dists.STARTER_STATS.items():
+                cap = dists.CAPS["sp_K" if stat == "K" else stat]
+                pmf = np.bincount(np.clip(res[key][sl, side].astype(np.int64), 0, cap),
+                                  minlength=cap + 1) / float(n_episodes)
+                c = _stat_cal(cal, "starter", stat)
+                if c["thin"] < 1.0:
+                    pmf = dists.thin(pmf, c["thin"])
+                d = dists.dist_from_pmf(pmf, n=int(n_episodes))
+                rows.append(dict(**base, player_id=pid, player_name=getattr(r, f"{name}_starter_name", None),
+                                 team_id=team_id, role="starter", batting_order=None, stat=stat,
+                                 **{k: d[k] for k in dists.DIST_FIELDS}, p_at_least_1=None,
+                                 calibrated=c["calibrated"], calibration_note=c["note"]))
+    return rows
+
+
 # --------------------------------------------------------------------------- run
 def _slate(bq, target: date) -> pd.DataFrame:
     """One row per game with a complete pregame lineup (reuses the v1 slate query)."""
@@ -204,8 +308,15 @@ def assemble_slate(long: pd.DataFrame, venue_of: dict, name2ab: dict) -> pd.Data
             home_starter_id=int(r0.home_starter_id), away_starter_id=int(r0.away_starter_id),
             home_starter_name=r0.get("home_starter_name"), away_starter_name=r0.get("away_starter_name"),
             home_lineup=[int(x) for x in h.player_id], away_lineup=[int(x) for x in a.player_id],
+            home_lineup_names=_names(h), away_lineup_names=_names(a),
             venue_id=int(venue_of[gid]) if gid in venue_of and pd.notna(venue_of[gid]) else -1))
     return pd.DataFrame(rows)
+
+
+def _names(side: pd.DataFrame) -> list:
+    if "player_name" not in side:
+        return [None] * len(side)
+    return [None if pd.isna(x) else str(x) for x in side.player_name]
 
 
 def strength_for_slate(games: pd.DataFrame, slate: pd.DataFrame, target: date) -> np.ndarray:
@@ -266,7 +377,8 @@ def run_slate(target: date, dry_run: bool = False, experimental: bool = False,
               now: datetime | None = None) -> dict:
     coefs = load_coefs()
     n_episodes = int(n_episodes or os.environ.get("SIM_BLEND_EPISODES", coefs["n_episodes"]))
-    out = {"step": "sim_blend", "date": str(target), "tables": [PRED_TABLE, PROPS_TABLE],
+    out = {"step": "sim_blend", "date": str(target),
+           "tables": [PRED_TABLE, PROPS_TABLE, DIST_TABLE, PLAYER_TABLE],
            "model_version": coefs["model_version"], "n_episodes": n_episodes}
     ok, have, need = memory_ok()
     if not ok:
@@ -299,19 +411,38 @@ def run_slate(target: date, dry_run: bool = False, experimental: bool = False,
     specs = [v2.GameSpec(r.home_lineup, r.away_lineup, r.home_starter_id, r.away_starter_id,
                          r.home_ab, r.away_ab, r.venue_id, 9, True, np.nan)
              for r in slate.itertuples()]
-    res = v2.simulate(eng, specs, n=n_episodes, seed=int(pd.Timestamp(target).value // 10 ** 9) % 100000)
+    cal = load_player_calibration()
+    expo = np.asarray(cal["exposure"]["S"], float) if cal and cal.get("exposure") else None
+    res = v2.simulate(eng, specs, n=n_episodes, seed=int(pd.Timestamp(target).value // 10 ** 9) % 100000,
+                      exposure=expo)
     summary = v2.summarize(res, len(specs))
     pred, props = game_rows(summary, slate, sp, coefs, n_episodes, now, experimental)
-    out["games"] = len(pred)
+    dist_rows = distribution_rows(res, slate, coefs, n_episodes, now)
+    prow = player_rows(res, slate, coefs, n_episodes, now, cal)
+    out.update(games=len(pred), distribution_rows=len(dist_rows), player_rows=len(prow))
     if dry_run:
-        return {**out, "status": "dry_run", "sample": [
-            {k: v for k, v in r.items() if not isinstance(v, (datetime, date))} for r in pred[:3]]}
+        clean = lambda r: {k: v for k, v in r.items() if not isinstance(v, (datetime, date))}
+        return {**out, "status": "dry_run", "sample": [clean(r) for r in pred[:3]],
+                "sample_distribution": [clean(r) for r in dist_rows[:1]],
+                "sample_players": [clean(r) for r in prow[:2]]}
     try:
         write(bq, pred, props)
     except Exception as e:
         if "Not found: Table" in str(e) or "notFound" in str(e):
             return {**out, "status": "table_missing", "error": str(e)[:300]}
         raise
+    # The two new tables are written separately so a missing one never costs the
+    # established shadow rows above.
+    out["writes"] = {}
+    for table, rows in ((DIST_TABLE, dist_rows), (PLAYER_TABLE, prow)):
+        try:
+            append(bq, table, rows)
+            out["writes"][table] = "ok"
+        except Exception as e:  # noqa: BLE001 - reported per table
+            missing = "Not found: Table" in str(e) or "notFound" in str(e)
+            out["writes"][table] = "table_missing" if missing else f"error: {str(e)[:200]}"
+            if not missing:
+                logger.exception("sim_blend: %s write failed", table)
     return {**out, "status": "ok"}
 
 
@@ -322,11 +453,33 @@ def _utc(v) -> pd.Timestamp:
 
 def write(bq, pred: list, props: list) -> None:
     """Append both tables (load jobs, CREATE_NEVER). Never deletes."""
+    for table, rows in ((PRED_TABLE, pred), (PROPS_TABLE, props)):
+        append(bq, table, rows)
+
+
+def frame(rows: list) -> pd.DataFrame:
+    """DataFrame whose nullable integer columns stay integers (batting_order is NULL for
+    starters; a float column would not load into INT64)."""
+    df = pd.DataFrame(rows)
+    for c in df.columns:
+        raw = [r.get(c) for r in rows]
+        vals = [v for v in raw if v is not None]
+        if vals and len(vals) < len(raw) and all(isinstance(v, (int, np.integer)) and not isinstance(v, bool)
+                                                 for v in vals):
+            df[c] = pd.array([None if v is None else int(v) for v in raw], dtype="Int64")
+    return df
+
+
+def append(bq, table: str, rows: list) -> None:
+    """Append rows for this run's games only (load job, WRITE_APPEND, CREATE_NEVER).
+
+    Never deletes or truncates: a rerun adds a newer predicted_at and readers take the
+    latest pregame row per key, so no other game's rows can be touched."""
     from google.cloud import bigquery
 
-    for table, rows in ((PRED_TABLE, pred), (PROPS_TABLE, props)):
-        tbl = f"{PROJECT}.{DATASET}.{table}"
-        bq.load_table_from_dataframe(
-            pd.DataFrame(rows), tbl,
-            job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND",
-                                              create_disposition="CREATE_NEVER")).result()
+    if not rows:
+        return
+    bq.load_table_from_dataframe(
+        frame(rows), f"{PROJECT}.{DATASET}.{table}",
+        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND",
+                                          create_disposition="CREATE_NEVER")).result()
