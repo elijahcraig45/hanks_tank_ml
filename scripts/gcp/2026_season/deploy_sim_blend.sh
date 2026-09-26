@@ -5,7 +5,10 @@ set -euo pipefail
 #
 # It is the same source and entry point as mlb-2026-daily-pipeline, deployed separately
 # because the simulator peaks at 1.3-3.4 GB and the daily function has 1 GB. It is a
-# SHADOW: mode=sim_blend writes game_predictions_sim_blend and game_props_sim only.
+# SHADOW: mode=sim_blend writes game_predictions_sim_blend, game_props_sim,
+# game_sim_distributions and player_sim_projections only. The last two are appended with
+# CREATE_NEVER and reported per table (a missing one never blocks the first two); create
+# them first with create_game_sim_distributions.sql and create_player_sim_projections.sql.
 #
 # Triggered per game by the backend (lineup-scheduler.service.ts), which enqueues one
 # {"mode":"sim_blend","game_pks":[pk],"date":...} task at the 90-minute checkpoint when
