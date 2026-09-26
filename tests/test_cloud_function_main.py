@@ -92,6 +92,30 @@ class CloudFunctionMainTests(unittest.TestCase):
         mocks["_run_collection"].assert_called_once()
         mocks["_run_power_rankings"].assert_called_once()
 
+    def test_dry_run_validation_reports_but_never_deletes_duplicates(self):
+        import data_validation
+
+        made = []
+
+        class FakeValidator:
+            def __init__(self, fix_duplicates=False):
+                made.append(fix_duplicates)
+                self.errors, self.warnings = [], []
+
+            def run(self):
+                return 0
+
+        with patch.object(data_validation, "DataValidator", FakeValidator):
+            cloud_function_main._run_validation(dry_run=True)
+            cloud_function_main._run_validation(dry_run=False)
+        self.assertEqual([False, True], made)
+
+    def test_daily_dry_run_passes_dry_run_to_validation(self):
+        mocks = self._daily_patches()
+        cloud_function_main.daily_pipeline(
+            FakeRequest({"mode": "daily", "date": "2026-09-20", "dry_run": True}))
+        mocks["_run_validation"].assert_called_once_with(True)
+
     def test_rosters_mode_runs_only_rosters(self):
         mocks = self._daily_patches()
         body, status, _ = cloud_function_main.daily_pipeline(
