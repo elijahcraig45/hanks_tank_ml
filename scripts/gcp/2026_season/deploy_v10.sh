@@ -242,21 +242,13 @@ _sched_create \
     "V10: schedule pre-game Cloud Tasks for today (lineups+V8+V10+predict)"
 echo "  ✓ mlb-2026-pregame-schedule (10:00 AM ET, Mar-Nov)"
 
-# ③ Weekly V10 model retraining — Sunday 2:00 AM ET
-_sched_create \
-    "mlb-2026-weekly-train-v10" \
-    "0 2 * 3-11 0" \
-    '{"mode":"train_weekly","model_version":"v10"}' \
-    "V10: weekly XGBoost retraining (Sunday 2 AM ET)"
-echo "  ✓ mlb-2026-weekly-train-v10 (Sunday 2:00 AM ET)"
-
-# ④ Weekly predictions (Friday batch) — Friday 5:00 AM ET
-_sched_create \
-    "mlb-2026-weekly-predict" \
-    "0 5 * 3-11 5" \
-    '{"mode":"predict"}' \
-    "V10: Friday batch predictions for the upcoming week"
-echo "  ✓ mlb-2026-weekly-predict (Friday 5:00 AM ET)"
+# Retired 2026-09-25, and left PAUSED in Scheduler rather than recreated here:
+#   mlb-2026-weekly-train-v10  {"mode":"train_weekly"} actually ran the V8 trainer, failed on
+#                              import every Sunday, and never uploaded; retraining V10 on 2026
+#                              data measured neutral-to-worse anyway.
+#   mlb-2026-weekly-predict    {"mode":"predict"} ran the V4 model into weekly_predictions,
+#                              which nothing reads; V10 predicts per game from pregame tasks.
+# The modes still exist for manual runs.
 
 # ⑤ Roster refresh — Monday 3:00 AM ET
 _sched_create \
@@ -294,7 +286,7 @@ echo "=============================================="
 echo ""
 echo " Model:     gs://$BUCKET/$V10_GCS_PATH"
 echo " Function:  $FUNCTION_URL"
-echo " Scheduler: 5 jobs configured (pregame_v10 mode)"
+echo " Scheduler: 4 jobs configured (weekly train and Friday predict are retired)"
 echo ""
 echo " Verification queries:"
 echo ""
