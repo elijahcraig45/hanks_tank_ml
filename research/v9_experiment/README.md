@@ -1,3 +1,5 @@
+> **Superseded (2026-09-25):** V9 was never deployed. Current state: [docs/ML_SYSTEM.md](../../docs/ML_SYSTEM.md); history: EXPERIMENT_LOG.md. Kept for the record.
+
 # V9 Experiment — "Professional Analyst Grade"
 
 **Run date:** April 17, 2026  
