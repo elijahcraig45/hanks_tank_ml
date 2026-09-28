@@ -8,6 +8,7 @@ Research scripts behind the football findings. They are kept for reproducibility
 | `matchup_eval.py`, `nfl_pbp_agg.py` | Do run/pass unit matchups add anything over the ridge? | No. The split and the interactions are worse; the best add-on is within noise. |
 | `injury_value.py` | What is a starting RB or QB worth? | RB out: −0.4 pts (CI spans 0). QB out: −2.0 pts. |
 | `drive_sim/` | Drive-based Monte Carlo simulator (NFL). | Ties the ridge on winners. Adds nothing to the market total. Better margin-distribution shape only. |
+| `season_sim/` (2026-09-28) | Rest-of-season Monte Carlo: are its playoff/title odds calibrated? | Beats record extrapolation and coin flips clearly; rating draws fix the point estimate's overconfidence; loses badly to a (leaky) closing-line sim. Outputs of `scripts/football/backtest_season_sim.py` and `fit_cfp_committee.py`. |
 
 The teaching write-ups are in `mlb/ml_writeups/*.html`, outside this repo.
 

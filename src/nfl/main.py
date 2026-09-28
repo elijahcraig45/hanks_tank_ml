@@ -13,6 +13,11 @@ Modes (POST body {"mode": ...}):
   score         recompute results for completed games and update predictions
   backfill      re-run a whole season week by week
   fpi_snapshot  record ESPN FPI's pregame win probability for the next 8 days of games
+  season_sim    rest-of-season Monte Carlo (EXPERIMENT, shadow): final records, playoff and
+                Super Bowl odds, bracket -> nfl_season.season_sim_team / season_sim_bracket,
+                scoped to (season, as_of_week). Honours dry_run (computes, writes nothing).
+                Runs from its own Scheduler job after the weekly ingest (deploy --shadow), not
+                inside it, so it can never cost the ingest its 540 s.
 
 Shadow model: {"shadow_ridge": true} on predict_week (or NFL_RIDGE_SHADOW=1) also writes
 the margin ridge's predictions to nfl_season.game_predictions_ridge_shadow. Nothing reads
@@ -173,6 +178,22 @@ def _fpi_snapshot(season: int, steps: dict, refresh: bool = False) -> None:
         steps["fpi_snapshot"] = {"error": str(exc)[:200]}
 
 
+def _season_sim(season: int, req: dict, steps: dict, dry_run: bool = False,
+                refresh: bool = False) -> None:
+    """Rest-of-season Monte Carlo into the season_sim tables. Never fatal."""
+    try:
+        from config import CTX
+        from data import load_schedules
+        from season_sim import store
+
+        sched = load_schedules(refresh=refresh)
+        steps["season_sim"] = store.run_mode("nfl", sched, season, CTX.project,
+                                             CTX.season_dataset, req, dry_run)
+    except Exception as exc:
+        logger.error("season_sim failed: %s", exc)
+        steps["season_sim"] = {"error": str(exc)[:300]}
+
+
 def _refresh_rankings(season: int, steps: dict) -> None:
     """Rebuild and publish the power-ranking board. Never fatal."""
     try:
@@ -211,8 +232,9 @@ def nfl_pipeline(request):
     # a week of production predictions. Now only the predict modes support it (they
     # compute and return, writing nothing); any other mode refuses rather than run.
     dry_run = bool(req.get("dry_run"))
-    if dry_run and mode not in ("predict_week",):
-        return ({"mode": mode, "error": "dry_run is only supported for predict_week"}, 400)
+    if dry_run and mode not in ("predict_week", "season_sim"):
+        return ({"mode": mode, "error": "dry_run is only supported for predict_week "
+                 "and season_sim"}, 400)
 
     try:
         if mode == "ingest":
@@ -258,6 +280,17 @@ def nfl_pipeline(request):
 
             if fpi_games.enabled(req):
                 _fpi_snapshot(season, result["steps"])
+
+        elif mode == "season_sim":
+            from config import CTX
+
+            _season_sim(int(req.get("season", CTX.season)), req, result["steps"],
+                        dry_run=dry_run, refresh=True)
+            if dry_run:
+                result["dry_run"] = True
+            err = result["steps"]["season_sim"].get("error")
+            if err:
+                return ({**result, "status": "error", "error": err}, 500)
 
         elif mode == "fpi_snapshot":
             from config import CTX
