@@ -117,9 +117,9 @@ def ridge_frame_from(games: pd.DataFrame, covariates: tuple[str, ...] = ()) -> p
     })
     for c in covariates:
         g[c] = pd.to_numeric(games[c]).astype("float64").fillna(0.0).to_numpy()
-    for extra in ("game_id", "market_margin"):
+    for extra in ("game_id", "game_day", "market_margin"):
         if extra in games.columns:
-            g[extra] = (games[extra].astype(str).to_numpy() if extra == "game_id"
+            g[extra] = (games[extra].astype(str).to_numpy() if extra != "market_margin"
                         else pd.to_numeric(games[extra]).astype("float64").to_numpy())
     return g
 

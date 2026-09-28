@@ -18,7 +18,7 @@ The experiments behind each model are in [EXPERIMENT_LOG.md](EXPERIMENT_LOG.md).
 | CFB margin ridge | CFB | shadow | `cfb_season.game_predictions_ridge_shadow` | `cfb_v2_margin_ridge` |
 | Power rankings | all | production | `{mlb_2026,nfl,cfb}_season.power_rankings` | `model` = `bt` / `margin` |
 | ESPN FPI snapshot | NFL/CFB | comparison only | `fpi_game_predictions` | ESPN's model, not ours |
-| Season sim (rest-of-season Monte Carlo) | NFL/CFB | shadow | `{nfl,cfb}_season.season_sim_team`, `season_sim_bracket` | `season_sim_v1` |
+| Season sim (rest-of-season Monte Carlo) | NFL/CFB | shadow | `{nfl,cfb}_season.season_sim_team`, `season_sim_bracket`, `season_sim_games` | `season_sim_v1` |
 
 ---
 
