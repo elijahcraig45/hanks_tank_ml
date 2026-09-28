@@ -192,15 +192,30 @@ def test_sparse_and_dense_designs_agree(drives):
 
     g = played_games(drives)
     fbs = {t: int(t in FBS) for t in TEAMS}
-    out = []
+    models, out = [], []
     for sparse in (True, False):
-        # Fit both to convergence: at the production cap of 400 iterations lbfgs stops
-        # early on this small fixture, and where it stops depends on the sklearn build,
-        # so the two designs could land far enough apart to fail on CI but not locally.
         cfg = dataclasses.replace(ds.CFB, sparse=sparse, max_iter=5000)
         m = ds.fit_week(ds.prep_drives(drives, g, cfg), g, 2026, 3, cfg=cfg, fbs=fbs)
+        models.append(m)
         out.append(ds.simulate(m, "CCC", "FFF", False, 2026, "REG", N=800, rng=ds.game_rng("s")))
-    assert abs(out[0][0].mean() - out[1][0].mean()) < 0.5
+    # The claim under test is that the two designs fit the SAME model, so compare the
+    # fits directly. Comparing simulated means with a fixed tolerance was platform-
+    # dependent: on Linux BLAS the fits differ in the last bits, a few same-seed draws
+    # flip, and the mean of 800 margins moves by Monte Carlo noise (~0.7 pts), which
+    # failed CI and passed on macOS.
+    # Compare what the simulator actually uses: the drive-outcome probabilities for
+    # this matchup over the whole state grid. The raw coefficients are not identified
+    # one by one -- every drive carries one offence and one defence dummy, so those
+    # columns sum to a constant and trade off against the intercept under the ridge
+    # penalty; on Linux CI the intercepts differ by ~0.06 while the fitted
+    # probabilities barely move. lbfgs stops at tol=1e-4, so allow 0.01.
+    a, b = (mm.clf for mm in models)
+    assert list(a.classes_) == list(b.classes_)
+    ta, tb = (mm.game_tables("CCC", "FFF", False)[0] for mm in models)
+    np.testing.assert_allclose(ta, tb, atol=0.01, rtol=0)
+    # and the simulated means agree within their own Monte Carlo error
+    se = np.hypot(out[0][0].std(), out[1][0].std()) / np.sqrt(800)
+    assert abs(out[0][0].mean() - out[1][0].mean()) < 4 * se
 
 
 # ---------------------------------------------------------------- predict rows
