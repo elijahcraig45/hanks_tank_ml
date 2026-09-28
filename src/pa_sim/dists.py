@@ -93,6 +93,47 @@ def thin(pmf, m: float) -> np.ndarray:
     return q / q.sum()
 
 
+def recalibrate_cdf(pmf, a: float, b: float) -> np.ndarray:
+    """Distributional recalibration of a count pmf: new CDF = BetaCDF(old CDF; a, b).
+
+    With a, b < 1 the map pushes CDF values away from the middle, which widens the
+    distribution in both tails while keeping it a valid pmf on the same support. Used for
+    starter strikeouts, whose simulated pmf is too narrow (randomized-PIT central 90%
+    covers ~0.85; research/backtest_2026/55_starter_k_recal.py). a = b = 1 is the identity."""
+    from scipy.stats import beta
+
+    p = np.asarray(pmf, float)
+    p = p / p.sum()
+    if a == 1.0 and b == 1.0:
+        return p
+    c = np.clip(np.cumsum(p), 0.0, 1.0)
+    c[c >= 1.0 - 1e-12] = 1.0                        # rounding must not leak mass into empty tail bins
+    h = beta.cdf(c, a, b)
+    h[c >= 1.0] = 1.0
+    h[c <= 0.0] = 0.0
+    q = np.clip(np.diff(np.concatenate([[0.0], h])), 0.0, None)
+    return q / q.sum()
+
+
+def apply_calibration(pmf, cal: dict | None) -> np.ndarray:
+    """Apply a player_calibration.json stat entry (or blend._stat_cal's output) to a pmf.
+
+    Order: binomial thinning (mean), then the optional CDF recalibration (spread). Keys:
+      thin + apply_thin   thinning factor, used only when apply_thin is true (a _stat_cal
+                          dict carries the resolved factor as `thin` with no apply_thin)
+      cdf_recal           {"a": .., "b": ..}; absent means no recalibration
+    An entry without cdf_recal behaves exactly as thinning alone did before."""
+    p = np.asarray(pmf, float)
+    c = cal or {}
+    m = float(c.get("thin", 1.0)) if c.get("apply_thin", True) else 1.0
+    if m < 1.0:
+        p = thin(p, m)
+    r = c.get("cdf_recal")
+    if r:
+        p = recalibrate_cdf(p, float(r["a"]), float(r["b"]))
+    return p
+
+
 def tilt_weights(total: np.ndarray, target: float) -> tuple[np.ndarray, float]:
     """Per-episode weights w ~ exp(theta * total) giving weighted mean total == target.
 
