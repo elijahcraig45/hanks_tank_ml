@@ -28,11 +28,28 @@ What gets written, per game on the target slate:
 
 Nothing here runs by default. The Cloud Function dispatches it only for mode=sim_blend or
 {"run_sim_blend": true}, and it refuses (status insufficient_memory) in a container
-below SIM_BLEND_MIN_MEMORY_MB (default 3072): peak memory measured 1.3-2.2 GB and the live
-function has 1 GB. Both tables are APPEND-ONLY and loaded with CREATE_NEVER; readers take
-the latest row per game written before first pitch, and games that have already started
-are skipped (a date-wide DELETE + rewrite, as v1 did, would replace rows for games in
-progress with post-first-pitch rows that an honest scoreboard has to discard).
+below SIM_BLEND_MIN_MEMORY_MB (default 3072). All four tables are APPEND-ONLY and loaded
+with CREATE_NEVER; readers take the latest row per game written before first pitch, and
+games that have already started are skipped (a date-wide DELETE + rewrite, as v1 did,
+would replace rows for games in progress with post-first-pitch rows that an honest
+scoreboard has to discard).
+
+Operational rules, from the 2026-09-26/27 misses (docs/SHADOW_MODELS.md):
+  * Warm engine. The ~2M-PA inputs and the fitted engine depend only on the date, so one
+    instance builds them once per date and every later task that day only simulates.
+    Rebuilding per task left ~2 GB of freed-but-unreturned heap behind and the second
+    task on a warm instance peaked over the 4 GiB limit (measured locally 2.9 GB cold,
+    3.9 GB second run; production OOM at 4,271 MiB). release_memory() hands freed heap
+    back to the OS (malloc_trim) whenever the cache is rebuilt.
+  * Idempotent writes. A game already written today (per table, same model_version) is
+    skipped unless force=True, and every load job has a content-derived job id, so a
+    retried or duplicated task that recomputes the same rows gets 409 from BigQuery
+    instead of appending a second copy. Load jobs, not DML: nothing is deleted, and
+    nothing touches the streaming buffer.
+  * Missing lineups. With lineup_fallback=True (the backend's late retry task) a side
+    whose posted lineup is still incomplete uses the team's previous game's lineup
+    (research 51_test_report: +0.0014 [-0.0009, +0.0037] log loss 2025, -0.0012
+    [-0.0038, +0.0014] 2026, i.e. no measurable cost). lineup_source records which.
 """
 from __future__ import annotations
 
@@ -140,8 +157,15 @@ def memory_ok() -> tuple[bool, float | None, float]:
 
 # --------------------------------------------------------------------------- rows
 def game_rows(summary: dict, slate: pd.DataFrame, strength_p: np.ndarray, coefs: dict,
-              n_episodes: int, now: datetime, experimental: bool = False) -> tuple[list, list]:
-    """Turn v2.summarize() output (games in slate order) into the two tables' rows."""
+              n_episodes: int, now: datetime, experimental: bool = False,
+              cal: dict | None = None) -> tuple[list, list]:
+    """Turn v2.summarize() output (games in slate order) into the two tables' rows.
+
+    With `cal` (player_calibration.json) the starter strikeout pmf in game_props_sim gets
+    the same starter-K calibration as player_sim_projections; without it, the raw sim."""
+    from pa_sim import dists
+
+    k_cal = _stat_cal(cal, "starter", "K") if cal else None
     mv = coefs["model_version"]
     bias = float(coefs["totals_bias_runs"])
     th = summary["tot_hist"]; hh = summary["h_hist"]; ah = summary["a_hist"]
@@ -164,7 +188,8 @@ def game_rows(summary: dict, slate: pd.DataFrame, strength_p: np.ndarray, coefs:
             strength_p=float(strength_p[i]),
             predicted_winner=r.home_team_name if p >= 0.5 else r.away_team_name,
             confidence_tier=tier(p), model_version=mv, n_episodes=int(n_episodes),
-            mean_home_runs=mh, mean_away_runs=ma, predicted_at=now))
+            mean_home_runs=mh, mean_away_runs=ma, predicted_at=now,
+            lineup_source=getattr(r, "lineup_source", None) or "posted"))
         row = dict(
             **base, home_team_name=r.home_team_name, away_team_name=r.away_team_name,
             model_version=mv, n_episodes=int(n_episodes),
@@ -174,6 +199,8 @@ def game_rows(summary: dict, slate: pd.DataFrame, strength_p: np.ndarray, coefs:
             batter_props_json=None, predicted_at=now)
         for side, s in (("home", 1), ("away", 0)):       # spk[:, 0] = away SP, [:, 1] = home SP
             pmf = summary["spk"][i, s]
+            if k_cal is not None:
+                pmf = dists.apply_calibration(pmf, k_cal)
             row[f"{side}_starter_id"] = int(getattr(r, f"{side}_starter_id"))
             row[f"{side}_starter_name"] = getattr(r, f"{side}_starter_name", None)
             row[f"{side}_starter_k_mean"] = float((pmf * np.arange(len(pmf))).sum())
@@ -223,6 +250,7 @@ def distribution_rows(res: dict, slate: pd.DataFrame, coefs: dict, n_episodes: i
 def _stat_cal(cal: dict | None, role: str, stat: str) -> dict:
     c = ((cal or {}).get(role) or {}).get(stat) or {}
     return dict(thin=float(c.get("thin", 1.0)) if c.get("apply_thin") else 1.0,
+                cdf_recal=c.get("cdf_recal"),
                 calibrated=bool(c.get("calibrated", False)),
                 note=c.get("note") or "no calibration file: raw simulator output, not checked")
 
@@ -252,8 +280,7 @@ def player_rows(res: dict, slate: pd.DataFrame, coefs: dict, n_episodes: int, no
                     pmf = np.bincount(np.clip(arr[sl, side, j].astype(np.int64), 0, dists.CAPS[stat]),
                                       minlength=dists.CAPS[stat] + 1) / float(n_episodes)
                     c = _stat_cal(cal, "batter", stat)
-                    if c["thin"] < 1.0:
-                        pmf = dists.thin(pmf, c["thin"])
+                    pmf = dists.apply_calibration(pmf, c)
                     d = dists.dist_from_pmf(pmf, n=int(n_episodes))
                     rows.append(dict(**base, player_id=int(pid), player_name=names[j], team_id=team_id,
                                      role="batter", batting_order=j + 1, stat=stat,
@@ -268,8 +295,7 @@ def player_rows(res: dict, slate: pd.DataFrame, coefs: dict, n_episodes: int, no
                 pmf = np.bincount(np.clip(res[key][sl, side].astype(np.int64), 0, cap),
                                   minlength=cap + 1) / float(n_episodes)
                 c = _stat_cal(cal, "starter", stat)
-                if c["thin"] < 1.0:
-                    pmf = dists.thin(pmf, c["thin"])
+                pmf = dists.apply_calibration(pmf, c)
                 d = dists.dist_from_pmf(pmf, n=int(n_episodes))
                 rows.append(dict(**base, player_id=pid, player_name=getattr(r, f"{name}_starter_name", None),
                                  team_id=team_id, role="starter", batting_order=None, stat=stat,
@@ -279,37 +305,139 @@ def player_rows(res: dict, slate: pd.DataFrame, coefs: dict, n_episodes: int, no
 
 
 # --------------------------------------------------------------------------- run
-def _slate(bq, target: date) -> pd.DataFrame:
-    """One row per game with a complete pregame lineup (reuses the v1 slate query)."""
+# Games on the date with their latest V10 row (teams, time, starters): the fallback's
+# universe, since SLATE_SQL only returns games with at least one posted lineup row.
+GAMES_TODAY_SQL = """
+SELECT * EXCEPT(rn) FROM (
+  SELECT game_pk, game_date, game_time_utc, home_team_id, away_team_id, home_team_name,
+         away_team_name, home_starter_id, away_starter_id, home_starter_name, away_starter_name,
+         ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY predicted_at DESC) rn
+  FROM `{proj}.{ds}.game_predictions` WHERE game_date = @d AND game_pk IN UNNEST(@pks))
+WHERE rn = 1
+"""
+
+# Each team's most recent complete pregame lineup before @before (the previous game's
+# lineup, as research/backtest_2026/42_run_v2.py lineup_mode="prev"), within 10 days.
+PREV_LINEUP_SQL = """
+WITH snap AS (
+  SELECT team_id, game_pk, game_time_utc, batting_order, player_id, player_name,
+         ROW_NUMBER() OVER (PARTITION BY game_pk, team_id, batting_order ORDER BY fetched_at DESC) rn
+  FROM `{proj}.{ds}.lineups`
+  WHERE team_id IN UNNEST(@teams) AND batting_order BETWEEN 1 AND 9
+    AND game_date BETWEEN DATE_SUB(@d, INTERVAL 10 DAY) AND @d
+    AND fetched_at < game_time_utc AND game_time_utc < @before
+),
+lu AS (SELECT * EXCEPT(rn) FROM snap WHERE rn = 1),
+complete AS (SELECT team_id, game_pk, ANY_VALUE(game_time_utc) t FROM lu GROUP BY 1, 2
+         HAVING COUNT(DISTINCT batting_order) = 9),
+last AS (SELECT team_id, ARRAY_AGG(game_pk ORDER BY t DESC LIMIT 1)[OFFSET(0)] game_pk
+         FROM complete GROUP BY team_id)
+SELECT lu.team_id, lu.game_pk AS source_game_pk, lu.batting_order, lu.player_id, lu.player_name
+FROM lu JOIN last USING (team_id, game_pk)
+ORDER BY lu.team_id, lu.batting_order
+"""
+
+
+def _slate(bq, target: date, game_pks=None, lineup_fallback: bool = False) -> pd.DataFrame:
+    """One row per game with a complete pregame lineup (reuses the v1 slate query).
+
+    With lineup_fallback, requested games whose posted lineup is still incomplete get the
+    team's previous game's lineup for the incomplete side (lineup_source says which)."""
     from google.cloud import bigquery
     from pa_sim.pipeline import SLATE_SQL, _team_abbr_map
 
     cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("d", "DATE", target)])
     long = bq.query(SLATE_SQL.format(proj=PROJECT, ds=DATASET), job_config=cfg).to_dataframe()
+    if game_pks and not long.empty:              # log skips for the requested games only
+        long = long[long.game_pk.isin([int(g) for g in game_pks])]
     ven = bq.query(f"SELECT game_pk, ANY_VALUE(venue_id) venue_id FROM `{PROJECT}.{DATASET}.games` "
                    "WHERE game_date = @d GROUP BY game_pk", job_config=cfg).to_dataframe()
-    return assemble_slate(long, dict(zip(ven.game_pk, ven.venue_id)), _team_abbr_map(bq))
+    venue_of = dict(zip(ven.game_pk, ven.venue_id))
+    name2ab = _team_abbr_map(bq)
+    slate = assemble_slate(long, venue_of, name2ab, quiet=lineup_fallback)
+    if not lineup_fallback or not game_pks:
+        return slate
+    have = set(slate.game_pk) if not slate.empty else set()
+    todo = [int(g) for g in game_pks if int(g) not in have]
+    if not todo:
+        return slate
+    pcfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("d", "DATE", target),
+        bigquery.ArrayQueryParameter("pks", "INT64", todo)])
+    games = bq.query(GAMES_TODAY_SQL.format(proj=PROJECT, ds=DATASET), job_config=pcfg).to_dataframe()
+    if games.empty:
+        logger.warning("sim_blend: no V10 row for %s; nothing to fall back on", todo)
+        return slate
+    teams = sorted({int(t) for t in pd.concat([games.home_team_id, games.away_team_id]).dropna()})
+    lcfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("d", "DATE", target),
+        bigquery.ScalarQueryParameter("before", "TIMESTAMP", pd.Timestamp(games.game_time_utc.min()).to_pydatetime()),
+        bigquery.ArrayQueryParameter("teams", "INT64", teams)])
+    prev = bq.query(PREV_LINEUP_SQL.format(proj=PROJECT, ds=DATASET), job_config=lcfg).to_dataframe()
+    fb = fallback_slate(games, long, prev, venue_of, name2ab)
+    return pd.concat([slate, fb], ignore_index=True) if not fb.empty else slate
 
 
-def assemble_slate(long: pd.DataFrame, venue_of: dict, name2ab: dict) -> pd.DataFrame:
+def _slate_row(r0, gid, h_ids, a_ids, h_names, a_names, venue_of, name2ab, source) -> dict:
+    return dict(
+        game_pk=int(gid), game_date=r0.game_date, game_time_utc=r0.game_time_utc,
+        home_team_id=int(r0.home_team_id), away_team_id=int(r0.away_team_id),
+        home_team_name=r0.home_team_name, away_team_name=r0.away_team_name,
+        home_ab=name2ab.get(r0.home_team_name, ""), away_ab=name2ab.get(r0.away_team_name, ""),
+        home_starter_id=int(r0.home_starter_id), away_starter_id=int(r0.away_starter_id),
+        home_starter_name=r0.get("home_starter_name"), away_starter_name=r0.get("away_starter_name"),
+        home_lineup=[int(x) for x in h_ids], away_lineup=[int(x) for x in a_ids],
+        home_lineup_names=h_names, away_lineup_names=a_names,
+        venue_id=int(venue_of[gid]) if gid in venue_of and pd.notna(venue_of[gid]) else -1,
+        lineup_source=source)
+
+
+def assemble_slate(long: pd.DataFrame, venue_of: dict, name2ab: dict, quiet: bool = False) -> pd.DataFrame:
     rows = []
     for gid, g in long.groupby("game_pk", sort=False):
         h = g[g.team_type == "home"].sort_values("batting_order")
         a = g[g.team_type == "away"].sort_values("batting_order")
         r0 = g.iloc[0]
         if len(h) != 9 or len(a) != 9 or pd.isna(r0.home_starter_id) or pd.isna(r0.away_starter_id):
-            logger.warning("sim_blend: skipping %s (incomplete lineup/starter)", gid)
+            (logger.info if quiet else logger.warning)(
+                "sim_blend: skipping %s (incomplete lineup/starter: home %d, away %d batters)", gid, len(h), len(a))
             continue
-        rows.append(dict(
-            game_pk=int(gid), game_date=r0.game_date, game_time_utc=r0.game_time_utc,
-            home_team_id=int(r0.home_team_id), away_team_id=int(r0.away_team_id),
-            home_team_name=r0.home_team_name, away_team_name=r0.away_team_name,
-            home_ab=name2ab.get(r0.home_team_name, ""), away_ab=name2ab.get(r0.away_team_name, ""),
-            home_starter_id=int(r0.home_starter_id), away_starter_id=int(r0.away_starter_id),
-            home_starter_name=r0.get("home_starter_name"), away_starter_name=r0.get("away_starter_name"),
-            home_lineup=[int(x) for x in h.player_id], away_lineup=[int(x) for x in a.player_id],
-            home_lineup_names=_names(h), away_lineup_names=_names(a),
-            venue_id=int(venue_of[gid]) if gid in venue_of and pd.notna(venue_of[gid]) else -1))
+        rows.append(_slate_row(r0, gid, h.player_id, a.player_id, _names(h), _names(a),
+                               venue_of, name2ab, "posted"))
+    return pd.DataFrame(rows)
+
+
+def fallback_slate(games: pd.DataFrame, long: pd.DataFrame, prev: pd.DataFrame,
+                   venue_of: dict, name2ab: dict) -> pd.DataFrame:
+    """Slate rows for games without a complete posted lineup: each incomplete side takes
+    its team's previous game's lineup. Starters must still be known (no fallback there:
+    a wrong starter moves the sim far more than a shuffled lineup)."""
+    rows = []
+    for r0 in games.itertuples():
+        gid = int(r0.game_pk)
+        if pd.isna(r0.home_starter_id) or pd.isna(r0.away_starter_id):
+            logger.warning("sim_blend: skipping %s even with fallback (starter unknown)", gid)
+            continue
+        g = long[long.game_pk == gid] if not long.empty else long
+        sides, used = {}, []
+        for side in ("home", "away"):
+            posted = g[g.team_type == side].sort_values("batting_order") if len(g) else g
+            if len(posted) == 9:
+                sides[side] = (list(posted.player_id), _names(posted))
+                continue
+            tid = int(getattr(r0, f"{side}_team_id"))
+            pl = prev[prev.team_id == tid].sort_values("batting_order") if not prev.empty else prev
+            if len(pl) != 9:
+                break
+            sides[side] = (list(pl.player_id), _names(pl))
+            used.append(side)
+        if len(sides) != 2:
+            logger.warning("sim_blend: skipping %s even with fallback (no previous lineup)", gid)
+            continue
+        source = "previous_game" if len(used) == 2 else f"previous_game_{used[0]}" if used else "posted"
+        logger.info("sim_blend: %s uses %s lineup(s)", gid, source)
+        rows.append(_slate_row(pd.Series(r0._asdict()), gid, sides["home"][0], sides["away"][0],
+                               sides["home"][1], sides["away"][1], venue_of, name2ab, source))
     return pd.DataFrame(rows)
 
 
@@ -372,9 +500,116 @@ def build_engine(inputs: dict, target: date, coefs: dict):
     return eng
 
 
+# --------------------------------------------------------------------------- warm state
+# One per instance (max-instance-request-concurrency is 1, so no locking). Keyed by date +
+# model version: the inputs are "every PA before the date", identical for every task that
+# day, and the engine is fitted to the date.
+_WARM: dict = {}
+
+
+def release_memory() -> None:
+    """Collect, then hand freed heap back to the OS.
+
+    pandas/numpy temporaries are freed by Python but glibc keeps the pages in its arenas,
+    so RSS stays near the previous peak and the next build lands on top of it. malloc_trim
+    returns them (Linux, the Cloud Function); macOS has a pressure-relief call instead."""
+    import ctypes
+    import gc
+    import sys
+
+    gc.collect()
+    try:
+        if sys.platform.startswith("linux"):
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        elif sys.platform == "darwin":
+            ctypes.CDLL("libc.dylib").malloc_zone_pressure_relief(None, 0)
+    except (OSError, AttributeError):          # pragma: no cover - non-glibc libc
+        pass
+
+
+def warm_state(bq, target: date, coefs: dict) -> tuple[dict, bool]:
+    """(state, was_warm): the fitted engine and the strength games frame for `target`,
+    built once per date per instance. Only the engine is kept, not the raw inputs: the PA
+    frame, transitions and hook table are needed only to build it. SIM_BLEND_WARM=0 turns
+    the cache off (every call rebuilds, the pre-2026-09-28 behaviour)."""
+    from google.cloud import bigquery
+    from pa_sim import strength, v2_inputs
+
+    key = (str(target), coefs["model_version"], json.dumps(coefs["sim_config"], sort_keys=True))
+    if os.environ.get("SIM_BLEND_WARM", "1") != "0" and _WARM.get("key") == key:
+        return _WARM, True
+    _WARM.clear()
+    release_memory()
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("cutoff", "DATE", target),
+        bigquery.ScalarQueryParameter("min_year", "INT64", 2015)])
+    games = bq.query(strength.GAMES_SQL.format(proj=PROJECT, hist=v2_inputs.HIST_DATASET, ds=DATASET),
+                     job_config=cfg).to_dataframe()
+    inputs = v2_inputs.load_inputs(bq, target)
+    eng = build_engine(inputs, target, coefs)
+    del inputs
+    release_memory()
+    state = dict(key=key, engine=eng, games=games, built_at=datetime.now(timezone.utc))
+    if os.environ.get("SIM_BLEND_WARM", "1") != "0":
+        _WARM.update(state)
+    return state, False
+
+
+# --------------------------------------------------------------------------- idempotency
+EXISTING_SQL = """
+SELECT '{pred}' AS t, game_pk FROM `{proj}.{ds}.{pred}`
+WHERE game_date = @d AND model_version = @mv AND game_pk IN UNNEST(@pks)
+UNION DISTINCT
+SELECT '{props}', game_pk FROM `{proj}.{ds}.{props}`
+WHERE game_date = @d AND model_version = @mv AND game_pk IN UNNEST(@pks)
+UNION DISTINCT
+SELECT '{dist}', game_pk FROM `{proj}.{ds}.{dist}`
+WHERE game_date = @d AND model_version = @mv AND game_pk IN UNNEST(@pks)
+UNION DISTINCT
+SELECT '{player}', game_pk FROM `{proj}.{ds}.{player}`
+WHERE game_date = @d AND model_version = @mv AND game_pk IN UNNEST(@pks)
+"""
+
+
+def existing_games(bq, target: date, game_pks: list, model_version: str) -> dict:
+    """{table: set(game_pk)} already written for `target` by this model version. Every
+    row these tables hold was written before first pitch (started games are skipped at
+    write time), so "a row exists" means "a pregame row exists". On error returns {}:
+    the content-derived job ids still stop an identical second copy."""
+    from google.cloud import bigquery
+
+    tables = {t: set() for t in (PRED_TABLE, PROPS_TABLE, DIST_TABLE, PLAYER_TABLE)}
+    if not game_pks:
+        return tables
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("d", "DATE", target),
+        bigquery.ScalarQueryParameter("mv", "STRING", model_version),
+        bigquery.ArrayQueryParameter("pks", "INT64", [int(g) for g in game_pks])])
+    try:
+        df = bq.query(EXISTING_SQL.format(proj=PROJECT, ds=DATASET, pred=PRED_TABLE, props=PROPS_TABLE,
+                                          dist=DIST_TABLE, player=PLAYER_TABLE),
+                      job_config=cfg).to_dataframe()
+    except Exception as e:  # noqa: BLE001 - a missing table must not block the run
+        logger.warning("sim_blend: existing-row check failed (%s); relying on job ids", str(e)[:200])
+        return {}
+    for t, pk in zip(df.get("t", []), df.get("game_pk", [])):
+        tables.setdefault(t, set()).add(int(pk))
+    return tables
+
+
+def content_key(rows: list) -> str:
+    """Hash of the rows minus predicted_at: identical recomputations share it."""
+    import hashlib
+
+    body = json.dumps([{k: v for k, v in sorted(r.items()) if k != "predicted_at"} for r in rows],
+                      default=str, sort_keys=True)
+    return hashlib.sha256(body.encode()).hexdigest()[:40]
+
+
 def run_slate(target: date, dry_run: bool = False, experimental: bool = False,
               n_episodes: int | None = None, bq=None, game_pks=None,
-              now: datetime | None = None) -> dict:
+              now: datetime | None = None, lineup_fallback: bool = False,
+              force: bool = False) -> dict:
     coefs = load_coefs()
     n_episodes = int(n_episodes or os.environ.get("SIM_BLEND_EPISODES", coefs["n_episodes"]))
     out = {"step": "sim_blend", "date": str(target),
@@ -383,31 +618,39 @@ def run_slate(target: date, dry_run: bool = False, experimental: bool = False,
     ok, have, need = memory_ok()
     if not ok:
         return {**out, "status": "insufficient_memory", "memory_mb": have, "required_mb": need,
-                "reason": "v2 sim peaks at 1.3-2.2 GB; run it in a >=4 GiB function or job"}
+                "reason": "v2 sim peaks near 3 GB cold; run it in a >=4 GiB function or job"}
 
     from google.cloud import bigquery
-    from pa_sim import v2, v2_inputs, strength
+    from pa_sim import v2
 
     bq = bq or bigquery.Client(project=PROJECT)
-    slate = _slate(bq, target)
-    if game_pks and not slate.empty:
-        slate = slate[slate.game_pk.isin([int(g) for g in game_pks])].reset_index(drop=True)
+    pks = [int(g) for g in game_pks] if game_pks else None
+    # Already written today (a retried, duplicated or late-retry task): skip before any
+    # heavy work. Per table, so a run that died between tables finishes the rest.
+    done = {} if (dry_run or force or not pks) else existing_games(bq, target, pks, coefs["model_version"])
+    if pks and done and all(set(pks) <= done.get(t, set()) for t in out["tables"]):
+        return {**out, "status": "already_written", "games": 0, "game_pks": pks}
+    slate = _slate(bq, target, pks, lineup_fallback)
+    if pks and not slate.empty:
+        slate = slate[slate.game_pk.isin(pks)].reset_index(drop=True)
     now = now or datetime.now(timezone.utc)
     if not dry_run and not slate.empty:
         started = slate.game_time_utc.map(_utc) <= _utc(now)
         out["skipped_started"] = int(started.sum())
         slate = slate[~started].reset_index(drop=True)
+    if not slate.empty and done:
+        complete = [pk for pk in slate.game_pk if all(pk in done.get(t, set()) for t in out["tables"])]
+        out["skipped_written"] = len(complete)
+        slate = slate[~slate.game_pk.isin(complete)].reset_index(drop=True)
     if slate.empty:
         return {**out, "status": "no_games"}
-    cfg = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("cutoff", "DATE", target),
-        bigquery.ScalarQueryParameter("min_year", "INT64", 2015)])
-    games = bq.query(strength.GAMES_SQL.format(proj=PROJECT, hist=v2_inputs.HIST_DATASET, ds=DATASET),
-                     job_config=cfg).to_dataframe()
-    sp = strength_for_slate(games, slate, target)
+    if "lineup_source" in slate:
+        out["lineup_source"] = {int(k): v for k, v in zip(slate.game_pk, slate.lineup_source)}
 
-    inputs = v2_inputs.load_inputs(bq, target)
-    eng = build_engine(inputs, target, coefs)
+    state, warm = warm_state(bq, target, coefs)
+    out["warm"] = warm
+    sp = strength_for_slate(state["games"], slate, target)
+    eng = state["engine"]
     specs = [v2.GameSpec(r.home_lineup, r.away_lineup, r.home_starter_id, r.away_starter_id,
                          r.home_ab, r.away_ab, r.venue_id, 9, True, np.nan)
              for r in slate.itertuples()]
@@ -416,28 +659,28 @@ def run_slate(target: date, dry_run: bool = False, experimental: bool = False,
     res = v2.simulate(eng, specs, n=n_episodes, seed=int(pd.Timestamp(target).value // 10 ** 9) % 100000,
                       exposure=expo)
     summary = v2.summarize(res, len(specs))
-    pred, props = game_rows(summary, slate, sp, coefs, n_episodes, now, experimental)
+    pred, props = game_rows(summary, slate, sp, coefs, n_episodes, now, experimental, cal)
     dist_rows = distribution_rows(res, slate, coefs, n_episodes, now)
     prow = player_rows(res, slate, coefs, n_episodes, now, cal)
+    del res
     out.update(games=len(pred), distribution_rows=len(dist_rows), player_rows=len(prow))
     if dry_run:
         clean = lambda r: {k: v for k, v in r.items() if not isinstance(v, (datetime, date))}
         return {**out, "status": "dry_run", "sample": [clean(r) for r in pred[:3]],
                 "sample_distribution": [clean(r) for r in dist_rows[:1]],
                 "sample_players": [clean(r) for r in prow[:2]]}
+    new = lambda table, rows: [r for r in rows if int(r["game_pk"]) not in done.get(table, set())]
     try:
-        write(bq, pred, props)
+        out["writes"] = write(bq, new(PRED_TABLE, pred), new(PROPS_TABLE, props))
     except Exception as e:
         if "Not found: Table" in str(e) or "notFound" in str(e):
             return {**out, "status": "table_missing", "error": str(e)[:300]}
         raise
-    # The two new tables are written separately so a missing one never costs the
+    # The two newer tables are written separately so a missing one never costs the
     # established shadow rows above.
-    out["writes"] = {}
     for table, rows in ((DIST_TABLE, dist_rows), (PLAYER_TABLE, prow)):
         try:
-            append(bq, table, rows)
-            out["writes"][table] = "ok"
+            out["writes"][table] = append(bq, table, new(table, rows))
         except Exception as e:  # noqa: BLE001 - reported per table
             missing = "Not found: Table" in str(e) or "notFound" in str(e)
             out["writes"][table] = "table_missing" if missing else f"error: {str(e)[:200]}"
@@ -451,10 +694,9 @@ def _utc(v) -> pd.Timestamp:
     return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
 
 
-def write(bq, pred: list, props: list) -> None:
+def write(bq, pred: list, props: list) -> dict:
     """Append both tables (load jobs, CREATE_NEVER). Never deletes."""
-    for table, rows in ((PRED_TABLE, pred), (PROPS_TABLE, props)):
-        append(bq, table, rows)
+    return {table: append(bq, table, rows) for table, rows in ((PRED_TABLE, pred), (PROPS_TABLE, props))}
 
 
 def frame(rows: list) -> pd.DataFrame:
@@ -470,16 +712,48 @@ def frame(rows: list) -> pd.DataFrame:
     return df
 
 
-def append(bq, table: str, rows: list) -> None:
+def _table_columns(bq, table: str) -> set | None:
+    try:
+        return {f.name for f in bq.get_table(f"{PROJECT}.{DATASET}.{table}").schema}
+    except Exception:  # noqa: BLE001 - let the load itself report a missing table
+        return None
+
+
+def append(bq, table: str, rows: list) -> str:
     """Append rows for this run's games only (load job, WRITE_APPEND, CREATE_NEVER).
 
     Never deletes or truncates: a rerun adds a newer predicted_at and readers take the
-    latest pregame row per key, so no other game's rows can be touched."""
+    latest pregame row per key, so no other game's rows can be touched. The job id is
+    derived from the rows' content (minus predicted_at), so a duplicated or retried task
+    that recomputes identical rows gets 409 Already Exists and appends nothing ("duplicate").
+    Columns the table does not have yet (lineup_source before its ALTER) are dropped.
+
+    Returns "ok", "duplicate" or "empty"."""
+    from google.api_core import exceptions as gexc
     from google.cloud import bigquery
 
     if not rows:
-        return
-    bq.load_table_from_dataframe(
-        frame(rows), f"{PROJECT}.{DATASET}.{table}",
-        job_config=bigquery.LoadJobConfig(write_disposition="WRITE_APPEND",
-                                          create_disposition="CREATE_NEVER")).result()
+        return "empty"
+    df = frame(rows)
+    cols = _table_columns(bq, table)
+    if cols is not None and set(df.columns) - cols:
+        logger.info("sim_blend: %s lacks %s; not written", table, sorted(set(df.columns) - cols))
+        df = df[[c for c in df.columns if c in cols]]
+    job_id = f"sim_blend_{table}_{content_key(rows)}"
+    cfg = lambda: bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", create_disposition="CREATE_NEVER")
+    ref = f"{PROJECT}.{DATASET}.{table}"
+    try:
+        bq.load_table_from_dataframe(df, ref, job_id=job_id, job_config=cfg()).result()
+        return "ok"
+    except gexc.Conflict:
+        prior = bq.get_job(job_id)
+        if prior.state != "DONE":
+            prior.result()
+        if prior.error_result is None:
+            logger.info("sim_blend: %s already loaded by job %s; skipped", table, job_id)
+            return "duplicate"
+        # The earlier attempt with this id failed, so nothing was written: load under a
+        # fresh id (not dedup-protected, which is fine: there is nothing to duplicate).
+        bq.load_table_from_dataframe(df, ref, job_id=f"{job_id}_{int(datetime.now().timestamp())}",
+                                     job_config=cfg()).result()
+        return "ok"

@@ -234,13 +234,18 @@ def _patch_run(monkeypatch, slate):
     import pa_sim.v2_inputs as v2i
     import pa_sim.strength as strength
     monkeypatch.setenv("SIM_BLEND_MEMORY_MB", "4096")
-    monkeypatch.setattr(blend, "_slate", lambda bq, t: slate.copy())
+    monkeypatch.setattr(blend, "_slate", lambda bq, t, *a, **k: slate.copy())
     monkeypatch.setattr(blend, "strength_for_slate", lambda g, s, t: np.full(len(s), 0.55))
     monkeypatch.setattr(v2i, "load_inputs", lambda bq, t: {})
     monkeypatch.setattr(blend, "build_engine", lambda inputs, t, c: Stub())
     monkeypatch.setattr(strength, "GAMES_SQL", "{proj}{hist}{ds}")
+    blend._WARM.clear()
     calls = []
-    monkeypatch.setattr(blend, "append", lambda bq, table, rows: calls.append((table, rows)))
+
+    def append(bq, table, rows):
+        calls.append((table, rows))
+        return "ok" if rows else "empty"
+    monkeypatch.setattr(blend, "append", append)
     return calls
 
 
@@ -263,7 +268,7 @@ def test_writes_only_pregame_games_of_the_request(monkeypatch):
     assert tables == [blend.PRED_TABLE, blend.PROPS_TABLE, blend.DIST_TABLE, blend.PLAYER_TABLE]
     for _, rows in calls:
         assert {r["game_pk"] for r in rows} == {100}
-    assert out["writes"] == {blend.DIST_TABLE: "ok", blend.PLAYER_TABLE: "ok"}
+    assert out["writes"] == {t: "ok" for t in tables}
 
 
 def test_missing_new_table_does_not_cost_the_existing_rows(monkeypatch):
@@ -273,6 +278,7 @@ def test_missing_new_table_does_not_cost_the_existing_rows(monkeypatch):
         if table == blend.PLAYER_TABLE:
             raise RuntimeError("404 Not found: Table hankstank:mlb_2026_season.player_sim_projections")
         calls.append(table)
+        return "ok"
     monkeypatch.setattr(blend, "append", append)
     out = blend.run_slate(date(2026, 9, 20), bq=FakeBQ(), n_episodes=300,
                           now=datetime(2026, 9, 20, 18, tzinfo=timezone.utc))

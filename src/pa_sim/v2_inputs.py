@@ -104,6 +104,14 @@ def classify(df: pd.DataFrame, air: np.ndarray) -> np.ndarray:
 
 def prepare_hist(h: pd.DataFrame) -> pd.DataFrame:
     """Historical PAs: class, top flag, starter = first pitcher of each defence."""
+    return _prepare_hist([h])
+
+
+def _prepare_hist(box: list) -> pd.DataFrame:
+    """prepare_hist taking its input out of a one-element list, so when the caller holds
+    no other reference the raw frame is freed at the first filter instead of living
+    through every copy below (the raw 2015+ frame is the largest object in the load)."""
+    h = box.pop()
     h = h[~h.events.isin(DROP)].copy()
     air = h.bb_type.isin(["fly_ball", "line_drive", "popup"]).values if "bb_type" in h else \
         np.zeros(len(h), bool)
@@ -234,12 +242,22 @@ def load_inputs(bq, cutoff, min_year: int | None = None) -> dict:
     cfg = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("cutoff", "DATE", cutoff),
         bigquery.ScalarQueryParameter("min_year", "INT64", min_year)])
-    h = bq.query(HIST_SQL.format(proj=PROJECT, ds=HIST_DATASET), job_config=cfg).to_dataframe()
+    # Same steps as assemble(), but each raw frame is dropped as soon as it has been
+    # consumed (measured: cold-load peak 2.88 GB -> see docs/SHADOW_MODELS.md).
+    h = _prepare_hist([bq.query(HIST_SQL.format(proj=PROJECT, ds=HIST_DATASET), job_config=cfg).to_dataframe()])
     cfg_c = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("cutoff", "DATE", cutoff)])
     c = bq.query(CUR_SQL.format(proj=PROJECT, ds=DATASET), job_config=cfg_c).to_dataframe()
+    c = prepare_cur(c) if len(c) else None
     venues = bq.query(VENUE_SQL.format(proj=PROJECT, hist=HIST_DATASET, ds=DATASET)).to_dataframe()
-    return assemble(h, c, dict(zip(venues.game_pk.astype(int), venues.venue_id.astype(int))))
+    venue_of = dict(zip(venues.game_pk.astype(int), venues.venue_id.astype(int)))
+    del venues
+    pa = build_pa_table(h, c)
+    del c
+    trans = build_transitions(h)
+    hook = build_hook(h)
+    del h
+    return dict(pa=pa, trans=trans, hook=hook, venue_of=venue_of, vht=venue_home_team(pa, venue_of))
 
 
 def assemble(h_raw: pd.DataFrame, c_raw: pd.DataFrame | None, venue_of: dict) -> dict:

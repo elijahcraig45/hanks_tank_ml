@@ -142,10 +142,14 @@
  },
  "starter": {
   "K": {
-   "calibrated": false,
+   "calibrated": true,
    "apply_thin": true,
    "thin": 0.9631,
-   "note": "K: binomial thinning x0.9631 (fit 2024). Out of sample 2025 mean 4.718 vs 4.783 (ratio 0.986), PIT90 0.856, PIT50 0.451; 2026 mean 4.676 vs 4.708 (ratio 0.993), PIT90 0.843, PIT50 0.449. Raw sim 2025/2026: mean 4.899 vs 4.783 (ratio 1.024), PIT90 0.855, PIT50 0.455; mean 4.855 vs 4.708 (ratio 1.031), PIT90 0.848, PIT50 0.452. Fails the gate (2025: PIT50 0.451; 2025: PIT90 0.856; 2026: PIT50 0.449; 2026: PIT90 0.843): not calibrated."
+   "note": "K: binomial thinning x0.9631 (mean, fit 2024) + CDF recalibration BetaCDF(a=0.8196, b=0.8401) (spread, fit 2024; the raw pmf is too narrow). Out of sample, thinned+recal: 2025 mean ratio 0.983, PIT90 0.891, PIT50 0.496, log score 2.2127; 2026 mean ratio 0.990, PIT90 0.889, PIT50 0.491, log score 2.2074. Thinning alone: 2025 mean ratio 0.986, PIT90 0.856, PIT50 0.451, log score 2.2283; 2026 mean ratio 0.993, PIT90 0.843, PIT50 0.448, log score 2.2236. Passes the gate: calibrated. research/backtest_2026/55_starter_k_recal.py",
+   "cdf_recal": {
+    "a": 0.8196,
+    "b": 0.8401
+   }
   },
   "BF": {
    "calibrated": false,

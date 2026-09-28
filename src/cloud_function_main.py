@@ -639,7 +639,12 @@ def _run_sim_blend(target: date, game_pks: list, dry_run: bool, req_json: dict) 
     """v2 PA sim + team-strength blend; writes game_predictions_sim_blend, game_props_sim,
     game_sim_distributions and player_sim_projections only (append, this run's pregame
     games only; nothing under dry_run). Refuses (insufficient_memory) below
-    SIM_BLEND_MIN_MEMORY_MB, which the current 1 GB function is."""
+    SIM_BLEND_MIN_MEMORY_MB, which the 1 GB daily function is.
+
+    Body flags (the backend's lineup scheduler sends them):
+      lineup_fallback  late retry: a side whose posted lineup is incomplete uses the
+                       team's previous game's lineup
+      force            re-simulate games already written today (default: skip them)"""
     def go():
         from pa_sim.blend import memory_ok, run_slate
         ok, have, need = memory_ok()
@@ -648,7 +653,9 @@ def _run_sim_blend(target: date, game_pks: list, dry_run: bool, req_json: dict) 
                     "memory_mb": have, "required_mb": need}
         return run_slate(target, dry_run=dry_run, game_pks=game_pks or None,
                          experimental=bool(req_json.get("experimental_props")),
-                         n_episodes=req_json.get("n_episodes"))
+                         n_episodes=req_json.get("n_episodes"),
+                         lineup_fallback=bool(req_json.get("lineup_fallback")),
+                         force=bool(req_json.get("force")))
     return _shadow("sim_blend", go)
 
 
