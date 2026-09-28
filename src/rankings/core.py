@@ -175,14 +175,39 @@ def _to_elo(within: pd.Series, div_gap: float, teams: list[str],
     return within - within.mean()
 
 
+def bt_coef(x, y: np.ndarray, C: float, weights: np.ndarray | None,
+            newton_steps: int = 8, tol: float = 1e-10) -> np.ndarray:
+    """Ridge-logistic coefficients at the exact optimum.
+
+    lbfgs is run first (robust from a cold start), then polished with Newton steps on
+    the same objective, 0.5*|beta|^2 + C * sum w*logloss. lbfgs alone stops at its
+    default tolerance, which on the 2026 MLB board left ratings up to 0.8 points short
+    of the optimum and swapped two adjacent teams; the rationale's exact decomposition
+    of a rating (rankings.explain) also needs the true stationary point. Newton
+    converges quadratically from there, so this costs a few milliseconds.
+    """
+    from scipy.special import expit
+
+    model = LogisticRegression(C=C, fit_intercept=False, solver="lbfgs", max_iter=5000)
+    model.fit(x, y, sample_weight=weights)
+    beta = model.coef_[0].astype(float)
+    w = np.ones(x.shape[0]) if weights is None else np.asarray(weights, dtype=float)
+    eye = np.eye(len(beta)) / C
+    for _ in range(newton_steps):
+        p = expit(x @ beta)
+        grad = x.T @ (w * (y - p)) - beta / C
+        if np.abs(grad).max() < tol:
+            break
+        hess = (x.T.multiply(w * p * (1 - p)) @ x).toarray() + eye
+        beta = beta + np.linalg.solve(hess, grad)
+    return beta
+
+
 def _solve(games: pd.DataFrame, teams: list[str], divisions: dict[str, str],
            major: str | None, C: float, weights: np.ndarray | None
            ) -> tuple[pd.Series, float, float]:
     x, y = _design(games, teams, divisions, major)
-    model = LogisticRegression(C=C, fit_intercept=False, solver="lbfgs", max_iter=5000)
-    model.fit(x, y, sample_weight=weights)
-
-    coef = model.coef_[0]
+    coef = bt_coef(x, y, C, weights)
     within = pd.Series(coef[:len(teams)] * ELO_SCALE, index=teams)
     home_adv = float(coef[len(teams)] * ELO_SCALE)
     div_gap = (
@@ -331,7 +356,8 @@ def bootstrap_ranks(current: pd.DataFrame, prior: pd.DataFrame | None = None,
                     divisions: dict[str, str] | None = None,
                     major: str | None = None,
                     board_of: dict[str, str] | None = None,
-                    **model_kw) -> pd.DataFrame:
+                    return_draws: bool = False,
+                    **model_kw):
     """Rank distribution per team from refitting resampled games.
 
     Every replicate goes through fit_with_prior with the SAME week, decay and
@@ -345,6 +371,10 @@ def bootstrap_ranks(current: pd.DataFrame, prior: pd.DataFrame | None = None,
     `board_of` (team -> board) ranks each replicate WITHIN its board, matching how the
     published rank is numbered; teams absent from it (non-D1 opponents) get no band.
     Without it, ranks are over every team in the fit.
+
+    `return_draws=True` also returns the replicate ratings (one row per successful
+    replicate, one column per team), which is what "how often does A rate above B"
+    is read from. The rank frame is unchanged either way.
     """
     rng = np.random.default_rng(seed)
     has_prior = prior is not None and not prior.empty
@@ -359,6 +389,7 @@ def bootstrap_ranks(current: pd.DataFrame, prior: pd.DataFrame | None = None,
         return frame.iloc[rng.integers(0, len(frame), len(frame))]
 
     ranks: dict[str, list[int]] = {}
+    draws: list[pd.Series] = []
     for b in range(n_boot):
         try:
             s, _, _ = fit_with_prior(
@@ -367,6 +398,8 @@ def bootstrap_ranks(current: pd.DataFrame, prior: pd.DataFrame | None = None,
             )
         except Exception:
             continue
+        if return_draws:
+            draws.append(s)
         if board_of is None:
             ordered = {None: list(s.index)}
         else:
@@ -380,16 +413,20 @@ def bootstrap_ranks(current: pd.DataFrame, prior: pd.DataFrame | None = None,
         if (b + 1) % 50 == 0:
             logger.info("bootstrap %d/%d", b + 1, n_boot)
 
-    if not ranks:
-        return pd.DataFrame(columns=["rank_p05", "rank_p50", "rank_p95", "n_boot"])
+    draws_frame = pd.DataFrame(draws).reset_index(drop=True) if draws else pd.DataFrame()
 
-    return pd.DataFrame({
+    if not ranks:
+        empty = pd.DataFrame(columns=["rank_p05", "rank_p50", "rank_p95", "n_boot"])
+        return (empty, draws_frame) if return_draws else empty
+
+    frame = pd.DataFrame({
         "team": list(ranks),
         "rank_p05": [int(np.percentile(v, 5)) for v in ranks.values()],
         "rank_p50": [int(np.percentile(v, 50)) for v in ranks.values()],
         "rank_p95": [int(np.percentile(v, 95)) for v in ranks.values()],
         "n_boot": [len(v) for v in ranks.values()],
     }).set_index("team")
+    return (frame, draws_frame) if return_draws else frame
 
 
 def win_prob(strength_a: float, strength_b: float) -> float:
