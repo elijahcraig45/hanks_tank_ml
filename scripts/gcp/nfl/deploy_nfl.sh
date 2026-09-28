@@ -71,7 +71,7 @@ if [ "$ONLY_SCHEDULER" = false ]; then
     mkdir -p "$SRC_DIR"
     cp "$NFL_DIR"/*.py "$NFL_DIR/requirements.txt" "$SRC_DIR"/
     # Kept as packages: they import each other by package path, which flattening breaks.
-    cp -R "$ROOT_SRC/rankings" "$ROOT_SRC/stats" "$SRC_DIR"/
+    cp -R "$ROOT_SRC/rankings" "$ROOT_SRC/stats" "$ROOT_SRC/season_sim" "$SRC_DIR"/
     cp "$ROOT_SRC/rankings/http.py" "$SRC_DIR/http_transport.py"
     # The Bradley-Terry fit builds a sparse design matrix.
     grep -q '^scipy' "$SRC_DIR/requirements.txt" || echo 'scipy==1.16.3' >> "$SRC_DIR/requirements.txt"
@@ -144,6 +144,17 @@ _sched "nfl-weekly-predict" "0 6 * 9-12,1,2 3" \
     '{"mode":"predict_week"}' \
     "NFL: predict the next unplayed week"
 echo "  ✓ nfl-weekly-predict (Wed 6:00 AM ET)"
+
+# Tuesday 7:30 AM ET — rest-of-season Monte Carlo (EXPERIMENT), after the 6 AM ingest has
+# landed the week's results. Its own job, not chained onto the ingest, so it can never
+# cost the ingest its 540 s (measured: 0.6 s and 367 MB at 10,000 sims). Only with
+# --shadow, and only after scripts/gcp/football/create_season_sim_tables.sql has run:
+# the writer is CREATE_NEVER and scoped to one (season, as_of_week).
+if [ -n "$SHADOW_ENV" ]; then
+    _sched "nfl-weekly-season-sim" "30 7 * 9-12,1 2" \
+        '{"mode":"season_sim"}' "NFL: rest-of-season Monte Carlo (shadow)"
+    echo "  ✓ nfl-weekly-season-sim (Tue 7:30 AM ET)"
+fi
 
 echo ""
 echo "=============================================="
