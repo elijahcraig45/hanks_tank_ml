@@ -134,6 +134,7 @@ class SimConfig:
     margin_lo: int = -80
     margin_hi: int = 80
     sparse: bool = False               # sparse design matrix (CFB: ~400 teams)
+    max_iter: int = 400                # drive-outcome logistic solver cap (frozen configs use 400)
     p2pt: float = 0.45                 # CFB overtime two-point rate
     regulation_only_kernels: bool = False
     platt: dict = field(default_factory=lambda: dict(PLATT))
@@ -316,7 +317,7 @@ class DriveModel:
         de = teams.get_indexer(reg.defteam)
         X = _features(off, de, reg.hadv.values, reg.yl.values.astype(float), reg.tb.values,
                       reg.per.values, reg.sdb.values, self.variant, T, self.cfg, self._div(reg))
-        self.clf = LogisticRegression(C=self.C, max_iter=400, tol=1e-4)
+        self.clf = LogisticRegression(C=self.C, max_iter=self.cfg.max_iter, tol=1e-4)
         self.clf.fit(X, reg.y.values, sample_weight=w / w.mean())
         self.classes = self.clf.classes_
         # kernels (shorter decay: kickoff/touchback rules change between seasons)
