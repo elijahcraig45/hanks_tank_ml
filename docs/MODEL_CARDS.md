@@ -18,6 +18,7 @@ The experiments behind each model are in [EXPERIMENT_LOG.md](EXPERIMENT_LOG.md).
 | CFB margin ridge | CFB | shadow | `cfb_season.game_predictions_ridge_shadow` | `cfb_v2_margin_ridge` |
 | Power rankings | all | production | `{mlb_2026,nfl,cfb}_season.power_rankings` | `model` = `bt` / `margin` |
 | ESPN FPI snapshot | NFL/CFB | comparison only | `fpi_game_predictions` | ESPN's model, not ours |
+| Season sim (rest-of-season Monte Carlo) | NFL/CFB | shadow | `{nfl,cfb}_season.season_sim_team`, `season_sim_bracket` | `season_sim_v1` |
 
 ---
 
@@ -139,6 +140,17 @@ backend. [I]
   - Against FPI: FPI is ahead by only −0.011 [−0.023, +0.001], all of it in weeks 1–4.
 - **Output:** `game_predictions_ridge_shadow` (121 rows), written with `replace_game_ids`. [M]
 - **Status:** shadow; env `CFB_RIDGE_SHADOW=1`.
+
+## Season sim — rest-of-season Monte Carlo (shadow, EXPERIMENT)
+
+- **Code:** `src/season_sim/` (`engine.py`, `nfl.py`, `cfb.py`, `run.py`, `store.py`). Mode `season_sim` in both football functions. [M]
+- **Game model:** the margin ridge (`NFL_RIDGE` / `CFB_RIDGE`), margin ~ Normal(r_home − r_away + HFA [+ division term], sigma). Each simulated season first draws every rating from the ridge's Gaussian posterior (s²(X'WX + αI)⁻¹), and per-game noise is shrunk so a single game's variance stays at the fitted sigma (NFL 12.48 → 11.2; CFB 15.55 → 13.8). Variant `draw`. [M]
+- **NFL:** 17-game standings; division, common-games, conference, SOV, SOS, net-points tiebreakers and the coin (points-ranking and net-touchdown steps skipped); 14-team playoff with reseeding; Super Bowl neutral. Reproduces 48/48 real conference fields 2002-25. [M]
+- **CFB:** conference standings from conference games; top two (or Sun Belt division winners; SEC/B1G/MAC 2022-23, ACC/MWC 2022) meet in the title game; approximate tiebreakers (h2h, common opponents, rating, coin). CFP by season: four teams to 2023; 2024 five best champions + 7, champions seeded 1-4; 2025 same field, straight seeding; 2026 Power-4 champions + best Group of Six team + 7, straight seeding. Committee proxy = end rating − 8·losses + 4·champion − 12·G6. [M]
+- **Evidence:** EXPERIMENT_LOG §C (2026-09-28 rows). Better than record extrapolation and coin flips with CIs clear of 0; worse than a closing-line sim (which is leaky). [M]
+- **Runtime at 10,000 sims** (local, CF pins): NFL 0.6 s / 367 MB peak; CFB 2.9 s simulation, 29 s end to end with the BigQuery read and ESPN schedule calls, 970 MB peak. Limits are 2 GB / 540 s. [M]
+- **Known limits:** no injuries or QB changes; ratings drift only through the draw; the committee is a proxy; conference tiebreakers are approximate; bowls are not simulated; the sim stops once the postseason starts (it would re-simulate played playoff games). As of 2026-09-28 NFL week 3 had MNF pending, which is simulated.
+- **Status:** shadow. Tables need `scripts/gcp/football/create_season_sim_tables.sql`; jobs `nfl-weekly-season-sim` (Tue 7:30 ET) and `cfb-weekly-season-sim` (Sun 8:00 ET) are created only by `deploy_* --shadow`.
 
 ## Power rankings (all sports)
 
