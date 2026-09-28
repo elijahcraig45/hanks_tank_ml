@@ -1,0 +1,18 @@
+rating only          weights (0.0, 0.0, 0.0)  pairwise 0.9399
++ losses, champion   weights (-4.0, 0.0, 0.0)  pairwise 0.9722
++ Group of Six       weights (-8.0, 4.0, -12.0)  pairwise 0.9834
+LOSO 2021: rating only 0.9214 | + losses, champion 0.9651 | + Group of Six 0.9798
+LOSO 2022: rating only 0.9485 | + losses, champion 0.9763 | + Group of Six 0.9881
+LOSO 2023: rating only 0.9540 | + losses, champion 0.9670 | + Group of Six 0.9787
+LOSO 2024: rating only 0.9326 | + losses, champion 0.9795 | + Group of Six 0.9851
+LOSO 2025: rating only 0.9431 | + losses, champion 0.9711 | + Group of Six 0.9847
+2021 rating field overlap 3/4  seeds exact 0/4
+2021 proxy  field overlap 4/4  seeds exact 1/4
+2022 rating field overlap 3/4  seeds exact 2/4
+2022 proxy  field overlap 4/4  seeds exact 2/4
+2023 rating field overlap 1/4  seeds exact 1/4
+2023 proxy  field overlap 3/4  seeds exact 1/4
+2024 rating field overlap 10/12  seeds exact 3/12
+2024 proxy  field overlap 12/12  seeds exact 3/12
+2025 rating field overlap 8/12  seeds exact 2/12
+2025 proxy  field overlap 10/12  seeds exact 2/12
