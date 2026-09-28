@@ -129,7 +129,7 @@ v2 simulator needs more than the daily function's 1 GB (measured peak 1.3–2.5 
 | `score` | UPDATE result columns from `nfl_historical.games` | `game_predictions` | refused |
 | `rankings`, `stats`, `fpi_snapshot` | single steps | as above | refused |
 | `backfill` | walk-forward season rebuild; game_id-scoped DELETE + append | `game_predictions` | refused |
-| `season_sim` (2026-09-28, shadow) | rest-of-season Monte Carlo, 10,000 seasons (`src/season_sim/`) | `season_sim_team`, `season_sim_bracket` (DELETE + append scoped to one (season, as_of_week); CREATE_NEVER) | **yes**: computes and returns, writes nothing |
+| `season_sim` (2026-09-28, shadow) | rest-of-season Monte Carlo, 10,000 seasons (`src/season_sim/`) | `season_sim_team`, `season_sim_bracket`, `season_sim_games` (per remaining game; DELETE + append scoped to one (season, as_of_week); CREATE_NEVER) | **yes**: computes and returns, writes nothing |
 
 ### 2.4 `cfb-weekly-pipeline` (`src/cfb/main.py`)
 
