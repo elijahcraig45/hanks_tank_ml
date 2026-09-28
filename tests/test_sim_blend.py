@@ -135,8 +135,9 @@ def test_rows_match_the_table_contracts():
                  "home_team_name", "away_team_name", "home_starter_id", "away_starter_id",
                  "home_win_probability", "away_win_probability", "sim_p_raw", "sim_p_cal",
                  "strength_p", "predicted_winner", "confidence_tier", "model_version",
-                 "n_episodes", "mean_home_runs", "mean_away_runs", "predicted_at"}
+                 "n_episodes", "mean_home_runs", "mean_away_runs", "predicted_at", "lineup_source"}
     assert set(pred[0]) == want_pred
+    assert pred[0]["lineup_source"] == "posted"
     want_props = {"game_pk", "game_date", "game_time_utc", "home_team_name", "away_team_name",
                   "model_version", "n_episodes", "mean_home_runs", "mean_away_runs",
                   "mean_total_runs", "total_runs_pmf", "totals_calibrated", "total_bias_shift",
