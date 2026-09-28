@@ -116,9 +116,11 @@ artifact was last written on 2026-04-09. [M]
 ### 2.2 `mlb-2026-sim-blend`
 
 Same staged source and entry point as the daily function. It is deployed separately because the
-v2 simulator needs more than the daily function's 1 GB (measured peak 1.3–2.5 GB,
-`data/backtest_2026/rich/logs/runtime.txt`). Tasks call it with
-`{"mode":"sim_blend","game_pks":[pk],"date":...}`. It has no Scheduler job. [M]
+v2 simulator needs more than the daily function's 1 GB (peak 2.8 GB cold, 2.4 GB for later tasks
+on a warm instance, measured 2026-09-28). Tasks call it with
+`{"mode":"sim_blend","game_pks":[pk],"date":...}` at T−80 and, with `"lineup_fallback":true`,
+at T−35, on their own queue `sim-blend`. It has no Scheduler job. From the 2026-09-28 fixes:
+6Gi, 3 instances (see SHADOW_MODELS.md "Operations"). [M]
 
 ### 2.3 `nfl-weekly-pipeline` (`src/nfl/main.py`)
 
@@ -201,11 +203,12 @@ The flow starts at 10:00 ET, when `schedule_pregame_tasks` calls the backend's
 queue `lineup-pregame` (max 5 concurrent, 2/s, 3 attempts):
 
 - **`pregame_v10` tasks:** one immediately (`baseline`), then one each at T−360, T−180, T−90 and T−45 minutes. Each body is `{"mode":"pregame_v10","game_pks":[pk],"date":...,"run_logit3":true}` and targets the daily function.
-- **`sim_blend` task:** one at T−90, targeting `mlb-2026-sim-blend`. It is only enqueued when `SIM_BLEND_FUNCTION_URL` is set, and it is set in backend `20260925t180718`.
+- **`sim_blend` tasks:** at T−80 and T−35 (the second with `lineup_fallback`), targeting `mlb-2026-sim-blend` on queue `sim-blend` (2 concurrent). Only enqueued when `SIM_BLEND_FUNCTION_URL` is set. Before 2026-09-28: one at T−90 on `lineup-pregame`.
+- **Every task is named** (hash of queue, body, checkpoint, first pitch). `schedule-today` is called twice each morning (App Engine cron and `mlb-2026-pregame-schedule`); the second call is rejected as ALREADY_EXISTS. From 2026-09-11 to the fix, every task ran twice.
 
 Consequences:
 
-- **A game can be re-predicted up to 5 times.** Each `pregame_v10` run DELETEs the game's `game_predictions` row and inserts a fresh one. The DELETE is skipped inside the streaming-buffer window, which can leave duplicate rows. [I]
+- **A game can be re-predicted up to 5 times.** Each `pregame_v10` run loads a fresh row (job id = content + 10-min bucket, so a duplicated task appends nothing), then DELETEs that game's older rows for the date. The DELETE only covers `DATE(predicted_at) = game_date`, so evening games predicted after 00:00 UTC keep more than one row; readers take the latest pregame row. [M]
 - **logit3 appends one row per task run.** [I]
 - **`run_logit3` only applies to tasks enqueued after the backend deploy.** That deploy was 2026-09-25 22:08 UTC, so the first logit3 and sim_blend rows are expected from 2026-09-26's slate. [I]
 - **429 errors:** the queue allows 5 concurrent tasks against `maxInstances=3` × concurrency 1. Logs show 14–19 HTTP 429 per day before today. [M]
