@@ -1029,44 +1029,7 @@ class DailyPredictor:
             )
 
         if pred_rows and not self.dry_run:
-            pk_list = ", ".join(str(r["game_pk"]) for r in pred_rows)
-            # Delete prior predictions for these game PKs (idempotent upsert).
-            # Falls back to insert-only when the streaming buffer blocks DML.
-            try:
-                self.bq.query(
-                    f"DELETE FROM `{PREDICTIONS_TABLE}` "
-                    f"WHERE game_pk IN ({pk_list}) "
-                    f"AND DATE(predicted_at) = '{target_date.isoformat()}'"
-                ).result()
-            except Exception as exc:
-                if "streaming buffer" in str(exc).lower():
-                    logger.warning(
-                        "DELETE skipped (streaming buffer active) — inserting new predictions alongside existing"
-                    )
-                else:
-                    raise
-
-            # Use a load job rather than streaming insert so it always uses the
-            # current table schema (streaming inserts cache the schema and fail
-            # for ~10 min after an ALTER TABLE).
-            import json as _json
-            import io as _io
-            ndjson_bytes = _io.BytesIO(
-                "\n".join(_json.dumps(r, default=str) for r in pred_rows).encode()
-            )
-            job_cfg = bigquery.LoadJobConfig(
-                source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-                write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-                schema=PREDICTIONS_SCHEMA,
-            )
-            job = self.bq.load_table_from_file(
-                ndjson_bytes, PREDICTIONS_TABLE, job_config=job_cfg
-            )
-            job.result()  # wait for completion
-            if job.errors:
-                logger.error("BQ load job errors: %s", job.errors)
-            else:
-                logger.info("Wrote %d predictions to BigQuery", len(pred_rows))
+            self._write_predictions(pred_rows, target_date)
         elif pred_rows and self.dry_run:
             logger.info("[DRY RUN] Would write %d predictions", len(pred_rows))
 
@@ -1081,6 +1044,84 @@ class DailyPredictor:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+    # Twins (the same task enqueued twice) land < 1 s apart; checkpoints are >= 45 min
+    # apart. A 10-minute bucket separates the second from the first.
+    DEDUPE_BUCKET_SECONDS = 600
+
+    def _write_predictions(self, pred_rows: list[dict], target_date: date) -> str:
+        """Append this run's rows, then supersede the same games' earlier rows for the date.
+
+        Two fixes over the old DELETE-then-INSERT (2026-09-28):
+          * The load job id is derived from the rows' content (minus predicted_at) plus a
+            10-minute bucket, so a duplicated or retried task that recomputes the same
+            rows gets 409 Already Exists and appends nothing. Concurrent twins used to
+            both DELETE, then both INSERT: 17 same-second pairs since 2026-09-11, when
+            the backend began enqueuing every task twice.
+          * DELETE runs after the load and only removes rows older than this run, so a
+            twin's DELETE can never remove the other twin's fresh row and leave the game
+            with none. Rows loaded by jobs are never in the streaming buffer.
+        Returns "ok" or "duplicate"."""
+        import hashlib
+        import io as _io
+        import json as _json
+        import time as _time
+
+        from google.api_core import exceptions as gexc
+
+        run_start = min(pd.Timestamp(r["predicted_at"]) for r in pred_rows)
+        bucket = int(run_start.timestamp()) // self.DEDUPE_BUCKET_SECONDS
+        body = _json.dumps([{k: v for k, v in sorted(r.items()) if k != "predicted_at"} for r in pred_rows],
+                           default=str, sort_keys=True)
+        job_id = (f"predict_{self.model_version}_{target_date:%Y%m%d}_{bucket}_"
+                  f"{hashlib.sha256(body.encode()).hexdigest()[:32]}")
+        ndjson = "\n".join(_json.dumps(r, default=str) for r in pred_rows).encode()
+        # A load job rather than a streaming insert: it always uses the current table
+        # schema (streaming inserts cache it and fail for ~10 min after an ALTER TABLE).
+        cfg = lambda: bigquery.LoadJobConfig(
+            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+            write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+            schema=PREDICTIONS_SCHEMA,
+        )
+        try:
+            job = self.bq.load_table_from_file(_io.BytesIO(ndjson), PREDICTIONS_TABLE,
+                                               job_id=job_id, job_config=cfg())
+            job.result()
+        except gexc.Conflict:
+            prior = self.bq.get_job(job_id)
+            if prior.state != "DONE":
+                prior.result()
+            if prior.error_result is None:
+                logger.info("Identical predictions already written by job %s; nothing appended", job_id)
+                return "duplicate"
+            job = self.bq.load_table_from_file(_io.BytesIO(ndjson), PREDICTIONS_TABLE,
+                                               job_id=f"{job_id}_r{int(_time.time())}", job_config=cfg())
+            job.result()
+        if job.errors:
+            logger.error("BQ load job errors: %s", job.errors)
+        else:
+            logger.info("Wrote %d predictions to BigQuery", len(pred_rows))
+
+        # Same scope as before (these games, predicted on this date), newer rows kept.
+        dcfg = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ArrayQueryParameter("pks", "INT64", sorted({int(r["game_pk"]) for r in pred_rows})),
+            bigquery.ScalarQueryParameter("d", "DATE", target_date),
+            bigquery.ScalarQueryParameter("run_start", "TIMESTAMP", run_start.to_pydatetime()),
+        ])
+        try:
+            self.bq.query(
+                f"DELETE FROM `{PREDICTIONS_TABLE}` WHERE game_pk IN UNNEST(@pks) "
+                "AND DATE(predicted_at) = @d AND predicted_at < @run_start",
+                job_config=dcfg,
+            ).result()
+        except Exception as exc:  # noqa: BLE001 - the new rows are in; superseding is best effort
+            if "streaming buffer" in str(exc).lower():
+                logger.warning("DELETE of superseded rows skipped (streaming buffer active); "
+                               "readers take the latest pregame row")
+            else:
+                raise
+        return "ok"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Predict today's MLB games with matchup features")
     parser.add_argument("--date", help="Target date YYYY-MM-DD (default: today)")
