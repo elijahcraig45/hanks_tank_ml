@@ -203,14 +203,16 @@ def test_sparse_and_dense_designs_agree(drives):
     # dependent: on Linux BLAS the fits differ in the last bits, a few same-seed draws
     # flip, and the mean of 800 margins moves by Monte Carlo noise (~0.7 pts), which
     # failed CI and passed on macOS.
+    # Compare what the simulator actually uses: the drive-outcome probabilities for
+    # this matchup over the whole state grid. The raw coefficients are not identified
+    # one by one -- every drive carries one offence and one defence dummy, so those
+    # columns sum to a constant and trade off against the intercept under the ridge
+    # penalty; on Linux CI the intercepts differ by ~0.06 while the fitted
+    # probabilities barely move. lbfgs stops at tol=1e-4, so allow 0.01.
     a, b = (mm.clf for mm in models)
     assert list(a.classes_) == list(b.classes_)
-    # lbfgs stops at tol=1e-4 on the gradient, so the two solves agree only to about
-    # that precision in the loss: on Linux CI the largest coefficient gap is ~0.005
-    # (logit units), on macOS ~0. 0.02 logit is a ~2% odds ratio, far below anything
-    # that moves a drive-outcome probability noticeably.
-    np.testing.assert_allclose(a.coef_, b.coef_, atol=0.02, rtol=0)
-    np.testing.assert_allclose(a.intercept_, b.intercept_, atol=0.02, rtol=0)
+    ta, tb = (mm.game_tables("CCC", "FFF", False)[0] for mm in models)
+    np.testing.assert_allclose(ta, tb, atol=0.01, rtol=0)
     # and the simulated means agree within their own Monte Carlo error
     se = np.hypot(out[0][0].std(), out[1][0].std()) / np.sqrt(800)
     assert abs(out[0][0].mean() - out[1][0].mean()) < 4 * se
