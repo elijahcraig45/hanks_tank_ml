@@ -104,7 +104,7 @@ if [ "$ONLY_SCHEDULER" = false ]; then
     cp "$CFB_DIR/cfb_config.py" "$STAGE/config.py"
     # Power rankings and stats stay real packages in the staged tree: they import each
     # other by package path (`from rankings import core`), which flattening would break.
-    cp -R "$SRC_DIR/rankings" "$SRC_DIR/stats" "$STAGE"/
+    cp -R "$SRC_DIR/rankings" "$SRC_DIR/stats" "$SRC_DIR/season_sim" "$STAGE"/
     # rankings.http is also reachable flat, for anything staged without the package.
     cp "$SRC_DIR/rankings/http.py" "$STAGE/http_transport.py"
 
@@ -188,6 +188,13 @@ if [ -n "$SHADOW_ENV" ]; then
     _sched "cfb-weekly-drives" "30 7 * 8-12,1 0" \
         '{"mode":"drives"}' "CFB: CollegeFootballData drives for the drive-sim shadow"
     echo "  ✓ cfb-weekly-drives (Sun 7:30 AM ET)"
+
+    # Sunday 8 AM ET — rest-of-season Monte Carlo (EXPERIMENT) after the 6 AM ingest. Its
+    # own job for the same reason as cfbd (measured: 2.9 s and 858 MB at 10,000 sims,
+    # plus ~12 ESPN schedule calls). Needs create_season_sim_tables.sql run first.
+    _sched "cfb-weekly-season-sim" "0 8 * 8-12,1 0" \
+        '{"mode":"season_sim"}' "CFB: rest-of-season Monte Carlo (shadow)"
+    echo "  ✓ cfb-weekly-season-sim (Sun 8:00 AM ET)"
 fi
 
 # Rankings and ESPN stats are refreshed inside the Sunday ingest, not on their own jobs:
