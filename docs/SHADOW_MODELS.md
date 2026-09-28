@@ -3,6 +3,11 @@
 > Backend `20260925t180718` enqueues `run_logit3` on every `pregame_v10` task, plus one `sim_blend` task per game at T-90m.
 > PA sim v1 (`game_predictions_sim`) was never enabled.
 > See [ML_SYSTEM.md](ML_SYSTEM.md) and [MODEL_CARDS.md](MODEL_CARDS.md).
+>
+> **2026-09-28:** sim_blend missed 8 of 27 games on 9/26-27 and wrote duplicate rows; the
+> fixes (6 GiB / 3 instances, its own queue, T-80 + T-35 tasks, warm engine, idempotent
+> writes) are under [Operations](#operations-2026-09-28) below. Not deployed until the
+> deploy steps there are run.
 
 # MLB shadow models
 
@@ -15,7 +20,7 @@ written strictly before first pitch.
 |---|---|---|---|---|
 | PA sim v1 (existing) | `src/pa_sim/pipeline.py` | `game_predictions_sim` | `mode=pa_sim`, or `run_pa_sim` on `pregame_v10` | ~1 GB |
 | 3-feature logistic | `src/logit3_shadow.py` | `game_predictions_logit3` | `mode=logit3`, or `run_logit3` on `pregame_v10` | small; fits the live 1 GB function |
-| v2 sim + strength blend | `src/pa_sim/blend.py` | `game_predictions_sim_blend`, `game_props_sim` | `mode=sim_blend`, or `run_sim_blend` on `pregame_v10` | peak 1.3-2.2 GB measured in research, ~3.4 GB in a local smoke run; needs >= 4 GiB |
+| v2 sim + strength blend | `src/pa_sim/blend.py` | `game_predictions_sim_blend`, `game_props_sim`, `game_sim_distributions`, `player_sim_projections` | `mode=sim_blend` (backend tasks at T-80 and T-35) | peak 2.8 GB cold, 2.4 GB warm, 3.5 GB on a date change (local RSS, 2026-09-28); deployed at 6 GiB |
 
 Both new writers are append-only (one row per game per run; readers take the latest row
 before first pitch), skip games that have already started, accept `game_pks` to limit the
@@ -81,9 +86,50 @@ research PA table row for row and the week-of-2026-09-14 win probabilities at r 
 
 3. sim_blend: do NOT add it to the 1 GB function — it will report
    `insufficient_memory`. Deploy the same source as a separate gen2 function, e.g.
-   `mlb-2026-sim-blend`, with `--memory=4Gi --cpu=2 --timeout=540s
-   --max-instances=1`, and call it with `{"mode":"sim_blend","date":"<today>"}` once
+   `mlb-2026-sim-blend`, with `scripts/gcp/2026_season/deploy_sim_blend.sh` (6Gi, 2 vCPU,
+   540s, 3 instances, and its `sim-blend` queue; see Operations), and call it with `{"mode":"sim_blend","date":"<today>"}` once
    lineups post (or per game with `game_pks`). A full load pulls ~2M PAs from
    BigQuery on each cold start (~1 GB scanned); the cheaper alternative is precomputed
    rate tables in GCS, not built yet. `SIM_BLEND_MIN_MEMORY_MB` (default 3072) sets the
    guard; `SIM_BLEND_MEMORY_MB` overrides the detected limit.
+
+
+## Operations (2026-09-28)
+
+What went wrong on 2026-09-26/27 and what changed. All measurements are read-only
+(`gcloud logging read`, BigQuery SELECTs, local dry runs); scripts are in the weekend
+review's scratchpad.
+
+**1. Missed games (8 of 27).** Three causes, each fixed:
+
+| Cause | Evidence | Fix |
+|---|---|---|
+| Concurrency: per-game sim tasks shared `lineup-pregame` (5 concurrent dispatches) with a 1-instance function | 429 "no available instance" / 500s in the function log; 10 of 15 games on 9/27 start 19:05-19:10 UTC, so their T-90 tasks all fire at once | own queue `sim-blend`, 2 concurrent dispatches, function max 3 instances, so a dispatched task always finds an idle or startable instance. A discrete-event replay of both days' real arrival times reproduces the old misses (9/26 mean 2.1 of 13, 9/27 8.7 of 15, lineup misses included in the observed count) and gives 0 with the new settings, also with every task doubled and with all 15 games in one burst |
+| Memory: OOM at 4,271 MiB > 4,096 | every request rebuilt the ~2M-PA inputs; freed heap was not returned, so the 2nd request on a warm instance landed on top of the 1st. Local dry runs: 2.93 GB cold, 3.86 GB second run | warm engine per instance and date (`blend.warm_state`): later tasks that day only simulate, 2.36 GB and 7 s vs 25-50 s. `release_memory()` (malloc_trim) on rebuild; `load_inputs` drops each raw frame once consumed (cold 2.80 GB). Date change on a warm instance 3.53 GB. Memory 6 GiB: production ran ~10% above local (4,271 vs 3,863 MiB), so the worst case is ~3.9 GB against 6 GiB. Warm and cold runs give bit-identical rows (all four tables, checked on real games) |
+| Missing lineups: the sim task fired at T-90, the same moment as the pregame task that fetches the lineup; pregame_v10 runs take 146 s mean, 213 s max | 7 of the 8 missed games had their lineup complete at T-85..89 (fetched by that T-90 task) or at T-44..50 | tasks at T-80 (after the T-90 fetch) and T-35 (after the T-45 fetch). The T-35 one sends `lineup_fallback`: a side still incomplete uses the team's previous game's lineup (research 51_test_report: +0.0014 [-0.0009, +0.0037] 2025, -0.0012 [-0.0038, +0.0014] 2026 log loss), recorded in `lineup_source`. A missing starter is never filled in |
+
+Failures still never cost a pregame task: the sim tasks are on their own queue and are
+enqueued in their own try/catch after the pregame tasks.
+
+**2. Duplicate rows.** From 2026-09-11 (when the Scheduler body fix made
+`mlb-2026-pregame-schedule` work) both it and App Engine cron call `schedule-today` at
+10:00 ET, so every task ran twice. sim_blend's twins ran back to back on its one instance
+(same seed, identical rows 1-6 min apart); V10's ran concurrently, both DELETEd and both
+INSERTed (identical rows < 1 s apart). Fixes:
+
+- backend task names are a hash of queue, url, body, checkpoint and first pitch, so the
+  second `schedule-today` is rejected by Cloud Tasks (ALREADY_EXISTS) and counted `deduped`;
+- sim_blend skips a game already written today (per table, so a run that died between
+  tables finishes the rest; `force` overrides), and every load job id is derived from the
+  rows' content minus `predicted_at`, so a recomputation that slips through gets 409;
+- V10 loads first under a content + 10-minute-bucket job id, then deletes only rows older
+  than itself, so twins can neither double-insert nor delete each other's row.
+
+Readers already pick one row per key (`pickLatestPregameRow`); on the weekend rows it
+returns 19/19/57 rows for sim_blend/distributions/V10 and 2,280 player rows from 3,600.
+Existing duplicates: `scripts/gcp/2026_season/cleanup_duplicate_predictions_2026_09_28.sql`
+(reviewed by hand, not run by the pipeline).
+
+**Deploy order:** `deploy_sim_blend.sh` (creates `sim-blend` and redeploys the function),
+optionally `alter_sim_blend_lineup_source.sql`, then the backend (`SIM_BLEND_TASK_QUEUE` in
+app.yaml). Tasks already enqueued for the day keep their old T-90 schedule.

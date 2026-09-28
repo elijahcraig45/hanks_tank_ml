@@ -86,7 +86,15 @@ K_STRUCT = 10.0  # structural columns scaled up => effectively unpenalised
 WPS = 30  # season index spacing: t = season * 30 + week
 
 MARGIN_GRID = np.arange(-80, 81)
-MARGIN_EXACT_K = range(-21, 22)
+# Stored exact-margin pmf: every integer margin in -60..60 plus two tail buckets, so the
+# stored probabilities sum to 1. The keys are the integers as strings and the ASCII
+# "<=-61" / ">=61" for the tails. It used to be -21..21 only, which dropped ~12% of the
+# mass in the NFL and ~32% in college (weekend review, 2026-09-27).
+MARGIN_EXACT_MAX = 60
+MARGIN_EXACT_K = range(-MARGIN_EXACT_MAX, MARGIN_EXACT_MAX + 1)
+MARGIN_TAIL_LO = f"<=-{MARGIN_EXACT_MAX + 1}"
+MARGIN_TAIL_HI = f">={MARGIN_EXACT_MAX + 1}"
+MARGIN_EXACT_DECIMALS = 6
 OVER_LINE_HALF_WIDTH = 7
 
 DRIVE_COLUMNS = [
@@ -639,9 +647,29 @@ def summarize_game(hs: np.ndarray, aw: np.ndarray, went_ot: np.ndarray,
         basis = "sim_shape_at_spread"
     else:
         basis = "raw_sim"
-    out["margin_exact"] = json.dumps({str(k): round(float(P[k - lo]), 5) for k in MARGIN_EXACT_K})
+    out["margin_exact"] = json.dumps(margin_exact_pmf(P, grid))
     out["margin_exact_basis"] = basis
     return out
+
+
+def margin_exact_pmf(P: np.ndarray, grid: np.ndarray, kmax: int = MARGIN_EXACT_MAX,
+                     decimals: int = MARGIN_EXACT_DECIMALS) -> dict:
+    """{"<=-61": p, "-60": p, ..., "60": p, ">=61": p} from a pmf on `grid`, summing to 1.
+
+    Values are rounded to `decimals`; the rounding residual goes on the modal bucket, so
+    the stored numbers sum to 1 exactly (to float precision) after a JSON round trip."""
+    P = np.asarray(P, float)
+    P = P / P.sum()
+    g = np.asarray(grid)
+    vals = [float(P[g <= -(kmax + 1)].sum())]
+    for k in range(-kmax, kmax + 1):
+        vals.append(float(P[g == k].sum()))
+    vals.append(float(P[g >= kmax + 1].sum()))
+    q = 10 ** decimals
+    units = [int(round(v * q)) for v in vals]
+    units[int(np.argmax(vals))] += q - sum(units)
+    keys = [f"<=-{kmax + 1}"] + [str(k) for k in range(-kmax, kmax + 1)] + [f">={kmax + 1}"]
+    return {k: u / q for k, u in zip(keys, units)}
 
 
 def _flat(prefix: str, d: dict) -> dict:
