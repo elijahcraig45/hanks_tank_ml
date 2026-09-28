@@ -237,6 +237,25 @@ The comments in `src/rankings/sources.py` still say the margin boards are "EXPER
 deployed". That is stale: the live boards were computed with `model='margin'` at
 2026-09-25 22:10 UTC. [M]
 
+**Rankings rationale** (`src/rankings/explain.py`, branch `rankings/rationale`): every board
+row also carries why the team is where it is, computed from the same fit. The new columns are
+additive (the loader uses `ALLOW_FIELD_ADDITION`, and `write_bq` still deletes only the season
+being rewritten):
+
+| Column | What it is |
+|---|---|
+| `rating_from_prior`, `rating_from_current` | Exact split of `rating` into last-season and this-season games. Both fits are ridge solves, `rating = M (X'SX + lam I)^-1 X'S z`, so the split is linear; for Bradley-Terry it is the IRLS fixed point at the optimum |
+| `prior_share` | `rating_from_prior / rating`, only when both parts have the rating's sign |
+| `games_json` | This season's games (MLB: season series per opponent) with score, expected margin or win probability, over-expectation, and `contrib`, which is rating(with) - rating(without). The closed form is exact for margin, one Newton step for BT |
+| `why_json` | Indices of best wins and worst losses, tie flags |
+| `sched_strength`/`sched_rank`, `sched_remaining`/`_rank`/`_games` | Mean opponent rating so far and still to play (rank 1 = hardest) |
+| `avg_margin`, `avg_over_expected`, `games_played` | Per-game averages |
+| `vs_next_json` | Why this team is above the next: gap, P(win at neutral site), bootstrap order share `p_order`, prior/current split of the gap, head to head, common opponents |
+| `summary` | Deterministic sentence built from the above. "Statistically tied" when `p_order < 0.75` |
+
+`core.bt_coef` now Newton-polishes the lbfgs solution. lbfgs alone left 2026 MLB ratings up to
+0.8 short of the optimum, which swapped #14/#15. [M]
+
 ---
 
 ## 5. Model resolution and fallback chains
