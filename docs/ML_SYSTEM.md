@@ -129,13 +129,14 @@ v2 simulator needs more than the daily function's 1 GB (measured peak 1.3–2.5 
 | `score` | UPDATE result columns from `nfl_historical.games` | `game_predictions` | refused |
 | `rankings`, `stats`, `fpi_snapshot` | single steps | as above | refused |
 | `backfill` | walk-forward season rebuild; game_id-scoped DELETE + append | `game_predictions` | refused |
+| `season_sim` (2026-09-28, shadow) | rest-of-season Monte Carlo, 10,000 seasons (`src/season_sim/`) | `season_sim_team`, `season_sim_bracket` (DELETE + append scoped to one (season, as_of_week); CREATE_NEVER) | **yes**: computes and returns, writes nothing |
 
 ### 2.4 `cfb-weekly-pipeline` (`src/cfb/main.py`)
 
 The modes are `ingest`, `score`, `rankings`, `stats`, `cfbd`, `predict_week`/`predict_next`,
-`backfill` and `fpi_snapshot`.
+`backfill`, `fpi_snapshot`, `drives` and (2026-09-28, shadow) `season_sim`.
 
-- **`dry_run` is honoured only on `predict_week`/`predict_next`.** Every other mode returns 400 when given `dry_run`. [M]
+- **`dry_run` is honoured only on `predict_week`/`predict_next`, `drives` and `season_sim`.** Every other mode returns 400 when given `dry_run`. [M]
 - **Predictions are written with `replace_game_ids`**, never season-scoped.
 - **The ingest uses `replace_seasons` with a shrink guard.** See memory note `cfb-games-truncate-wiped-history`. [H]
 

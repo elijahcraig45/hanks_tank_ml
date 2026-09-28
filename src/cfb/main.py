@@ -15,6 +15,11 @@ Modes (POST body {"mode": ...}):
   backfill      re-run a completed season week by week, per division
                 ({"model": "ridge"} writes the shadow ridge to its own table)
   fpi_snapshot  record ESPN FPI's pregame win probability for the next unplayed week
+  season_sim    rest-of-season Monte Carlo (EXPERIMENT, shadow): records, conference titles,
+                CFP odds and bracket -> cfb_season.season_sim_team / season_sim_bracket,
+                scoped to (season, as_of_week). Honours dry_run (computes, writes nothing).
+                Runs from its own Scheduler job after the weekly ingest (deploy --shadow), not
+                inside it, so it can never cost the ingest its 540 s.
   drives        fetch CFBD /drives for completed weeks not yet stored, into
                 cfb_historical.drives (game_id-scoped; honours dry_run: fetches, writes nothing)
 
@@ -176,6 +181,43 @@ def _score_predictions(steps: dict) -> None:
         steps["scored"] = {"error": str(exc)[:200]}
 
 
+def season_sim_games(season: int, played=None, fetch=None):
+    """Every completed game (BigQuery, all seasons) plus this season's unplayed schedule
+    from ESPN, week by week after the last completed week, in one frame."""
+    import pandas as pd
+
+    from pipeline import load_played_games
+
+    if fetch is None:
+        from espn_data import fetch_scheduled as fetch
+    played = load_played_games() if played is None else played
+    cur = played[pd.to_numeric(played["season"]) == season]
+    last = int(pd.to_numeric(cur["week"]).max()) if len(cur) else 0
+    frames = [played]
+    for week in range(max(last, 1), 17):  # the last week too: it may be part-played
+        slate = fetch(season, week)
+        if slate is None or not len(slate):
+            continue
+        slate = slate[slate["home_won"].isna() & ~slate["game_id"].astype(str)
+                      .isin(played["game_id"].astype(str))]
+        frames.append(slate[[c for c in played.columns if c in slate.columns]])
+    return pd.concat([f for f in frames if len(f)], ignore_index=True)
+
+
+def _season_sim(season: int, req: dict, steps: dict, dry_run: bool = False) -> None:
+    """Rest-of-season Monte Carlo into the season_sim tables. Never fatal."""
+    try:
+        import cfb_config
+        from season_sim import store
+
+        games = season_sim_games(season)
+        steps["season_sim"] = store.run_mode("cfb", games, season, cfb_config.CTX.project,
+                                             cfb_config.CTX.season_dataset, req, dry_run)
+    except Exception as exc:
+        logger.error("season_sim failed: %s", exc)
+        steps["season_sim"] = {"error": str(exc)[:300]}
+
+
 def _refresh_rankings(season: int, steps: dict) -> None:
     """Rebuild and publish the power-ranking board. Never fatal.
 
@@ -233,9 +275,9 @@ def cfb_pipeline(request):
     # compute and return, writing nothing); any other mode refuses rather than run.
     # `drives` also honours it: it fetches and transforms, and skips every BigQuery write.
     dry_run = bool(req.get("dry_run"))
-    if dry_run and mode not in ("predict_week", "predict_next", "drives"):
+    if dry_run and mode not in ("predict_week", "predict_next", "drives", "season_sim"):
         return ({"mode": mode, "error": "dry_run is only supported for predict_week, "
-                 "predict_next and drives"}, 400)
+                 "predict_next, drives and season_sim"}, 400)
 
     try:
         if mode == "ingest":
@@ -270,6 +312,17 @@ def cfb_pipeline(request):
 
             if fpi_games.enabled(req):
                 _fpi_snapshot(season, None, result["steps"])
+
+        elif mode == "season_sim":
+            import cfb_config
+
+            _season_sim(int(req.get("season", cfb_config.CTX.season)), req,
+                        result["steps"], dry_run=dry_run)
+            if dry_run:
+                result["dry_run"] = True
+            err = result["steps"]["season_sim"].get("error")
+            if err:
+                return ({**result, "status": "error", "error": err}, 500)
 
         elif mode == "fpi_snapshot":
             import cfb_config
