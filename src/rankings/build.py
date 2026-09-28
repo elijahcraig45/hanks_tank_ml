@@ -22,7 +22,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rankings import context, core, fpi, sources  # noqa: E402
+from rankings import context, core, explain, fpi, sources  # noqa: E402
 from rankings.sources import SPORTS  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -98,8 +98,17 @@ def board_membership(prior: pd.DataFrame | None, current: pd.DataFrame,
 def build_board(sport: str, season: int, week: int | None = None,
                 n_boot: int = 200, use_prior: bool = True,
                 games: pd.DataFrame | None = None,
-                with_fpi: bool = True) -> tuple[pd.DataFrame, dict]:
+                with_fpi: bool = True,
+                remaining: pd.DataFrame | None = None,
+                with_rationale: bool = True) -> tuple[pd.DataFrame, dict]:
+    """Fit, band and publish-ready board for one sport-season.
+
+    `remaining` is the unplayed schedule, used only for remaining-schedule strength.
+    When `games` is not supplied both are loaded from the public feeds; a caller that
+    passes `games` (the tests) passes `remaining` too or gets no remaining column.
+    """
     spec = SPORTS[sport]
+    load_remaining = games is None
     if games is None:
         # MLB is fetched per season, so ask for this one and last for the prior.
         seasons = (season, season - 1) if sport == "mlb" else None
@@ -161,8 +170,9 @@ def build_board(sport: str, season: int, week: int | None = None,
 
     # Bootstrap the SAME model as the point estimate: same week, decay, divisions and
     # model, with each season resampled separately (see core.bootstrap_ranks).
-    boot = core.bootstrap_ranks(
-        current, prior, effective_week, n_boot=n_boot, board_of=board_of, **fit_kw
+    boot, draws = core.bootstrap_ranks(
+        current, prior, effective_week, n_boot=n_boot, board_of=board_of,
+        return_draws=True, **fit_kw
     )
 
     overall = {team: i for i, team in enumerate(strengths.index, start=1)}
@@ -252,6 +262,26 @@ def build_board(sport: str, season: int, week: int | None = None,
     )
     out["sor"] = out["team"].map(sor).round(2)
 
+    # Why each team is where it is: rating decomposition, per-game contributions,
+    # schedule strength, adjacent-pair explanations and a summary line — all computed
+    # from this fit (see rankings.explain). Display-only and never fatal.
+    meta["has_rationale"] = False
+    if with_rationale:
+        try:
+            if remaining is None and load_remaining:
+                remaining = sources.load_remaining(sport, season, effective_week)
+            out, diag = explain.attach(
+                out, sport=sport, season=season, current=current, prior=prior,
+                week=effective_week, fit_kw=fit_kw, draws=draws, remaining=remaining,
+                margin_scale=spec.margin_scale if model != "bt" else None,
+                check_against=strengths,
+            )
+            meta["has_rationale"] = True
+            meta["rationale_check"] = diag
+            logger.info("%s %d rationale: %s", sport, season, diag)
+        except Exception as exc:
+            logger.warning("%s %d rationale failed (board kept): %s", sport, season, exc)
+
     # Strength of record, strength of schedule and unit efficiency come from ESPN's
     # FPI. They answer questions this rating deliberately does not model, so they are
     # attached for display rather than fed back into the fit — the board stays
@@ -319,13 +349,18 @@ def print_board(table: pd.DataFrame, meta: dict, top: int = 25) -> None:
                   f"{r.rating:>8.1f} {gap} {nxt} {rng:>11}")
         if len(group) > top:
             print(f"    ... {len(group) - top} more")
+        if "summary" in group.columns:
+            print()
+            for line in group.head(min(top, 10))["summary"]:
+                print(f"  {line}")
 
 
 # Columns that are text even when empty. Without this, a column that is null for a
 # whole sport — `division` for the NFL and MLB — comes out of pandas as float64, lands
 # in BigQuery as FLOAT, and the load fails outright because FLOAT cannot be a
 # clustering field.
-TEXT_COLUMNS = ("team", "division", "record", "conference", "division_name", "model")
+TEXT_COLUMNS = ("team", "division", "record", "conference", "division_name", "model",
+                *explain.TEXT_COLUMNS)
 
 
 def write_bq(table: pd.DataFrame, meta: dict) -> dict:
