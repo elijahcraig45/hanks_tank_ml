@@ -292,6 +292,11 @@ def team_games(frame: pd.DataFrame, positions: np.ndarray, team: str,
     return out
 
 
+def _pct(p: float) -> int:
+    """Percent rounded half up, matching JavaScript's Math.round in the backend."""
+    return int(math.floor(p * 100 + 0.5))
+
+
 def _ordinal(n: int) -> str:
     if 10 <= n % 100 <= 20:
         suffix = "th"
@@ -359,7 +364,7 @@ def summary_line(r: dict, *, sport: str, season: int, board_size: int,
     share = r.get("prior_share")
     prev = season - 1
     if share is not None:
-        clauses.append(f"{round(share * 100)}% of the rating is carried over from {prev}")
+        clauses.append(f"{_pct(share)}% of the rating is carried over from {prev}")
     else:
         clauses.append(f"{prev} games contribute {_signed(r['rating_from_prior'], 0)} "
                        f"and {season} games {_signed(r['rating_from_current'], 0)} "
@@ -382,7 +387,7 @@ def summary_line(r: dict, *, sport: str, season: int, board_size: int,
         # number rather than an impression.
         ties = sorted(tied_with)
         names = " and ".join(f"#{t}" for t, _ in ties)
-        shares = " and ".join(f"{p * 100:.0f}%" for _, p in ties)
+        shares = " and ".join(f"{_pct(p)}%" for _, p in ties)
         orders = "that order" if len(ties) == 1 else "those orders"
         text += (f" Statistically tied with {names}: the bootstrap resamples keep "
                  f"{orders} only {shares} of the time.")
@@ -515,7 +520,7 @@ def pair_text(p: dict, *, sport: str) -> str:
     unit = (f"{p['gap']:.1f} rating points ({p['gap_points']:.1f} points of expected margin)"
             if p.get("gap_points") is not None else f"{p['gap']:.1f} rating points")
     parts = [f"{p['a']} is {unit} above {p['b']}; "
-             f"P({p['a']} wins at a neutral site) = {p['p_a_wins_neutral'] * 100:.0f}%"]
+             f"P({p['a']} wins at a neutral site) = {_pct(p['p_a_wins_neutral'])}%"]
     parts.append(f"{_signed(p['gap_from_prior'])} of the gap comes from last season's games "
                  f"and {_signed(p['gap_from_current'])} from this season's")
     h2h = p.get("h2h")
@@ -537,7 +542,7 @@ def pair_text(p: dict, *, sport: str) -> str:
     text = "; ".join(parts) + "."
     if p["tied"] and p.get("p_order") is not None:
         text += (f" Statistically tied: the bootstrap resamples keep this order only "
-                 f"{p['p_order'] * 100:.0f}% of the time.")
+                 f"{_pct(p['p_order'])}% of the time.")
     return text
 
 
@@ -658,8 +663,10 @@ def attach(board: pd.DataFrame, *, sport: str, season: int, current, prior,
         d = r.to_dict()
         d.update({k: per_team[r["team"]][k] for k in ("games", "best_wins", "worst_losses",
                                                       "games_played")})
-        d["rating_from_prior"] = per_team[r["team"]]["rating_from_prior"]
-        d["rating_from_current"] = per_team[r["team"]]["rating_from_current"]
+        # The displayed (rounded) parts, so a pair's split adds up to the displayed gap
+        # and matches what the backend computes from the same stored fields.
+        d["rating_from_prior"] = float(r["rating_from_prior"])
+        d["rating_from_current"] = float(r["rating_from_current"])
         for key in ("rank_p05", "rank_p95", "sched_rank"):
             d[key] = None if pd.isna(d.get(key)) else int(d[key])
         records[i] = d
