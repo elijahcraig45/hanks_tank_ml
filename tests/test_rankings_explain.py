@@ -188,8 +188,13 @@ class SummaryTests(unittest.TestCase):
             self.assertAlmostEqual(pair["gap_from_prior"] + pair["gap_from_current"],
                                    pair["gap"], delta=0.15)
             self.assertEqual(pair["tied"], pair["p_order"] < explain.TIE_ORDER_P)
-            if pair["tied"]:
-                self.assertIn("Statistically tied", r.summary)
+            # Every adjacent pair quotes its resample share, in the summary and the pair.
+            share = f"#{pair['b_rank']} in {explain._pct(pair['p_order'])}%"
+            self.assertIn(f"head of {share}", r.summary)
+            self.assertIn(f"({pair['order_label']})", r.summary)
+            self.assertIn(f"in {explain._pct(pair['p_order'])}% of resamples", pair["text"])
+            self.assertNotIn("tied", r.summary.lower())
+            self.assertNotIn("tied", pair["text"].lower())
 
     def test_remaining_schedule_strength_uses_unplayed_games(self):
         remaining = pd.DataFrame([
@@ -218,6 +223,66 @@ class SummaryTests(unittest.TestCase):
         table, _ = build.build_board("nfl", 2026, n_boot=5, games=prior, with_fpi=False)
         for text in table["summary"]:
             self.assertIn("no 2026 games yet", text)
+
+
+# Shared with hanks_tank_backend src/__tests__/rankings.routes.test.ts ("matches the ML
+# pair text"): the same two rows must produce the same sentence in both repos, because
+# the compare endpoint re-generates the text the ML job stores in vs_next.
+def _parity_rows():
+    g = lambda opp, won, pf, pa, over: {"opp": opp, "won": won, "pf": pf, "pa": pa,  # noqa: E731
+                                        "margin": pf - pa, "over": over, "site": "H"}
+    lsu = {"team": "LSU Tigers", "rank": 11, "rating": 745.8, "rating_from_prior": 122.0,
+           "rating_from_current": 623.8, "rank_p05": 3, "rank_p95": 33, "sched_rank": 2,
+           "games": [g("Ole Miss Rebels", False, 24, 32, -10.2),
+                     g("Clemson Tigers", True, 51, 10, 19.8)]}
+    florida = {"team": "Florida Gators", "rank": 12, "rating": 716.6,
+               "rating_from_prior": 54.8, "rating_from_current": 661.8, "rank_p05": 7,
+               "rank_p95": 37, "sched_rank": 39,
+               "games": [g("Ole Miss Rebels", True, 52, 28, 16.0)]}
+    return lsu, florida
+
+
+PARITY_TEXT = (
+    "LSU Tigers is 29.2 rating points (1.8 points of expected margin) above Florida Gators; "
+    "P(LSU Tigers wins at a neutral site) = 54%; +67.2 of the gap comes from last season's "
+    "games and −38.0 from this season's; they have not played each other this season; "
+    "common opponents: Ole Miss Rebels: LSU Tigers L 24-32, Florida Gators W 52-28. "
+    "LSU Tigers ranks ahead of Florida Gators in 56% of resamples (a coin flip)."
+)
+
+
+class OrderLabelTests(unittest.TestCase):
+    def test_bands(self):
+        cases = {0.5: "a coin flip", 0.594: "a coin flip", 0.595: "a slight edge",
+                 0.6: "a slight edge", 0.744: "a slight edge", 0.745: "a clear edge",
+                 0.894: "a clear edge", 0.895: "separated", 1.0: "separated",
+                 0.41: "a coin flip", 0.4: "a slight edge the other way",
+                 0.31: "a slight edge the other way", 0.2: "a clear edge the other way",
+                 0.05: "separated the other way"}
+        for p, label in cases.items():
+            self.assertEqual(explain.order_label(p), label, p)
+
+    def test_pair_text_matches_the_backend_fixture(self):
+        lsu, florida = _parity_rows()
+        pair = explain.pair_explanation(lsu, florida, sport="cfb", points_per_elo=0.06114,
+                                        p_order=0.565)
+        self.assertEqual(pair["text"], PARITY_TEXT)
+        self.assertEqual(pair["order_label"], "a coin flip")
+        self.assertTrue(pair["tied"])
+
+    def test_summary_quotes_both_neighbours(self):
+        r = {"rank": 11, "games_played": 4, "record": "3-1", "record_season": 2025,
+             "sched_rank": 2, "avg_margin": 23.2, "prior_share": 0.16,
+             "rating_from_prior": 122.0, "rating_from_current": 623.8,
+             "best_wins": [], "worst_losses": []}
+        text = explain.summary_line(r, sport="cfb", season=2026, board_size=138,
+                                    neighbours=[(12, 0.565), (10, 0.665)])
+        self.assertTrue(text.endswith(
+            " Behind #10 in 67% of resamples (a slight edge); ahead of #12 in 56% "
+            "(a coin flip)."), text)
+        top = explain.summary_line({**r, "rank": 1}, sport="cfb", season=2026,
+                                   board_size=138, neighbours=[(2, 0.485)])
+        self.assertTrue(top.endswith(" Ahead of #2 in 49% of resamples (a coin flip)."), top)
 
 
 class HelperTests(unittest.TestCase):
