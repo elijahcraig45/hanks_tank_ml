@@ -51,7 +51,14 @@ CREATE TABLE IF NOT EXISTS `hankstank.nfl_season.season_sim_team` (
   p_champion       FLOAT64,
   exp_final_rank   FLOAT64,             -- NFL rating rank / CFB committee-proxy rank
   rank_p10         FLOAT64,
-  rank_p90         FLOAT64
+  rank_p90         FLOAT64,
+  -- Remaining games (added 2026-09-28; existing tables: alter_season_sim_per_game.sql)
+  rem_wins_mean    FLOAT64,             -- expected wins over the remaining games
+  rem_wins_dist    STRING,              -- JSON array: P(remaining wins == k), k = 0..remaining_games
+  projected_wins_games STRING,          -- JSON array of game_id: the round(rem_wins_mean) likeliest wins
+  modal_sequence   STRING,              -- most common W/L string over the remaining games, schedule order
+  modal_sequence_freq FLOAT64,          -- share of simulations with exactly that sequence
+  modal_sequence_record_p FLOAT64       -- P(that sequence's W-L record, in any order)
 )
 PARTITION BY DATE(computed_at)
 CLUSTER BY season, as_of_week, team
@@ -119,7 +126,14 @@ CREATE TABLE IF NOT EXISTS `hankstank.cfb_season.season_sim_team` (
   p_champion       FLOAT64,
   exp_final_rank   FLOAT64,             -- NFL rating rank / CFB committee-proxy rank
   rank_p10         FLOAT64,
-  rank_p90         FLOAT64
+  rank_p90         FLOAT64,
+  -- Remaining games (added 2026-09-28; existing tables: alter_season_sim_per_game.sql)
+  rem_wins_mean    FLOAT64,             -- expected wins over the remaining games
+  rem_wins_dist    STRING,              -- JSON array: P(remaining wins == k), k = 0..remaining_games
+  projected_wins_games STRING,          -- JSON array of game_id: the round(rem_wins_mean) likeliest wins
+  modal_sequence   STRING,              -- most common W/L string over the remaining games, schedule order
+  modal_sequence_freq FLOAT64,          -- share of simulations with exactly that sequence
+  modal_sequence_record_p FLOAT64       -- P(that sequence's W-L record, in any order)
 )
 PARTITION BY DATE(computed_at)
 CLUSTER BY season, as_of_week, team
@@ -147,3 +161,51 @@ CREATE TABLE IF NOT EXISTS `hankstank.cfb_season.season_sim_bracket` (
 PARTITION BY DATE(computed_at)
 CLUSTER BY season, as_of_week, bracket
 OPTIONS (description = "Rest-of-season Monte Carlo: per-slot bracket probabilities and the most-likely bracket. Shadow experiment.");
+
+CREATE TABLE IF NOT EXISTS `hankstank.nfl_season.season_sim_games` (
+  sport            STRING    NOT NULL,
+  season           INT64     NOT NULL,
+  as_of_week       INT64     NOT NULL,
+  computed_at      TIMESTAMP NOT NULL,
+  model_version    STRING    NOT NULL,
+  n_sims           INT64     NOT NULL,
+  game_id          STRING    NOT NULL,  -- nflverse game_id / ESPN event id
+  week             INT64,
+  game_date        DATE,                -- NFL local date; CFB US Eastern date
+  home             STRING,              -- team key as in season_sim_team.team (FCS: ESPN abbr)
+  away             STRING,
+  home_name        STRING,
+  away_name        STRING,
+  neutral          BOOL,
+  p_home_win       FLOAT64,             -- share of simulated seasons the home side won (rating draws included)
+  margin_mean      FLOAT64,             -- simulated home margin, points
+  margin_p10       FLOAT64,
+  margin_p90       FLOAT64
+)
+PARTITION BY DATE(computed_at)
+CLUSTER BY season, as_of_week, home
+OPTIONS (description = "Rest-of-season Monte Carlo: one row per remaining regular-season game, from the same simulated seasons as season_sim_team. Shadow experiment.");
+
+CREATE TABLE IF NOT EXISTS `hankstank.cfb_season.season_sim_games` (
+  sport            STRING    NOT NULL,
+  season           INT64     NOT NULL,
+  as_of_week       INT64     NOT NULL,
+  computed_at      TIMESTAMP NOT NULL,
+  model_version    STRING    NOT NULL,
+  n_sims           INT64     NOT NULL,
+  game_id          STRING    NOT NULL,  -- nflverse game_id / ESPN event id
+  week             INT64,
+  game_date        DATE,                -- NFL local date; CFB US Eastern date
+  home             STRING,              -- team key as in season_sim_team.team (FCS: ESPN abbr)
+  away             STRING,
+  home_name        STRING,
+  away_name        STRING,
+  neutral          BOOL,
+  p_home_win       FLOAT64,             -- share of simulated seasons the home side won (rating draws included)
+  margin_mean      FLOAT64,             -- simulated home margin, points
+  margin_p10       FLOAT64,
+  margin_p90       FLOAT64
+)
+PARTITION BY DATE(computed_at)
+CLUSTER BY season, as_of_week, home
+OPTIONS (description = "Rest-of-season Monte Carlo: one row per remaining regular-season game, from the same simulated seasons as season_sim_team. Shadow experiment.");
