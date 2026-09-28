@@ -36,8 +36,9 @@ outside ratings, no adjectives. Three things are computed per team.
 3. How the schedule compares: mean opponent rating, played and still to play.
 
 A plain-English summary line is then assembled from those numbers by fixed templates.
-It never uses a word the numbers do not support, and it says "statistically tied" when
-the bootstrap cannot tell a team from its neighbour.
+It never uses a word the numbers do not support. How firmly a team sits above its
+neighbour is always quoted as a number: the share of bootstrap resamples that keep the
+published order, followed by a label from ORDER_BANDS (below).
 """
 
 from __future__ import annotations
@@ -58,9 +59,26 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-# Adjacent teams count as "statistically tied" when the bootstrap resamples put them in
-# the published order less often than this. 0.5 would be a coin flip; below 0.75 the
-# order flips in more than a quarter of resamples.
+# How firmly one team sits above another, from p = the share of bootstrap resamples that
+# rate it higher. The percentage is always shown (rounded to a whole number, and the band
+# is read off that rounded number); the label is a coarse reading of it:
+#
+#   under 60%      "a coin flip"    the order flips in more than 40% of resamples
+#   60% to < 75%   "a slight edge"  flips in 25-40%
+#   75% to < 90%   "a clear edge"   flips in 10-25%
+#   90% and over   "separated"      flips in fewer than 1 in 10
+#
+# The bands are symmetric around 50%: the point rank comes from the full fit and the
+# resamples can disagree with it, so p can fall below one half. At 40% and under the label
+# is the band of 100 - p plus "the other way" (31% reads "a slight edge the other way");
+# 41-59% is a coin flip either side of 50. The backend compare endpoint (hanks_tank_backend
+# src/utils/rankings-compare.ts) carries the same table and must stay identical.
+ORDER_BANDS = ((0.90, "separated"), (0.75, "a clear edge"), (0.60, "a slight edge"))
+ORDER_COIN_FLIP = "a coin flip"
+
+# The machine-readable `tied` flag on a pair: the order holds in under 75% of resamples,
+# i.e. "a coin flip" or "a slight edge". Kept for API consumers; the text no longer uses
+# the word.
 TIE_ORDER_P = 0.75
 
 # How many best wins / worst losses to keep per team.
@@ -297,6 +315,20 @@ def _pct(p: float) -> int:
     return int(math.floor(p * 100 + 0.5))
 
 
+def order_label(p: float) -> str:
+    """Plain-language band for a resample share (see ORDER_BANDS).
+
+    Banded on the displayed whole percentage, so the label always agrees with the
+    number printed next to it (59.6% prints as 60% and reads "a slight edge").
+    """
+    shown = _pct(p)
+    stronger = max(shown, 100 - shown)
+    for floor, label in ORDER_BANDS:
+        if stronger >= round(floor * 100):
+            return label if shown >= 50 else f"{label} the other way"
+    return ORDER_COIN_FLIP
+
+
 def _ordinal(n: int) -> str:
     if 10 <= n % 100 <= 20:
         suffix = "th"
@@ -336,7 +368,7 @@ def prior_share(prior_part: float, current_part: float) -> float | None:
 
 
 def summary_line(r: dict, *, sport: str, season: int, board_size: int,
-                 tied_with: list[tuple[int, float]]) -> str:
+                 neighbours: list[tuple[int, float]]) -> str:
     """One deterministic sentence per team, built only from numbers on its row."""
     rank = r["rank"]
     if r.get("games_played", 0) == 0:
@@ -382,15 +414,17 @@ def summary_line(r: dict, *, sport: str, season: int, board_size: int,
         clauses.append(f"{worst_label}: {describe(w)} ({_signed(w['contrib'])})")
 
     text = "; ".join(clauses) + "."
-    if tied_with:
-        # Quote how often the resamples keep each published order, so "tied" is a
-        # number rather than an impression.
-        ties = sorted(tied_with)
-        names = " and ".join(f"#{t}" for t, _ in ties)
-        shares = " and ".join(f"{_pct(p)}%" for _, p in ties)
-        orders = "that order" if len(ties) == 1 else "those orders"
-        text += (f" Statistically tied with {names}: the bootstrap resamples keep "
-                 f"{orders} only {shares} of the time.")
+    # How often the resamples keep this team's order against each adjacent team: always
+    # the number, then its band. `neighbours` holds (their rank, share with the higher
+    # of the two ranked higher).
+    orders = []
+    for other, p in sorted(neighbours):
+        side = "behind" if other < rank else "ahead of"
+        tail = " of resamples" if not orders else ""
+        orders.append(f"{side} #{other} in {_pct(p)}%{tail} ({order_label(p)})")
+    if orders:
+        joined = "; ".join(orders)
+        text += f" {joined[0].upper()}{joined[1:]}."
     return text
 
 
@@ -478,6 +512,7 @@ def pair_explanation(a: dict, b: dict, *, sport: str, points_per_elo: float | No
         "p_a_wins_neutral": _num(core.win_prob(a["rating"], b["rating"]), 3),
         "p_order": _num(p_order, 3),
         "tied": bool(p_order is not None and p_order < TIE_ORDER_P),
+        "order_label": order_label(p_order) if p_order is not None else None,
         "gap_from_prior": _num(a["rating_from_prior"] - b["rating_from_prior"]),
         "gap_from_current": _num(a["rating_from_current"] - b["rating_from_current"]),
         "a_band": [a.get("rank_p05"), a.get("rank_p95")],
@@ -540,9 +575,9 @@ def pair_text(p: dict, *, sport: str) -> str:
                      f"{totals['a_w']}-{totals['a_l']} and {p['b']} "
                      f"{totals['b_w']}-{totals['b_l']}")
     text = "; ".join(parts) + "."
-    if p["tied"] and p.get("p_order") is not None:
-        text += (f" Statistically tied: the bootstrap resamples keep this order only "
-                 f"{_pct(p['p_order'])}% of the time.")
+    if p.get("p_order") is not None:
+        text += (f" {p['a']} ranks ahead of {p['b']} in {_pct(p['p_order'])}% of resamples "
+                 f"({order_label(p['p_order'])}).")
     return text
 
 
@@ -657,7 +692,7 @@ def attach(board: pd.DataFrame, *, sport: str, season: int, current, prior,
         group["sched_remaining"].rank(ascending=False, method="min").astype("Int64")
     )
 
-    # Adjacent-pair explanations and the tie flags the summary line quotes.
+    # Adjacent-pair explanations and the resample shares the summary line quotes.
     records = {}
     for i, r in out.iterrows():
         d = r.to_dict()
@@ -673,6 +708,7 @@ def attach(board: pd.DataFrame, *, sport: str, season: int, current, prior,
 
     vs_next: dict = {}
     tied_with: dict = {i: [] for i in out.index}
+    neighbours: dict = {i: [] for i in out.index}
     for _, grp in out.groupby("division", dropna=False, sort=False):
         idx = list(grp.sort_values("rank").index)
         for i, j in zip(idx, idx[1:]):
@@ -681,6 +717,9 @@ def attach(board: pd.DataFrame, *, sport: str, season: int, current, prior,
             pair = pair_explanation(a, b, sport=sport, points_per_elo=points_per_elo,
                                     p_order=p_order)
             vs_next[i] = pair
+            if p_order is not None:
+                neighbours[i].append((int(b["rank"]), p_order))
+                neighbours[j].append((int(a["rank"]), p_order))
             if pair["tied"]:
                 tied_with[i].append((int(b["rank"]), p_order))
                 tied_with[j].append((int(a["rank"]), p_order))
@@ -696,7 +735,7 @@ def attach(board: pd.DataFrame, *, sport: str, season: int, current, prior,
         d["rating_from_current"] = float(r["rating_from_current"])
         summaries.append(summary_line(d, sport=sport, season=season,
                                       board_size=int(board_size[i]),
-                                      tied_with=sorted(tied_with[i])))
+                                      neighbours=neighbours[i]))
         why.append(json.dumps({
             # Indices into games_json, so each game is stored once.
             "best": [_index_of(d["games"], e) for e in d["best_wins"]],
