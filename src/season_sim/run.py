@@ -3,6 +3,7 @@
     sim_nfl(sched, season, ...)            -> Outcome (arrays; used by the backtest)
     sim_cfb(games, season, ...)            -> Outcome
     tables(outcome, computed_at)           -> (team_df, bracket_df), the BigQuery rows
+    games_table(outcome, computed_at)      -> games_df, one row per remaining game
 
 The production default is the variant chosen by the backtest (DEFAULT_VARIANT below; the
 evidence is in docs/EXPERIMENT_LOG.md).
@@ -48,6 +49,12 @@ class Outcome:
     final_rank: np.ndarray           # (S, T) end-of-season rank (1 = best)
     flags: dict[str, np.ndarray] = field(default_factory=dict)   # (S, T) booleans
     runtime: dict = field(default_factory=dict)
+    # Remaining (unplayed) regular-season games involving a simulated team, in schedule
+    # order, and their simulated home margins: the SAME draws the standings used, so
+    # per-game win probabilities add up to each team's expected remaining wins.
+    games: pd.DataFrame | None = None           # game_id, week, game_day, home, away, ...
+    game_margins: np.ndarray | None = None      # (S, n_games)
+    tie_half: bool = False                      # NFL: a 0 margin is half a win to each side
 
 
 def _current_record(M_known: np.ndarray, known: np.ndarray, H, A, conf_mask=None):
@@ -61,6 +68,30 @@ def _current_record(M_known: np.ndarray, known: np.ndarray, H, A, conf_mask=None
     losses = hl @ H + hw @ A
     ties = ht @ (H + A)
     return wins, losses, ties
+
+
+def _remaining_games(frame: pd.DataFrame, rows: np.ndarray, home_key, away_key,
+                     home_name, away_name) -> pd.DataFrame:
+    """Schedule rows for `rows` (frame positions), in date/week order is left to the
+    caller; team keys are the same keys the team table uses."""
+    f = frame.iloc[rows]
+    day = f["game_day"].astype(str) if "game_day" in f.columns else pd.Series([None] * len(f))
+    return pd.DataFrame({
+        "game_id": (f["game_id"].astype(str).to_numpy() if "game_id" in f.columns
+                    else np.array([f"row{r}" for r in rows])),
+        "week": f["week"].to_numpy(int),
+        "game_day": [None if d in ("nan", "NaT", "None") else d for d in day],
+        "home": list(home_key), "away": list(away_key),
+        "home_name": list(home_name), "away_name": list(away_name),
+        "neutral": f["neutral"].to_numpy(float) > 0,
+    })
+
+
+def _order(games: pd.DataFrame) -> np.ndarray:
+    """Schedule order: week, then date, then game id (a stable tiebreak)."""
+    key = games.assign(_d=games["game_day"].fillna("9999"))
+    return np.lexsort((key["game_id"].to_numpy(), key["_d"].to_numpy(),
+                       key["week"].to_numpy()))
 
 
 # ---------------------------------------------------------------------------- NFL
@@ -134,6 +165,12 @@ def sim_nfl(sched: pd.DataFrame, season: int, as_of_week: int | None = None,
 
     end = res.B_end[:, col]
     final_rank = (-end).argsort(1).argsort(1) + 1
+    rem_pos = np.flatnonzero(~known)
+    fr = frame.iloc[ns.rows[rem_pos]]
+    rg = _remaining_games(frame, ns.rows[rem_pos], fr["home_team"], fr["away_team"],
+                          [nflm.TEAM_NAMES.get(t, t) for t in fr["home_team"]],
+                          [nflm.TEAM_NAMES.get(t, t) for t in fr["away_team"]])
+    order = _order(rg)
     t3 = time.time()
     return Outcome(
         sport="nfl", season=season,
@@ -146,6 +183,8 @@ def sim_nfl(sched: pd.DataFrame, season: int, as_of_week: int | None = None,
         final_rank=final_rank, flags=flags,
         runtime={"sim_s": t1 - t0, "standings_s": t2 - t1, "playoffs_s": t3 - t2,
                  "total_s": t3 - t0, "noise_sigma": res.noise_sigma},
+        games=rg.iloc[order].reset_index(drop=True), game_margins=M[:, rem_pos[order]],
+        tie_half=True,
     )
 
 
@@ -261,6 +300,13 @@ def sim_cfb(games: pd.DataFrame, season: int, as_of_week: int | None = None,
             for i in members:
                 div_of[cs.fbs[i]] = d
     as_of = as_of_week if as_of_week is not None else _nfl_as_of(frame, season)
+    # Remaining games that touch an FBS team (unplayed FCS-vs-FCS games are not in the
+    # frame). FCS opponents keep their ESPN abbreviation and name.
+    rem_pos = np.flatnonzero(~known & ((cs.hi >= 0) | (cs.ai >= 0)))
+    fr = frame.iloc[cs.rows[rem_pos]]
+    rg = _remaining_games(frame, cs.rows[rem_pos], fr["home_abbr"], fr["away_abbr"],
+                          fr["home_team"], fr["away_team"])
+    order = _order(rg)
     return Outcome(
         sport="cfb", season=season, as_of_week=int(as_of), n_sims=S, variant=variant,
         teams=list(cs.fbs), team_name={t: t for t in cs.fbs},
@@ -272,6 +318,8 @@ def sim_cfb(games: pd.DataFrame, season: int, as_of_week: int | None = None,
         flags=flags,
         runtime={"sim_s": t1 - t0, "standings_s": t2 - t1, "postseason_s": t3 - t2,
                  "total_s": t3 - t0, "noise_sigma": res.noise_sigma},
+        games=rg.iloc[order].reset_index(drop=True), game_margins=M[:, rem_pos[order]],
+        tie_half=False,
     )
 
 
@@ -345,6 +393,7 @@ def tables(o: Outcome, computed_at: pd.Timestamp | None = None,
     max_g = int(o.n_games.max())
     rows = []
     fl = o.flags
+    per_team = team_game_fields(o)
     for i, t in enumerate(o.teams):
         w = o.wins[:, i]
         dist = np.bincount(np.floor(w).astype(int), minlength=max_g + 1)[: max_g + 1] / S
@@ -375,10 +424,103 @@ def tables(o: Outcome, computed_at: pd.Timestamp | None = None,
             "exp_final_rank": float(o.final_rank[:, i].mean()),
             "rank_p10": float(np.percentile(o.final_rank[:, i], 10)),
             "rank_p90": float(np.percentile(o.final_rank[:, i], 90)),
+            **per_team[o.team_abbr[t]],
         })
     team_df = pd.DataFrame(rows)
     bracket_df = _bracket_rows(o, base, P_seed if o.sport == "cfb" else None, min_prob)
     return team_df, bracket_df
+
+
+# ---------------------------------------------------------------------------- per game
+def _home_win(o: Outcome) -> np.ndarray:
+    """(S, n) home 'wins' per remaining game, counted exactly as the standings count
+    them: NFL gives each side half a win on a 0 margin, CFB (no ties) needs margin > 0."""
+    M = o.game_margins
+    hw = (M > 0).astype(float)
+    return hw + 0.5 * (M == 0) if o.tie_half else hw
+
+
+def team_game_fields(o: Outcome) -> dict[str, dict]:
+    """Per team (keyed like the team table's `team`): the remaining-games columns.
+
+      rem_wins_mean          expected wins over the remaining games
+      rem_wins_dist          JSON, P(remaining wins == k), k = 0..remaining games
+      projected_wins_games   JSON list of game_ids: the k likeliest wins, k = round(rem_wins_mean)
+      modal_sequence         the single most common W/L sequence, schedule order ('WLLW...')
+      modal_sequence_freq    share of simulations that produced exactly that sequence
+      modal_sequence_record_p  P(that W-L record, in any order)
+
+    The win indicators are the simulated margins the standings used, so per-game P(win)
+    summed over a team's games IS rem_wins_mean (same draws, a linear identity).
+    """
+    empty = {"rem_wins_mean": 0.0, "rem_wins_dist": json.dumps([1.0]),
+             "projected_wins_games": json.dumps([]), "modal_sequence": "",
+             "modal_sequence_freq": 1.0, "modal_sequence_record_p": 1.0}
+    out = {o.team_abbr[t]: dict(empty) for t in o.teams}
+    if o.games is None or not len(o.games):
+        return out
+    g = o.games
+    hw = _home_win(o)
+    p_home = hw.mean(0)
+    S = hw.shape[0]
+    home = g["home"].to_numpy()
+    away = g["away"].to_numpy()
+    gid = g["game_id"].to_numpy()
+    for key in out:
+        js = np.flatnonzero((home == key) | (away == key))
+        if not len(js):
+            continue
+        is_home = home[js] == key
+        W = np.where(is_home[None, :], hw[:, js], 1.0 - hw[:, js])     # (S, k), schedule order
+        rem = W.sum(1)
+        mean = float(rem.mean())
+        dist = np.bincount(np.floor(rem + 1e-9).astype(int), minlength=len(js) + 1)[: len(js) + 1] / S
+        p_win = np.where(is_home, p_home[js], 1.0 - p_home[js])
+        k = int(np.floor(mean + 0.5))
+        top = sorted(range(len(js)), key=lambda q: (-p_win[q], q))[:k]
+        code = (W >= 1.0).astype(np.int64) @ (1 << np.arange(len(js), dtype=np.int64))
+        vals, counts = np.unique(code, return_counts=True)
+        best = int(vals[np.argmax(counts)])
+        seq = "".join("W" if (best >> q) & 1 else "L" for q in range(len(js)))
+        out[key] = {
+            "rem_wins_mean": mean,
+            "rem_wins_dist": json.dumps([round(float(x), 5) for x in dist]),
+            "projected_wins_games": json.dumps([str(gid[js[q]]) for q in top]),
+            "modal_sequence": seq,
+            "modal_sequence_freq": float(counts.max() / S),
+            "modal_sequence_record_p": float(dist[seq.count("W")]),
+        }
+    return out
+
+
+def games_table(o: Outcome, computed_at: pd.Timestamp | None = None,
+                model_version: str = eng.MODEL_VERSION) -> pd.DataFrame:
+    """One row per remaining regular-season game: the marginal P(home win) over the
+    simulated seasons (rating draws included) and the simulated margin's mean and 10th/90th
+    percentiles. Conference title games and the postseason are not listed: their pairings
+    are themselves simulated."""
+    import datetime as dt
+
+    computed_at = computed_at or pd.Timestamp.now(tz="UTC")
+    cols = ["sport", "season", "as_of_week", "computed_at", "model_version", "n_sims",
+            "game_id", "week", "game_date", "home", "away", "home_name", "away_name",
+            "neutral", "p_home_win", "margin_mean", "margin_p10", "margin_p90"]
+    if o.games is None or not len(o.games):
+        return pd.DataFrame(columns=cols)
+    g = o.games
+    M = o.game_margins
+    return pd.DataFrame({
+        "sport": o.sport, "season": o.season, "as_of_week": o.as_of_week,
+        "computed_at": computed_at, "model_version": model_version, "n_sims": M.shape[0],
+        "game_id": g["game_id"].astype(str).to_numpy(), "week": g["week"].to_numpy(int),
+        "game_date": [dt.date.fromisoformat(d) if isinstance(d, str) else None
+                      for d in g["game_day"]],
+        "home": g["home"].to_numpy(), "away": g["away"].to_numpy(),
+        "home_name": g["home_name"].to_numpy(), "away_name": g["away_name"].to_numpy(),
+        "neutral": g["neutral"].to_numpy(bool),
+        "p_home_win": _home_win(o).mean(0), "margin_mean": M.mean(0),
+        "margin_p10": np.percentile(M, 10, axis=0), "margin_p90": np.percentile(M, 90, axis=0),
+    })[cols]
 
 
 def _bracket_rows(o: Outcome, base: dict, _unused, min_prob: float) -> pd.DataFrame:

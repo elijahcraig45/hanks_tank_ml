@@ -16,7 +16,7 @@ Modes (POST body {"mode": ...}):
                 ({"model": "ridge"} writes the shadow ridge to its own table)
   fpi_snapshot  record ESPN FPI's pregame win probability for the next unplayed week
   season_sim    rest-of-season Monte Carlo (EXPERIMENT, shadow): records, conference titles,
-                CFP odds and bracket -> cfb_season.season_sim_team / season_sim_bracket,
+                CFP odds, bracket, per-game P(win) -> cfb_season.season_sim_team / _bracket / _games,
                 scoped to (season, as_of_week). Honours dry_run (computes, writes nothing).
                 Runs from its own Scheduler job after the weekly ingest (deploy --shadow), not
                 inside it, so it can never cost the ingest its 540 s.

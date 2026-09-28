@@ -119,8 +119,10 @@ def normalise_games(games: pd.DataFrame) -> pd.DataFrame:
     for c in ("season", "week", "is_postseason", "neutral_site", "conference_game"):
         g[c] = pd.to_numeric(g[c]).astype("float64").fillna(0).astype(int)
     g["margin"] = pd.to_numeric(g["result"]).astype("float64")
-    g["hc"] = g["home_conference_id"].astype(str)
-    g["ac"] = g["away_conference_id"].astype(str)
+    # fillna first: pandas 3's str dtype keeps a missing id missing through astype(str)
+    # (pandas 2 made it the string "None"), and an all-missing team then has no mode.
+    g["hc"] = g["home_conference_id"].fillna("None").astype(str)
+    g["ac"] = g["away_conference_id"].fillna("None").astype(str)
     g["home_abbr"], g["away_abbr"] = g["home_team"].astype(str), g["away_team"].astype(str)
     g["home_team"], g["away_team"] = g["home_team_name"].astype(str), g["away_team_name"].astype(str)
     tbd = g["home_team"].str.contains("TBD") | g["away_team"].str.contains("TBD")
@@ -132,7 +134,15 @@ def normalise_games(games: pd.DataFrame) -> pd.DataFrame:
         (g["is_postseason"] == 0) & ~np.array(an) & (_et_date(g["game_date"]).dt.month == 12)
     g["is_conf"] = same & (g["conference_game"] == 1) & ~g["is_ccg"]
     g["neutral"] = g["neutral_site"].astype(float)
+    g["game_day"] = _eastern_day(g["game_date"])
     return g
+
+
+def _eastern_day(ts: pd.Series) -> pd.Series:
+    """Calendar date in US Eastern time (ESPN kickoffs are UTC; a TBD kickoff is stored as
+    local midnight, 04:00Z/05:00Z, which a flat -5h shift would move to the day before)."""
+    t = pd.to_datetime(ts, errors="coerce", utc=True)
+    return t.dt.tz_convert("America/New_York").dt.strftime("%Y-%m-%d")
 
 
 def team_conferences(g: pd.DataFrame, season: int) -> dict[str, str]:
