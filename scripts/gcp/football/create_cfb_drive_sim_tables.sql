@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS `hankstank.cfb_season.game_sim_distributions` (
   p_tie FLOAT64,             -- P(final tie)
   p_home_cover FLOAT64,      -- P(margin > spread_line); NULL without a spread
   p_over_by_line STRING,     -- JSON {"44.5": 0.51, ...}: total_line +-7 (sim mean if no line)
-  margin_exact STRING,       -- JSON {"-21": p, ..., "21": p}
+  margin_exact STRING,       -- JSON {"<=-61": p, "-60": p, ..., "60": p, ">=61": p}; sums to 1 (rows before 2026-09-28: -21..21 only)
   margin_exact_basis STRING, -- sim_shape_at_spread | raw_sim
   spread_line FLOAT64,       -- positive = home favoured (cfb_season.betting_lines)
   total_line FLOAT64,

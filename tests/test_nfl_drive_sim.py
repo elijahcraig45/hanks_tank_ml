@@ -150,14 +150,36 @@ def test_summarize_game_lines_and_margin_exact():
     vals = list(lines.values())
     assert all(a >= b for a, b in zip(vals, vals[1:]))           # P(over) falls with the line
     me = json.loads(s["margin_exact"])
-    assert list(me) == [str(k) for k in range(-21, 22)]
-    assert 0.9 < sum(me.values()) <= 1.0
+    assert list(me) == ["<=-61"] + [str(k) for k in range(-60, 61)] + [">=61"]
+    assert sum(me.values()) == pytest.approx(1.0, abs=1e-9)
     assert s["margin_exact_basis"] == "sim_shape_at_spread"
     # tilted to the spread: the full-grid mean is 3.0 (checked via the pmf directly)
     assert s["p_home_cover"] == pytest.approx(((hs - aw) > 3.0).mean())
     raw = ds.summarize_game(hs, aw, ot)
     assert raw["p_home_cover"] is None and raw["margin_exact_basis"] == "raw_sim"
     assert len(json.loads(raw["p_over_by_line"])) == 15
+
+
+def test_margin_exact_keeps_the_tails():
+    """A wide (college-like) margin keeps all its mass: the tails land in the buckets."""
+    rng = np.random.default_rng(1)
+    hs = np.clip(rng.normal(45, 18, 4000).round(), 0, None)
+    aw = np.clip(rng.normal(10, 8, 4000).round(), 0, None)
+    s = ds.summarize_game(hs, aw, np.zeros(4000, bool), spread_line=35.0, cfg=ds.CFB)
+    me = json.loads(s["margin_exact"])
+    assert sum(me.values()) == pytest.approx(1.0, abs=1e-9)
+    mg = hs - aw
+    assert me[">=61"] > 0.01 and me[">=61"] == pytest.approx((mg >= 61).mean(), abs=0.03)
+    assert sum(v for k, v in me.items() if k not in ("<=-61", ">=61") and abs(int(k)) > 21) > 0.2
+
+
+def test_margin_exact_pmf_sums_to_one_and_rounds():
+    grid = np.arange(-80, 81)
+    P = np.exp(-0.5 * ((grid - 3) / 14.0) ** 2)
+    me = ds.margin_exact_pmf(P, grid)
+    back = json.loads(json.dumps(me))
+    assert abs(sum(back.values()) - 1.0) < 1e-9
+    assert len(back) == 123 and all(v >= 0 for v in back.values())
 
 
 def test_tilt_hits_target_mean():
