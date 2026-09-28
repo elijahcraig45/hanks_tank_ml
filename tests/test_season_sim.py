@@ -26,6 +26,7 @@ from season_sim import run, store  # noqa: E402
 
 FIXTURE = os.path.join(HERE, "fixtures", "nflverse_games_2022_2025.csv")
 DDL = os.path.join(HERE, "..", "scripts", "gcp", "football", "create_season_sim_tables.sql")
+ALTER = os.path.join(HERE, "..", "scripts", "gcp", "football", "alter_season_sim_per_game.sql")
 
 
 @pytest.fixture(scope="module")
@@ -205,10 +206,11 @@ def test_four_team_format_before_2024():
 
 
 # ------------------------------------------------------------------ tables + writes
-def _ddl_columns(table):
-    sql = open(DDL).read()
-    block = re.search(rf"nfl_season\.{table}` \((.*?)\n\)", sql, re.S).group(1)
-    return [ln.split()[0] for ln in block.strip().splitlines() if ln.strip()]
+def _ddl_columns(table, path=DDL, dataset="nfl_season"):
+    sql = open(path).read()
+    block = re.search(rf"{dataset}\.{table}` \((.*?)\n\)", sql, re.S).group(1)
+    return [ln.split()[0] for ln in block.strip().splitlines()
+            if ln.strip() and not ln.strip().startswith("--")]
 
 
 @pytest.fixture(scope="module")
@@ -218,9 +220,115 @@ def nfl_tables(sched):
 
 
 def test_tables_match_the_ddl(nfl_tables):
-    _, (team, bracket) = nfl_tables
-    assert list(team.columns) == _ddl_columns("season_sim_team")
-    assert list(bracket.columns) == _ddl_columns("season_sim_bracket")
+    o, (team, bracket) = nfl_tables
+    for ds in ("nfl_season", "cfb_season"):
+        assert list(team.columns) == _ddl_columns("season_sim_team", dataset=ds)
+        assert list(bracket.columns) == _ddl_columns("season_sim_bracket", dataset=ds)
+        assert list(run.games_table(o).columns) == _ddl_columns("season_sim_games", dataset=ds)
+        assert _ddl_columns("season_sim_games", ALTER, ds) == _ddl_columns("season_sim_games", dataset=ds)
+
+
+def test_alter_adds_exactly_the_new_team_columns():
+    old = set(_ddl_columns("season_sim_team")) - {
+        "rem_wins_mean", "rem_wins_dist", "projected_wins_games", "modal_sequence",
+        "modal_sequence_freq", "modal_sequence_record_p"}
+    new = [c for c in _ddl_columns("season_sim_team") if c not in old]
+    for ds in ("nfl_season", "cfb_season"):
+        block = re.search(rf"ALTER TABLE `hankstank\.{ds}\.season_sim_team`(.*?);",
+                          open(ALTER).read(), re.S).group(1)
+        assert re.findall(r"ADD COLUMN IF NOT EXISTS (\w+)", block) == new
+
+
+# ------------------------------------------------------------------ per-game projections
+@pytest.fixture(scope="module")
+def nfl_games(sched):
+    o = run.sim_nfl(sched, 2025, as_of_week=6, n_sims=4000, seed=7)
+    team, _ = run.tables(o)
+    return o, team, run.games_table(o)
+
+
+def _team_p_wins(games, team):
+    h = games[games["home"] == team]
+    a = games[games["away"] == team]
+    return pd.concat([h["p_home_win"], 1 - a["p_home_win"]])
+
+
+def test_per_game_p_win_sums_to_expected_remaining_wins(sched, nfl_games):
+    """Per-game P(win) summed over a team's remaining games is its expected remaining wins:
+    exactly against the team table (the same simulated seasons), and to Monte Carlo
+    tolerance against an independent run with another seed."""
+    o, team, games = nfl_games
+    other, _ = run.tables(run.sim_nfl(sched, 2025, as_of_week=6, n_sims=4000, seed=8))
+    other = other.set_index("team")
+    for r in team.itertuples():
+        pw = _team_p_wins(games, r.team)
+        assert len(pw) == r.remaining_games
+        assert pw.sum() == pytest.approx(r.rem_wins_mean, abs=1e-9)
+        assert r.mean_wins == pytest.approx(r.wins + 0.5 * r.ties + r.rem_wins_mean, abs=1e-9)
+        # Two independent runs differ by MC error: sd = sqrt(2 Var(rem wins) / S). The
+        # variance comes from the simulated distribution itself, since the rating draws
+        # correlate a team's games and a Bernoulli bound would be too tight. Allow 5 sd.
+        dist = np.array(json.loads(r.rem_wins_dist))
+        k = np.arange(len(dist))
+        var = float((k * k * dist).sum() - (k * dist).sum() ** 2)
+        tol = 5 * np.sqrt(2 * var / 4000) + 1e-3
+        assert pw.sum() == pytest.approx(other.loc[r.team, "rem_wins_mean"], abs=tol)
+
+
+def test_games_table_is_one_row_per_remaining_game(nfl_games):
+    o, team, games = nfl_games
+    assert games["game_id"].is_unique
+    assert len(games) == team["remaining_games"].sum() / 2   # NFL: both sides are teams
+    assert set(games["week"]) == set(range(7, 19))
+    assert ((games["p_home_win"] >= 0) & (games["p_home_win"] <= 1)).all()
+    assert (games["margin_p10"] <= games["margin_mean"]).all()
+    assert (games["margin_mean"] <= games["margin_p90"]).all()
+    # A favourite by the mean margin is a favourite by P(win).
+    fav = games["margin_mean"].abs() > 3
+    assert ((games.loc[fav, "margin_mean"] > 0) == (games.loc[fav, "p_home_win"] > 0.5)).all()
+    assert games["game_date"].map(lambda d: d.isoformat()).str.match(r"2025-(09|1[0-2])-|2026-01-").all()
+    assert set(games["sport"]) == {"nfl"} and set(games["as_of_week"]) == {6}
+
+
+def test_projected_wins_games_and_modal_sequence(nfl_games):
+    o, team, games = nfl_games
+    for r in team.itertuples():
+        pw = _team_p_wins(games, r.team)
+        ids = json.loads(r.projected_wins_games)
+        assert len(ids) == int(np.floor(r.rem_wins_mean + 0.5))
+        gid = pd.concat([games.loc[games["home"] == r.team, "game_id"],
+                         games.loc[games["away"] == r.team, "game_id"]])
+        p_of = dict(zip(gid, pw))
+        chosen = [p_of[i] for i in ids]
+        rest = [p for g, p in p_of.items() if g not in ids]
+        assert chosen == sorted(chosen, reverse=True)
+        assert not rest or min(chosen, default=1) >= max(rest) - 1e-12
+        dist = json.loads(r.rem_wins_dist)
+        assert len(dist) == r.remaining_games + 1 and sum(dist) == pytest.approx(1, abs=1e-4)
+        assert sum(k * p for k, p in enumerate(dist)) == pytest.approx(r.rem_wins_mean, abs=1e-3)
+        assert len(r.modal_sequence) == r.remaining_games and set(r.modal_sequence) <= {"W", "L"}
+        assert 0 < r.modal_sequence_freq <= r.modal_sequence_record_p + 1e-12
+        assert r.modal_sequence_record_p == pytest.approx(dist[r.modal_sequence.count("W")], abs=1e-5)
+
+
+def test_modal_sequence_is_the_most_common_path():
+    """Hand-built outcome: 3 games, the sequence W-L-W appears in 5 of 8 paths."""
+    M = np.array([[1, -1, 1]] * 5 + [[1, 1, 1], [-1, -1, -1], [-1, 1, 1]], float)
+    g = pd.DataFrame({"game_id": ["a", "b", "c"], "week": [5, 6, 7], "game_day": [None] * 3,
+                      "home": ["X", "X", "Y"], "away": ["Y", "Z", "X"],
+                      "home_name": ["X", "X", "Y"], "away_name": ["Y", "Z", "X"],
+                      "neutral": [False] * 3})
+    o = unittest.mock.Mock(teams=["X"], team_abbr={"X": "X"}, games=g, game_margins=M,
+                           tie_half=False)
+    f = run.team_game_fields(o)["X"]
+    # X: home wins a (M>0), home in b, away in c (wins when M<0)
+    assert f["modal_sequence"] == "WLL"
+    assert f["modal_sequence_freq"] == pytest.approx(5 / 8)
+    # paths: WLL x5, WWL, LLW, LWL -> 5 + 2 + 1 + 1 = 9 wins over 8 paths
+    assert f["rem_wins_mean"] == pytest.approx(9 / 8)
+    assert json.loads(f["rem_wins_dist"]) == [0.0, 0.875, 0.125, 0.0]
+    assert f["modal_sequence_record_p"] == pytest.approx(7 / 8)
+    assert json.loads(f["projected_wins_games"]) == ["a"]   # round(1.0) = 1
 
 
 def test_nfl_outcome_invariants(nfl_tables):
@@ -246,6 +354,8 @@ def test_dry_run_creates_no_bigquery_client(sched):
             result=lambda d: np.where((d["season"] == 2025) & (d["week"] > 5), np.nan, d["result"])),
             2025, "p", "nfl_season", {"n_sims": 200}, dry_run=True)
     assert out["dry_run"] is True and out["written"] == 0 and out["as_of_week"] == 5
+    reg = sched[(sched["season"] == 2025) & (sched["game_type"] == "REG") & (sched["week"] > 5)]
+    assert out["game_rows"] == len(reg)
 
 
 def test_write_is_scoped_to_one_season_and_week(nfl_tables):
@@ -267,6 +377,39 @@ def test_write_is_scoped_to_one_season_and_week(nfl_tables):
         assert cfg.create_disposition == "CREATE_NEVER" and cfg.write_disposition == "WRITE_APPEND"
     with pytest.raises(ValueError):
         store.write(team, bracket, "p", "nfl_season", 2025, 7, client=fake)
+
+
+def test_games_write_is_scoped_and_checks_every_schema_first(nfl_tables):
+    o, (team, bracket) = nfl_tables
+    games = run.games_table(o)
+    from google.cloud.bigquery import SchemaField
+
+    cols = {"season_sim_team": team.columns, "season_sim_bracket": bracket.columns,
+            "season_sim_games": games.columns}
+    fake = unittest.mock.MagicMock()
+    fake.get_table.side_effect = lambda tid: unittest.mock.Mock(schema=[
+        SchemaField(c, "STRING") for c in cols[tid.split(".")[-1]]])
+    out = store.write(team, bracket, "p", "nfl_season", 2025, 6, client=fake, games_df=games)
+    assert out["season_sim_games"] == len(games) > 0
+    tables = [c[0][0].split("`")[1] for c in fake.query.call_args_list]
+    assert tables == ["p.nfl_season.season_sim_team", "p.nfl_season.season_sim_bracket",
+                      "p.nfl_season.season_sim_games"]
+    for call in fake.query.call_args_list:
+        params = {p.name: p.value for p in call[1]["job_config"].query_parameters}
+        assert params == {"season": 2025, "week": 6}
+    with pytest.raises(ValueError):
+        store.write(team, bracket, "p", "nfl_season", 2025, 6, client=fake,
+                    games_df=games.assign(as_of_week=7))
+
+    # The team table without the migrated columns: refuse before any DELETE.
+    old = [c for c in team.columns if c not in ("rem_wins_mean", "modal_sequence")]
+    fake2 = unittest.mock.MagicMock()
+    fake2.get_table.side_effect = lambda tid: unittest.mock.Mock(schema=[
+        SchemaField(c, "STRING") for c in (old if tid.endswith("team") else cols[tid.split(".")[-1]])])
+    with pytest.raises(ValueError, match="alter_season_sim_per_game"):
+        store.write(team, bracket, "p", "nfl_season", 2025, 6, client=fake2, games_df=games)
+    fake2.query.assert_not_called()
+    fake2.load_table_from_dataframe.assert_not_called()
 
 
 def test_postseason_guard(sched):
@@ -332,3 +475,10 @@ def test_cfb_season_sim_games_appends_only_unplayed_schedule():
     out = main.season_sim_games(2026, played=played,
                                 fetch=lambda s, w: slates.get(w, pd.DataFrame()))
     assert out["game_id"].tolist() == ["1", "2", "3", "4"]
+
+
+def test_cfb_game_day_is_the_eastern_calendar_date():
+    ts = pd.Series(pd.to_datetime(["2026-10-10 04:00", "2026-11-07 05:00", "2026-09-27 02:30",
+                                   "2026-09-19 16:00"]))
+    assert cfbm._eastern_day(ts).tolist() == ["2026-10-10", "2026-11-07", "2026-09-26",
+                                              "2026-09-19"]

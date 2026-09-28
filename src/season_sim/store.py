@@ -7,7 +7,10 @@ Safety rules (the football functions have overwritten production data before):
   * Tables must already exist (CREATE_NEVER), with the schema from
     scripts/gcp/football/create_season_sim_tables.sql; the load uses that schema rather
     than autodetecting one.
-  * Only the two season_sim tables are ever written. Nothing reads them but the
+  * Every table's schema is checked BEFORE anything is deleted: a frame column the table
+    lacks (the ALTER in scripts/gcp/football/alter_season_sim_per_game.sql not yet run)
+    fails the whole write with nothing touched, rather than silently dropping columns.
+  * Only the three season_sim tables are ever written. Nothing reads them but the
     backend's /api/season-sim route.
 """
 
@@ -24,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 TEAM_TABLE = "season_sim_team"
 BRACKET_TABLE = "season_sim_bracket"
+GAMES_TABLE = "season_sim_games"
 MAX_SIMS = 20_000
 
 
@@ -35,17 +39,30 @@ def _check_scope(df: pd.DataFrame, season: int, as_of_week: int) -> None:
 
 
 def write(team_df: pd.DataFrame, bracket_df: pd.DataFrame, project: str, dataset: str,
-          season: int, as_of_week: int, client=None) -> dict:
-    """Replace the (season, as_of_week) slice of both tables."""
+          season: int, as_of_week: int, client=None, games_df: pd.DataFrame | None = None
+          ) -> dict:
+    """Replace the (season, as_of_week) slice of each table."""
     from google.cloud import bigquery
 
-    _check_scope(team_df, season, as_of_week)
-    _check_scope(bracket_df, season, as_of_week)
+    frames = [(TEAM_TABLE, team_df), (BRACKET_TABLE, bracket_df)]
+    if games_df is not None:
+        frames.append((GAMES_TABLE, games_df))
+    for _, df in frames:
+        _check_scope(df, season, as_of_week)
     client = client or bigquery.Client(project=project)
-    written = {}
-    for table, df in ((TEAM_TABLE, team_df), (BRACKET_TABLE, bracket_df)):
+    schemas = {}
+    for table, df in frames:  # all checks first: nothing is deleted if any table is wrong
         table_id = f"{project}.{dataset}.{table}"
         schema = client.get_table(table_id).schema  # raises if the DDL was never run
+        missing = [c for c in df.columns if c not in {f.name for f in schema}]
+        if missing:
+            raise ValueError(f"{table_id} lacks columns {missing}: run "
+                             "scripts/gcp/football/alter_season_sim_per_game.sql")
+        schemas[table] = schema
+    written = {}
+    for table, df in frames:
+        table_id = f"{project}.{dataset}.{table}"
+        schema = schemas[table]
         client.query(
             f"DELETE FROM `{table_id}` WHERE season = @season AND as_of_week = @week",
             job_config=bigquery.QueryJobConfig(query_parameters=[
@@ -95,16 +112,19 @@ def run_mode(sport: str, games: pd.DataFrame, season: int, project: str, dataset
     else:
         o = run.sim_cfb(games, season, as_of, n_sims=n_sims, variant=variant,
                         seed=int(req.get("seed", season * 100 + (as_of or 0))))
-    team_df, bracket_df = run.tables(o)
+    computed_at = pd.Timestamp.now(tz="UTC")
+    team_df, bracket_df = run.tables(o, computed_at=computed_at)
+    games_df = run.games_table(o, computed_at=computed_at)
     info = {"season": season, "as_of_week": o.as_of_week, "n_sims": n_sims,
             "variant": variant, "teams": len(team_df), "bracket_rows": len(bracket_df),
+            "game_rows": len(games_df),
             "seconds": round(time.time() - t0, 2),
             "runtime": {k: round(float(v), 3) for k, v in o.runtime.items()},
             "top": summary(team_df)}
     if dry_run:
         return {**info, "dry_run": True, "written": 0}
     info["written"] = write(team_df, bracket_df, project, dataset, season, o.as_of_week,
-                            client=client)
+                            client=client, games_df=games_df)
     return info
 
 

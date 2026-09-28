@@ -77,6 +77,8 @@ def normalise_schedule(sched: pd.DataFrame) -> pd.DataFrame:
     g["margin"] = pd.to_numeric(g["result"], errors="coerce").astype("float64")
     g["neutral"] = (g["location"].fillna("Home").astype(str) != "Home").astype(float)
     g["market_margin"] = pd.to_numeric(g.get("spread_line"), errors="coerce")
+    if "gameday" in g.columns:  # nflverse's local (stadium) date, already YYYY-MM-DD
+        g["game_day"] = pd.to_datetime(g["gameday"], errors="coerce").dt.strftime("%Y-%m-%d")
     return g
 
 

@@ -14,7 +14,7 @@ Modes (POST body {"mode": ...}):
   backfill      re-run a whole season week by week
   fpi_snapshot  record ESPN FPI's pregame win probability for the next 8 days of games
   season_sim    rest-of-season Monte Carlo (EXPERIMENT, shadow): final records, playoff and
-                Super Bowl odds, bracket -> nfl_season.season_sim_team / season_sim_bracket,
+                Super Bowl odds, bracket, per-game P(win) -> nfl_season.season_sim_team / _bracket / _games,
                 scoped to (season, as_of_week). Honours dry_run (computes, writes nothing).
                 Runs from its own Scheduler job after the weekly ingest (deploy --shadow), not
                 inside it, so it can never cost the ingest its 540 s.
