@@ -42,6 +42,9 @@ CANONICAL = [
     # Home score minus away score. Optional for the W/L fit, required by the margin
     # model; a loader that cannot supply it leaves it null.
     "margin",
+    # The scores themselves, for display only ("31-10 over X"); the fit never reads
+    # them. Null where a loader has none.
+    "home_score", "away_score",
 ]
 
 # How old a cache of an in-progress season may get before it is refetched. Every
@@ -153,11 +156,13 @@ def _finalize(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce to the canonical shape and drop undecided games."""
     if df.empty:
         return pd.DataFrame(columns=CANONICAL)
-    for col in ("division", "home_division", "away_division", "margin"):
+    for col in ("division", "home_division", "away_division", "margin",
+                "home_score", "away_score"):
         if col not in df.columns:
             df[col] = None
     out = df[CANONICAL].copy()
-    out["margin"] = pd.to_numeric(out["margin"], errors="coerce")
+    for col in ("margin", "home_score", "away_score"):
+        out[col] = pd.to_numeric(out[col], errors="coerce")
     out = out[out["home_won"].notna()]
     out["home_won"] = out["home_won"].astype(int)
     out["neutral_site"] = out["neutral_site"].fillna(0).astype(int)
@@ -474,6 +479,8 @@ def mlb_rows(payload: dict, season: int) -> list[dict]:
                 "away_team_name": away["team"]["name"],
                 "home_won": int(hs > as_),
                 "margin": hs - as_,
+                "home_score": hs,
+                "away_score": as_,
                 "neutral_site": 0,
             }
             previous = by_pk.get(key)
@@ -527,6 +534,99 @@ def load_mlb(seasons: tuple[int, ...], refresh: bool = False) -> pd.DataFrame:
         )
 
     return _finalize(combined)
+
+
+# ── Games still to play ─────────────────────────────────────────────────────
+#
+# Only for the remaining-schedule strength shown next to a rating. Nothing here feeds
+# the fit, and every loader degrades to an empty frame: a schedule feed that is down
+# costs one column, never the board.
+REMAINING_COLUMNS = ["season", "week", "game_date", "home_team_name", "away_team_name",
+                     "neutral_site"]
+
+
+def _remaining_frame(rows) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame(columns=REMAINING_COLUMNS)
+    for col in REMAINING_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[REMAINING_COLUMNS].copy()
+    df["neutral_site"] = pd.to_numeric(df["neutral_site"], errors="coerce").fillna(0).astype(int)
+    return df.reset_index(drop=True)
+
+
+def remaining_nfl(season: int) -> pd.DataFrame:
+    """Unplayed regular-season games from the same nflverse file the fit reads."""
+    if not NFL_CACHE.exists():
+        load_nfl()
+    raw = pd.read_csv(NFL_CACHE)
+    g = raw[(raw["season"] == season) & (raw["game_type"] == "REG")
+            & pd.to_numeric(raw["result"], errors="coerce").isna()].copy()
+    g["neutral_site"] = (g["location"].astype(str) != "Home").astype(int)
+    g = g.rename(columns={"home_team": "home_team_name", "away_team": "away_team_name",
+                          "gameday": "game_date"})
+    for column in ("home_team_name", "away_team_name"):
+        g[column] = g[column].replace(NFL_FRANCHISE_ALIASES)
+    return _remaining_frame(g.to_dict("records"))
+
+
+def remaining_mlb(season: int) -> pd.DataFrame:
+    """Scheduled regular-season games not yet decided (none once the season ends)."""
+    payload = _mlb_payload(season)
+    rows = []
+    for date in payload.get("dates", []):
+        for game in date.get("games", []):
+            status = game.get("status") or {}
+            if status.get("detailedState") in MLB_DECIDED_STATES \
+                    or status.get("codedGameState") in MLB_TERMINAL_CODES:
+                continue
+            rows.append({
+                "season": season, "week": None, "game_date": date["date"],
+                "home_team_name": game["teams"]["home"]["team"]["name"],
+                "away_team_name": game["teams"]["away"]["team"]["name"],
+                "neutral_site": 0,
+            })
+    # A suspended game is listed on two dates; count each matchup-date once.
+    return _remaining_frame(rows).drop_duplicates().reset_index(drop=True)
+
+
+def remaining_cfb(season: int, after_week: int) -> pd.DataFrame:
+    """Unplayed regular-season games in the weeks after `after_week`, both divisions."""
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+    cfb_dir = Path(__file__).resolve().parents[1] / "cfb"
+    if cfb_dir.is_dir():
+        sys.path.insert(0, str(cfb_dir))
+    from espn_data import MAX_REGULAR_WEEK, fetch_scheduled, load_games  # noqa: E402
+
+    weeks = list(range(max(after_week, 0) + 1, MAX_REGULAR_WEEK + 1))
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        frames = list(pool.map(lambda w: fetch_scheduled(season, w), weeks))
+    frames = [f for f in frames if f is not None and not f.empty]
+    if not frames:
+        return _remaining_frame([])
+    sched = pd.concat(frames, ignore_index=True)
+    sched = sched[sched["home_won"].isna()]
+    renames = cfb_renames(load_games())
+    for side in ("home", "away"):
+        sched[f"{side}_team_name"] = sched[f"{side}_team_name"].replace(renames)
+    return _remaining_frame(sched.to_dict("records"))
+
+
+def load_remaining(sport: str, season: int, after_week: int = 0) -> pd.DataFrame:
+    """Games still to play this season. Empty (never an exception) on any failure."""
+    try:
+        if sport == "nfl":
+            return remaining_nfl(season)
+        if sport == "mlb":
+            return remaining_mlb(season)
+        if sport == "cfb":
+            return remaining_cfb(season, after_week)
+    except Exception as exc:
+        logger.warning("remaining schedule for %s %d unavailable: %s", sport, season, exc)
+    return _remaining_frame([])
 
 
 def load(sport: str, seasons: tuple[int, ...] | None = None) -> pd.DataFrame:
