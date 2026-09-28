@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS `hankstank.mlb_2026_season.game_predictions_sim_blend
   n_episodes           INT64,
   mean_home_runs       FLOAT64   OPTIONS(description = "raw sim mean; raw totals run hot, see game_props_sim.total_bias_shift"),
   mean_away_runs       FLOAT64,
-  predicted_at         TIMESTAMP NOT NULL
+  predicted_at         TIMESTAMP NOT NULL,
+  lineup_source        STRING     -- posted | previous_game | previous_game_home | previous_game_away (NULL before 2026-09-28)
 )
 PARTITION BY game_date
 CLUSTER BY game_pk
