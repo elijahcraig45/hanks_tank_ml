@@ -251,8 +251,8 @@ being rewritten):
 | `why_json` | Indices of best wins and worst losses, tie flags |
 | `sched_strength`/`sched_rank`, `sched_remaining`/`_rank`/`_games` | Mean opponent rating so far and still to play (rank 1 = hardest) |
 | `avg_margin`, `avg_over_expected`, `games_played` | Per-game averages |
-| `vs_next_json` | Why this team is above the next: gap, P(win at neutral site), bootstrap order share `p_order`, prior/current split of the gap, head to head, common opponents |
-| `summary` | Deterministic sentence built from the above. "Statistically tied" when `p_order < 0.75` |
+| `vs_next_json` | Why this team is above the next: gap, P(win at neutral site), bootstrap order share `p_order` with its `order_label`, prior/current split of the gap, head to head, common opponents. `tied` is still set when `p_order < 0.75` |
+| `summary` | Deterministic sentence built from the above. Always quotes the resample share against each adjacent team, then a band (`explain.ORDER_BANDS`): under 60% "a coin flip", 60-74% "a slight edge", 75-89% "a clear edge", 90%+ "separated"; 40% and under reads as the mirrored band "the other way" |
 
 `core.bt_coef` now Newton-polishes the lbfgs solution. lbfgs alone left 2026 MLB ratings up to
 0.8 short of the optimum, which swapped #14/#15. [M]
