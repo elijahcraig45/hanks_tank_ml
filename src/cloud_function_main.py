@@ -35,6 +35,7 @@ Environment variables:
   GCP_PROJECT  – defaults to hankstank
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -47,6 +48,47 @@ import functions_framework
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+
+# Model control plane (docs/MODEL_CONTROL.md): read once per request, fail open.
+_CONTROL = contextvars.ContextVar("model_control_cache", default=None)
+
+
+def _control_state():
+    """The MLB control state for this request (one read, cached in the request's context).
+
+    Outside a request (direct calls) each call reads afresh. Never raises: on any error it is
+    an empty state, i.e. nothing paused, no pin, no tier override."""
+    cache = _CONTROL.get()
+    if cache is not None and "state" in cache:
+        return cache["state"]
+    try:
+        import model_control
+
+        state = model_control.get_state("mlb")
+    except Exception as exc:  # noqa: BLE001 - fail open
+        logger.warning("model control unavailable, using defaults: %s", str(exc)[:200])
+        state = None
+    if cache is not None:
+        cache["state"] = state
+    return state
+
+
+def _paused_step(step: str, key: str):
+    """{"step", "status": "paused"} when `key` is paused, else None. A pause is a success:
+    the caller returns it as-is (HTTP 200), writes nothing, and Cloud Tasks does not retry."""
+    try:
+        state = _control_state()
+        paused = bool(state is not None and state.is_paused(key))
+    except Exception:  # noqa: BLE001 - fail open
+        paused = False
+    if not paused:
+        return None
+    print(json.dumps({"severity": "NOTICE", "message": f"model {key} paused by control plane; "
+                      f"step {step} skipped, nothing written",
+                      "event": "model_paused", "model": key, "step": step}),
+          file=sys.stdout, flush=True)
+    return {"step": step, "status": "paused"}
 
 
 class _TimedSteps(list):
@@ -134,6 +176,7 @@ def daily_pipeline(request):
 
     results = {"status": "ok", "date": target.isoformat(), "mode": mode,
                "steps": _TimedSteps(mode)}
+    _CONTROL.set({})  # fresh per-request control cache: the view is read at most once
 
     # Game PKs for per-game triggered modes (lineups, matchup_features, predict_today)
     game_pks_raw = req_json.get("game_pks", [])
@@ -358,10 +401,17 @@ def _run_scouting_reports(target: date, dry_run: bool) -> dict:
 def _run_daily_prediction(
     target: date, game_pks: list, dry_run: bool, req_json: dict
 ) -> dict:
+    paused = _paused_step("predict_today", "v10")
+    if paused:
+        return paused
+
     from predict_today_games import DailyPredictor
 
     fallback_v4 = req_json.get("fallback_v4", False)
-    predictor = DailyPredictor(dry_run=dry_run, fallback_v4=fallback_v4)
+    # The control state was read once for this request (pause check above); the predictor
+    # reuses it for the pin and the tier override. None (read/import failed) => defaults.
+    predictor = DailyPredictor(dry_run=dry_run, fallback_v4=fallback_v4,
+                               control=_control_state())
     if game_pks:
         result = predictor.run_for_game_pks(game_pks, target)
     else:
@@ -608,6 +658,10 @@ def _run_pa_sim(target: date, dry_run: bool, req_json: dict) -> dict:
     production cannot change what the live site serves; promoting it is a separate,
     explicit change to PA_SIM_TABLE.
     """
+    paused = _paused_step("pa_sim", "pa_sim")
+    if paused:
+        return paused
+
     from pa_sim.pipeline import run_slate
 
     return run_slate(
@@ -619,7 +673,12 @@ def _run_pa_sim(target: date, dry_run: bool, req_json: dict) -> dict:
 
 
 def _shadow(step: str, fn) -> dict:
-    """A shadow model must never fail the production run it rides along with."""
+    """A shadow model must never fail the production run it rides along with.
+
+    A shadow whose control key (== step) is paused is skipped exactly like a disabled one."""
+    paused = _paused_step(step, step)
+    if paused:
+        return paused
     try:
         return fn()
     except Exception as e:  # noqa: BLE001 - logged and reported, deliberately non-fatal
