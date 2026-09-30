@@ -39,6 +39,10 @@ CFBD_SECRET="${CFBD_SECRET:-cfbd-api-key}"
 
 DRY_RUN=false
 ONLY_SCHEDULER=false
+# --only-function redeploys the code and touches no scheduler job. --keep-env leaves the live environment
+# variables exactly as they are (use both for a code-only redeploy of a running function).
+ONLY_FUNCTION=false
+KEEP_ENV=false
 # --shadow turns on the shadow writers (margin ridge, drive simulator, pregame FPI
 # snapshots) and the Sunday cfb-weekly-drives job the drive simulator trains from. They
 # write only to their own tables; the served predictions are unchanged. The drive
@@ -49,9 +53,13 @@ for arg in "$@"; do
     case $arg in
         --dry-run)        DRY_RUN=true ;;
         --only-scheduler) ONLY_SCHEDULER=true ;;
+        --only-function)  ONLY_FUNCTION=true ;;
+        --keep-env)       KEEP_ENV=true ;;
         --shadow)         SHADOW_ENV=",CFB_RIDGE_SHADOW=1,FPI_SNAPSHOT=1,CFB_DRIVE_SIM_SHADOW=1" ;;
     esac
 done
+ENV_ARGS=(--set-env-vars="GCP_PROJECT=$PROJECT,CFB_DATASET=cfb_season,CFB_HIST_DATASET=cfb_historical$SHADOW_ENV")
+[ "$KEEP_ENV" = true ] && ENV_ARGS=()
 
 _dry() { if [ "$DRY_RUN" = true ]; then echo "  [DRY RUN] $*"; else "$@"; fi }
 
@@ -107,6 +115,8 @@ if [ "$ONLY_SCHEDULER" = false ]; then
     cp -R "$SRC_DIR/rankings" "$SRC_DIR/stats" "$SRC_DIR/season_sim" "$STAGE"/
     # rankings.http is also reachable flat, for anything staged without the package.
     cp "$SRC_DIR/rankings/http.py" "$STAGE/http_transport.py"
+    # Read-only model control plane client (pause / tiers); main.py fails open without it.
+    cp "$SRC_DIR/model_control.py" "$STAGE"/
 
     cat > "$STAGE/requirements.txt" <<'EOF'
 functions-framework==3.*
@@ -134,10 +144,11 @@ EOF
         --trigger-http --no-allow-unauthenticated \
         --memory="$MEMORY" --timeout="$TIMEOUT" \
         --service-account="$SERVICE_ACCOUNT" \
-        --set-env-vars="GCP_PROJECT=$PROJECT,CFB_DATASET=cfb_season,CFB_HIST_DATASET=cfb_historical$SHADOW_ENV" \
+        ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
         --set-secrets="CFBD_API_KEY=$CFBD_SECRET:latest" \
         --quiet
 fi
+[ "$ONLY_FUNCTION" = true ] && { echo "  (--only-function: scheduler jobs left untouched)"; exit 0; }
 
 FUNCTION_URL="https://$REGION-$PROJECT.cloudfunctions.net/$FUNCTION_NAME"
 if [ "$DRY_RUN" = false ] && [ "$ONLY_SCHEDULER" = false ]; then

@@ -487,3 +487,106 @@ def test_pace_ridge_accepts_masked_arrays():
     b = ds._pace_ridge_sparse(np.array([0, 1, 0, 1]), np.array([2, 3, 3, 2]), 4,
                               np.asarray(y, float), np.asarray(w, float), 1.0)
     assert np.allclose(a, b)
+
+
+# ---------------------------------------------------------------- model control plane
+def _ctl_state(*rows):
+    import model_control
+
+    return model_control.ControlState(
+        [{"sport": "cfb", **r} for r in rows], available=True)
+
+
+def _run_ctl(body, monkeypatch, state=None, get_state_exc=None, probs=(0.7, 0.9)):
+    import backfill_cfb
+    import model_control
+    import pipeline
+
+    main = _load_main()
+    _clear_env(monkeypatch)
+    monkeypatch.delenv("FPI_SNAPSHOT", raising=False)
+    rows = pd.DataFrame({"game_id": ["u1", "u2"][:len(probs)],
+                         "home_win_probability": list(probs),
+                         "confidence_tier": ["medium"] * len(probs)})
+    gs = unittest.mock.MagicMock(return_value=state)
+    if get_state_exc:
+        gs.side_effect = get_state_exc
+    with unittest.mock.patch.object(model_control, "get_state", gs), \
+         unittest.mock.patch.object(pipeline, "predict_week", return_value=rows) as pw, \
+         unittest.mock.patch.object(cfb_drive_sim, "predict_week_drive_sim",
+                                    return_value=_frames()) as sim, \
+         unittest.mock.patch.object(backfill_cfb, "replace_game_ids", return_value=1) as rep, \
+         unittest.mock.patch.object(backfill_cfb, "ensure_datasets") as ens:
+        out, status = main.cfb_pipeline(_Req(body))
+    return out, status, pw, sim, rep, ens, gs
+
+
+BODY = {"mode": "predict_week", "season": 2026, "week": 3}
+
+
+def test_control_paused_production_returns_200_paused_and_writes_nothing(monkeypatch):
+    for extra in ({}, {"dry_run": True}):
+        for mode in ("predict_week", "predict_next"):
+            out, status, pw, sim, rep, ens, gs = _run_ctl(
+                {**BODY, **extra, "mode": mode}, monkeypatch,
+                _ctl_state({"target": "xgb", "run_state": "paused"}))
+            assert status == 200 and out["status"] == "paused"
+            pw.assert_not_called(); sim.assert_not_called(); rep.assert_not_called()
+            ens.assert_not_called()
+            assert gs.call_count == 1
+
+
+def test_control_paused_shadows_are_skipped_like_disabled(monkeypatch):
+    out, status, pw, sim, rep, *_ = _run_ctl(
+        {**BODY, "shadow_ridge": True, "shadow_drive_sim": True}, monkeypatch,
+        _ctl_state({"target": "ridge", "run_state": "paused"},
+                   {"target": "drive_sim", "run_state": "paused"}))
+    assert status == 200 and out["status"] == "ok"
+    assert [c.kwargs.get("model") for c in pw.call_args_list] == [None]
+    sim.assert_not_called()
+    assert rep.call_count == 1                       # production rows only
+    assert "shadow_ridge" not in out["steps"] and "shadow_drive_sim" not in out["steps"]
+
+
+def test_control_only_the_paused_shadow_is_skipped(monkeypatch):
+    out, status, pw, sim, rep, *_ = _run_ctl(
+        {**BODY, "shadow_ridge": True, "shadow_drive_sim": True}, monkeypatch,
+        _ctl_state({"target": "drive_sim", "run_state": "paused"}))
+    sim.assert_not_called()
+    assert [c.kwargs.get("model") for c in pw.call_args_list] == [None, "ridge"]
+
+
+def test_control_paused_fpi_snapshot_is_skipped(monkeypatch):
+    from rankings import fpi_games
+
+    with unittest.mock.patch.object(fpi_games, "run_snapshot") as rs:
+        out, status, *_ = _run_ctl({**BODY, "fpi_snapshot": True}, monkeypatch,
+                                   _ctl_state({"target": "fpi", "run_state": "paused"}))
+    assert status == 200 and out["steps"]["fpi_snapshot"] == {"status": "paused"}
+    rs.assert_not_called()
+
+
+def test_control_tier_override_applies_to_production_rows(monkeypatch):
+    out, status, pw, sim, rep, *_ = _run_ctl(
+        BODY, monkeypatch, _ctl_state({"target": "xgb", "tier_high": "0.85", "tier_medium": "0.7"}))
+    written = rep.call_args_list[0].args[0]
+    assert written["confidence_tier"].tolist() == ["medium", "high"]      # 0.7 was "low" at 0.65+
+
+
+def test_control_invalid_or_absent_tiers_leave_rows_untouched(monkeypatch):
+    for st in (None, _ctl_state(), _ctl_state({"target": "xgb", "tier_high": "0.6",
+                                                "tier_medium": "0.7"})):
+        out, status, pw, sim, rep, *_ = _run_ctl(BODY, monkeypatch, st)
+        assert rep.call_args_list[0].args[0]["confidence_tier"].tolist() == ["medium", "medium"]
+
+
+def test_control_read_failure_fails_open(monkeypatch):
+    out, status, pw, sim, rep, *_ = _run_ctl(BODY, monkeypatch, get_state_exc=RuntimeError("bq"))
+    assert status == 200 and out["status"] == "ok" and pw.call_count == 1 and rep.call_count == 1
+
+
+def test_confidence_tier_helper_default_and_override():
+    import pipeline
+
+    assert pipeline.confidence_tier(0.7) == "medium"
+    assert pipeline.confidence_tier(0.7, (0.69, 0.6)) == "high"

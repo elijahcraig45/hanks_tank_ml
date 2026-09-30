@@ -133,3 +133,41 @@ Existing duplicates: `scripts/gcp/2026_season/cleanup_duplicate_predictions_2026
 **Deploy order:** `deploy_sim_blend.sh` (creates `sim-blend` and redeploys the function),
 optionally `alter_sim_blend_lineup_source.sql`, then the backend (`SIM_BLEND_TASK_QUEUE` in
 app.yaml). Tasks already enqueued for the day keep their old T-90 schedule.
+
+## Operator note: pausing and pinning from the control plane
+
+The lab (`mllab control ...`) is the only writer of `control.model_control_current`; the pipeline only
+reads it, once per invocation (`src/model_control.py`). Any read failure, an empty view, or
+`MODEL_CONTROL_DISABLED=1` means "no control": everything behaves as if this feature did not exist.
+
+Pause (`run_state = paused`, keyed by model key):
+- A paused model returns HTTP 200 with `status: "paused"`, writes nothing, and logs one JSON line
+  (`event: model_paused`). It is a success on purpose: an error would make Cloud Tasks retry forever.
+- MLB keys: `v10` (production, `predict_today`/`pregame_*`), `pa_sim`, `logit3`, `sim_blend`.
+  Football keys, per sport: `xgb` (production `predict_week`/`predict_next`), `ridge`, `drive_sim`, `fpi`.
+- A paused shadow is skipped exactly like a shadow that was never enabled. Pausing production `v10`
+  skips only the prediction step of a `pregame_v10` chain; lineups/features/scouting still run.
+- Not covered: manual `backfill` modes and the weekly `predict` batch (`predict_2026_weekly`).
+- A pause takes effect on the next invocation; in-flight runs finish.
+
+Pin (MLB `v10` only: `lifecycle = live` + `artifact_uri` + `artifact_sha256`, all three required):
+- `load_model` loads the pinned `gs://` artifact first and checks the sha256 of the raw bytes before
+  unpickling. A mismatch RAISES (HTTP 500, nothing written); it never falls back to another model.
+- If the object is missing or unreadable, an ERROR is logged and the normal chain is used, so a
+  typo in the URI degrades to the old behaviour rather than an outage. Check logs after pinning.
+- Rows carry `model_version` = the artifact payload's `version`. Give every pinned artifact a
+  `feature_set` (`"v10"` or `"v8"`); without it the feature path is guessed from the label and a
+  WARNING is logged, and a label other than `v10`/`v8` would be treated as a legacy model.
+- `model_sha256` is stored per row only once `scripts/gcp/control/03_add_model_sha256.sql` has been
+  run; until then the pipeline silently omits the column. Un-pinning (clear the fields or set the
+  lifecycle to anything but `live`) returns to the normal chain on the next run. (`lifecycle` was called `role` before 2026-09-29; the reader falls back to a `role` column during the transition.)
+- `--fallback-v4` requests ignore the pin. CLI runs and the backfill scripts never read the control
+  plane (only the Cloud Function passes it in).
+
+Tiers (`tier_high`, `tier_medium`, need `0.5 < medium < high < 1`, both set) replace the confidence
+tier cut-offs of the production key (MLB `v10`, football `xgb`) for new predictions. Invalid values
+are ignored. Football uses the same "winning-side probability" test as MLB, so the override maps
+directly. Shadow models keep their constants.
+
+Deploy note: the NFL and CFB deploy scripts now stage `src/model_control.py`; the football
+functions fail open if it is absent, so redeploy them for the control plane to take effect.
