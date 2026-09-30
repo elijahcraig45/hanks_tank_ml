@@ -366,3 +366,102 @@ def test_port_reproduces_research_week():
         mg = hs - aw
         assert np.array_equal(np.bincount(np.clip(mg, -80, 80).astype(int) + 80, minlength=161),
                               np.asarray(ref.loc[r.game_id].mh))
+
+
+# ---------------------------------------------------------------- model control plane
+def _ctl_state(*rows):
+    import model_control
+
+    return model_control.ControlState(
+        [{"sport": "nfl", **r} for r in rows], available=True)
+
+
+def _run_ctl(body, monkeypatch, state=None, get_state_exc=None, probs=(0.66, 0.9)):
+    import bq_io
+    import model_control
+
+    main = _load_main()
+    for k in ("NFL_DRIVE_SIM_SHADOW", "NFL_RIDGE_SHADOW", "FPI_SNAPSHOT"):
+        monkeypatch.delenv(k, raising=False)
+    rows = pd.DataFrame({"game_id": ["a", "b"][:len(probs)],
+                         "home_win_probability": list(probs),
+                         "confidence_tier": ["high"] * len(probs)})
+    gs = unittest.mock.MagicMock(return_value=state)
+    if get_state_exc:
+        gs.side_effect = get_state_exc
+    with unittest.mock.patch.object(model_control, "get_state", gs), \
+         unittest.mock.patch.object(predict_nfl, "predict_week", return_value=rows) as pw, \
+         unittest.mock.patch.object(predict_nfl, "predict_week_drive_sim",
+                                    return_value=_frames()) as sim, \
+         unittest.mock.patch.object(bq_io, "upsert_week", return_value=1) as up, \
+         unittest.mock.patch.object(bq_io, "ensure_dataset") as ens:
+        out, status = main.nfl_pipeline(_Req(body))
+    return out, status, pw, sim, up, ens, gs
+
+
+BODY = {"mode": "predict_week", "season": 2026, "week": 3}
+
+
+def test_control_paused_production_returns_200_paused_and_writes_nothing(monkeypatch):
+    for extra in ({}, {"dry_run": True}):
+        out, status, pw, sim, up, ens, gs = _run_ctl(
+            {**BODY, **extra}, monkeypatch, _ctl_state({"target": "xgb", "run_state": "paused"}))
+        assert status == 200 and out["status"] == "paused"
+        pw.assert_not_called(); sim.assert_not_called(); up.assert_not_called(); ens.assert_not_called()
+        assert gs.call_count == 1
+
+
+def test_control_paused_shadows_are_skipped_like_disabled(monkeypatch):
+    out, status, pw, sim, up, *_ = _run_ctl(
+        {**BODY, "shadow_ridge": True, "shadow_drive_sim": True}, monkeypatch,
+        _ctl_state({"target": "ridge", "run_state": "paused"},
+                   {"target": "drive_sim", "run_state": "paused"}))
+    assert status == 200 and out["status"] == "ok"
+    assert [c.kwargs.get("model") for c in pw.call_args_list] == [None]     # no ridge call
+    sim.assert_not_called()
+    assert [c.args[2] for c in up.call_args_list] == ["game_predictions"]
+    assert "shadow_ridge" not in out["steps"] and "shadow_drive_sim" not in out["steps"]
+
+
+def test_control_only_the_paused_shadow_is_skipped(monkeypatch):
+    out, status, pw, sim, up, *_ = _run_ctl(
+        {**BODY, "shadow_ridge": True, "shadow_drive_sim": True}, monkeypatch,
+        _ctl_state({"target": "ridge", "run_state": "paused"}))
+    sim.assert_called_once()
+    assert "game_predictions_drive_sim" in [c.args[2] for c in up.call_args_list]
+
+
+def test_control_paused_fpi_snapshot_is_skipped(monkeypatch):
+    from rankings import fpi_games
+
+    with unittest.mock.patch.object(fpi_games, "run_snapshot") as rs:
+        out, status, *_ = _run_ctl({**BODY, "fpi_snapshot": True}, monkeypatch,
+                                   _ctl_state({"target": "fpi", "run_state": "paused"}))
+    assert status == 200 and out["steps"]["fpi_snapshot"] == {"status": "paused"}
+    rs.assert_not_called()
+
+
+def test_control_tier_override_applies_to_production_rows_only(monkeypatch):
+    out, status, pw, sim, up, *_ = _run_ctl(
+        BODY, monkeypatch, _ctl_state({"target": "xgb", "tier_high": "0.7", "tier_medium": "0.6"}))
+    written = up.call_args_list[0].args[0]
+    assert written["confidence_tier"].tolist() == ["medium", "high"]       # 0.66 was "high"
+
+
+def test_control_invalid_or_absent_tiers_leave_rows_untouched(monkeypatch):
+    for st in (None, _ctl_state(), _ctl_state({"target": "xgb", "tier_high": "0.5",
+                                                "tier_medium": "0.6"})):
+        out, status, pw, sim, up, *_ = _run_ctl(BODY, monkeypatch, st)
+        assert up.call_args_list[0].args[0]["confidence_tier"].tolist() == ["high", "high"]
+
+
+def test_control_read_failure_fails_open(monkeypatch):
+    out, status, pw, sim, up, *_ = _run_ctl(BODY, monkeypatch, get_state_exc=RuntimeError("bq"))
+    assert status == 200 and out["status"] == "ok" and pw.call_count == 1
+    assert [c.args[2] for c in up.call_args_list] == ["game_predictions"]
+
+
+def test_confidence_tier_helper_default_and_override():
+    assert predict_nfl.confidence_tier(0.65) == "medium"
+    assert predict_nfl.confidence_tier(0.65, (0.64, 0.55)) == "high"
+    assert predict_nfl.confidence_tier(0.35, (0.64, 0.55)) == "high"

@@ -23,6 +23,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import logging
 import pickle
 import warnings
@@ -182,7 +183,14 @@ PREDICTIONS_SCHEMA = [
     bigquery.SchemaField("home_days_rest", "INTEGER"),
     bigquery.SchemaField("away_days_rest", "INTEGER"),
     bigquery.SchemaField("series_game_number", "INTEGER"),
+    # Which artifact produced the row (sha256 of its bytes). NULLABLE and only WRITTEN when the
+    # destination table already has the column (see _write_predictions), so deploy order and the
+    # separate ALTER TABLE (scripts/gcp/control/03_add_model_sha256.sql) cannot break writes.
+    bigquery.SchemaField("model_sha256", "STRING"),
 ]
+MODEL_SHA256_COLUMN = "model_sha256"
+# Control-plane key of the production model (docs/MODEL_CONTROL.md).
+CONTROL_KEY = "v10"
 
 
 
@@ -257,7 +265,12 @@ class V8EnsemblePredictor:
 
 
 class DailyPredictor:
-    def __init__(self, dry_run: bool = False, fallback_v4: bool = False):
+    def __init__(self, dry_run: bool = False, fallback_v4: bool = False, control=None):
+        # `control` is a model_control.ControlState (pin + tier overrides for key "v10").
+        # Deliberately opt-in: only the production Cloud Function path passes it, so CLI runs
+        # and the backfill scripts that reuse this class behave exactly as before.
+        self._control = control
+        self.model_sha256 = None
         self.bq = bigquery.Client(project=PROJECT)
         self.dry_run = dry_run
         self.fallback_v4 = fallback_v4
@@ -288,6 +301,53 @@ class DailyPredictor:
                 logger.info("Created table %s", PREDICTIONS_TABLE)
 
     # -----------------------------------------------------------------------
+    # Control plane (pin / tiers). All of it fails open to the pre-control behaviour.
+    # -----------------------------------------------------------------------
+    def _pin(self):
+        try:
+            control = getattr(self, "_control", None)
+            return control.pin(CONTROL_KEY) if control is not None else None
+        except Exception as exc:  # noqa: BLE001 - fail open
+            logger.warning("control pin lookup failed, ignoring: %s", exc)
+            return None
+
+    def _tiers(self) -> tuple[float, float]:
+        """(high, medium) cut-offs: the control override when valid, else CONFIDENCE_TIERS."""
+        try:
+            control = getattr(self, "_control", None)
+            override = control.tiers(CONTROL_KEY) if control is not None else None
+        except Exception:  # noqa: BLE001 - fail open
+            override = None
+        if override:
+            return override
+        return CONFIDENCE_TIERS["high"], CONFIDENCE_TIERS["medium"]
+
+    def _load_pinned(self, uri: str, expected_sha: str):
+        """Fetch the pinned artifact and verify sha256 of the RAW BYTES before unpickling.
+
+        Returns (payload, sha256), or (None, None) when the object is missing/unreadable (logged
+        at ERROR; the caller falls back to the normal chain). A hash mismatch RAISES."""
+        bucket_name, _, path = uri[len("gs://"):].partition("/")
+        try:
+            raw = storage.Client(project=PROJECT).bucket(bucket_name).blob(path).download_as_bytes()
+        except Exception as exc:  # noqa: BLE001 - missing/unreadable => normal chain
+            logger.error("pinned model %s unreadable (%s); falling back to the normal chain", uri, exc)
+            return None, None
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != expected_sha:
+            raise RuntimeError(
+                f"pinned model {uri} sha256 mismatch: expected {expected_sha}, got {actual}; "
+                "refusing to load (no fallback after a hash mismatch)"
+            )
+        try:
+            payload = pickle.loads(raw)
+        except Exception as exc:  # noqa: BLE001 - verified bytes that cannot load
+            logger.error("pinned model %s verified but cannot be unpickled (%s); falling back", uri, exc)
+            return None, None
+        logger.info("Loaded pinned model %s (sha256 %s)", uri, actual)
+        return payload, actual
+
+    # -----------------------------------------------------------------------
     # Model loading
     # -----------------------------------------------------------------------
     def load_model(self) -> None:
@@ -311,27 +371,41 @@ class DailyPredictor:
             ("v5",                 V5_LOCAL,             V5_MODEL_GCS),
         ]
         data = None
+        self.model_sha256 = None
+        pinned = False
 
-        if not self.fallback_v4:
+        # Control-plane pin (production key only): load the pinned artifact FIRST. A hash
+        # mismatch raises -- never fall back silently to a different model. A missing or
+        # unreadable object logs ERROR and falls through to the normal chain.
+        pin = None if self.fallback_v4 else self._pin()
+        if pin is not None:
+            data, self.model_sha256 = self._load_pinned(*pin)
+            pinned = data is not None
+
+        if data is None and not self.fallback_v4:
             for label, local_path, gcs_path in _versions:
                 if local_path.exists():
                     logger.info("Loading %s model from local: %s", label, local_path)
-                    with open(local_path, "rb") as f:
-                        data = pickle.load(f)
+                    raw = local_path.read_bytes()
+                    data = pickle.loads(raw)
+                    self.model_sha256 = hashlib.sha256(raw).hexdigest()
                     break
                 try:
                     logger.info("Attempting to download %s model from GCS...", label)
                     client = storage.Client(project=PROJECT)
                     bucket_obj = client.bucket(BUCKET)
                     blob = bucket_obj.blob(gcs_path)
-                    data = pickle.loads(blob.download_as_bytes())
+                    raw = blob.download_as_bytes()
+                    data = pickle.loads(raw)
+                    self.model_sha256 = hashlib.sha256(raw).hexdigest()
                     logger.info("%s model downloaded from GCS", label)
                     # Cache locally to speed up subsequent runs (best-effort — read-only
                     # environments like Cloud Functions will silently skip this step).
+                    # The original bytes are cached, so a warm container hashes to the same
+                    # sha256 as the GCS object it came from.
                     try:
                         local_path.parent.mkdir(parents=True, exist_ok=True)
-                        with open(local_path, "wb") as f:
-                            pickle.dump(data, f)
+                        local_path.write_bytes(raw)
                         logger.info("%s model cached locally at %s", label, local_path)
                     except Exception as cache_err:
                         logger.debug("Could not cache %s model locally (non-fatal): %s", label, cache_err)
@@ -343,22 +417,46 @@ class DailyPredictor:
         if data is None:
             if V4_LOCAL.exists():
                 logger.info("Falling back to V4 model: %s", V4_LOCAL)
-                with open(V4_LOCAL, "rb") as f:
-                    data = pickle.load(f)
+                raw = V4_LOCAL.read_bytes()
+                data = pickle.loads(raw)
+                self.model_sha256 = hashlib.sha256(raw).hexdigest()
             else:
                 logger.info("Downloading V4 fallback model from GCS...")
                 client = storage.Client(project=PROJECT)
                 bucket_obj = client.bucket(BUCKET)
                 blob = bucket_obj.blob(V4_MODEL_GCS)
-                data = pickle.loads(blob.download_as_bytes())
+                raw = blob.download_as_bytes()
+                data = pickle.loads(raw)
+                self.model_sha256 = hashlib.sha256(raw).hexdigest()
+
+        # Artifacts self-describe: a payload `feature_set` ("v10" / "v8") picks the feature
+        # path. Without it, fall back to the historical label / model-name detection so every
+        # artifact that exists today behaves identically.
+        feature_set = None
+        if isinstance(data, dict):
+            fs = str(data.get("feature_set") or "").strip().lower()
+            feature_set = fs if fs in ("v10", "v8") else None
+        if pinned and feature_set is None:
+            logger.warning(
+                "pinned artifact has no valid `feature_set`; feature path chosen by legacy label "
+                "detection (version=%r, model_name=%r)",
+                data.get("version") if isinstance(data, dict) else None,
+                data.get("model_name") if isinstance(data, dict) else None,
+            )
 
         # Deployment-ready V10 payload: dict with model + feature metadata + fill values.
         if (
             isinstance(data, dict)
             and "model" in data
             and (
-                str(data.get("version", "")).lower() == "v10"
-                or "v10" in str(data.get("model_name", "")).lower()
+                feature_set == "v10"
+                or (
+                    feature_set is None
+                    and (
+                        str(data.get("version", "")).lower() == "v10"
+                        or "v10" in str(data.get("model_name", "")).lower()
+                    )
+                )
             )
         ):
             self.model = data["model"]
@@ -407,9 +505,17 @@ class DailyPredictor:
             self.fill_values = data.get("fill_values", {})
             self.model_version = data.get("model_name", "v4_fallback")
             self._is_v8 = (
-                self.model_version.startswith("V8")
-                or "v8" in self.model_version.lower()
+                feature_set == "v8"
+                if feature_set is not None
+                else (
+                    self.model_version.startswith("V8")
+                    or "v8" in self.model_version.lower()
+                )
             )
+            self._is_v10 = False
+        # A pinned artifact names itself: the row's model_version is the payload's `version`.
+        if pinned and isinstance(data, dict) and data.get("version"):
+            self.model_version = str(data["version"])
         logger.info(
             "Model loaded: %s (%d features) | V8 mode: %s | V10 mode: %s",
             self.model_version, len(self.feature_names), self._is_v8, self._is_v10,
@@ -800,10 +906,11 @@ class DailyPredictor:
         )
 
         max_prob = max(home_win_prob, away_win_prob)
+        tier_high, tier_medium = self._tiers()
         confidence_tier = "low"
-        if max_prob >= CONFIDENCE_TIERS["high"]:
+        if max_prob >= tier_high:
             confidence_tier = "high"
-        elif max_prob >= CONFIDENCE_TIERS["medium"]:
+        elif max_prob >= tier_medium:
             confidence_tier = "medium"
 
         return {
@@ -949,6 +1056,7 @@ class DailyPredictor:
                 "predicted_winner": pred["predicted_winner"],
                 "confidence_tier": pred["confidence_tier"],
                 "model_version": self.model_version,
+                "model_sha256": getattr(self, "model_sha256", None),
                 "lineup_confirmed": lineup_confirmed,
                 "matchup_advantage_home": matchup_advantage,
                 "home_lineup_woba_vs_hand": home_woba,
@@ -1048,6 +1156,13 @@ class DailyPredictor:
     # apart. A 10-minute bucket separates the second from the first.
     DEDUPE_BUCKET_SECONDS = 600
 
+    def _table_has_column(self, name: str) -> bool:
+        try:
+            return any(f.name == name for f in self.bq.get_table(PREDICTIONS_TABLE).schema)
+        except Exception as exc:  # noqa: BLE001 - unknown => treat as absent (safe)
+            logger.warning("could not read %s schema (%s); not writing %s", PREDICTIONS_TABLE, exc, name)
+            return False
+
     def _write_predictions(self, pred_rows: list[dict], target_date: date) -> str:
         """Append this run's rows, then supersede the same games' earlier rows for the date.
 
@@ -1068,6 +1183,13 @@ class DailyPredictor:
 
         from google.api_core import exceptions as gexc
 
+        # model_sha256 is written only if the table already has the column, so this can be
+        # deployed before the ALTER TABLE. Anything doubtful (no get_table, error) => drop it.
+        schema = PREDICTIONS_SCHEMA
+        if not self._table_has_column(MODEL_SHA256_COLUMN):
+            pred_rows = [{k: v for k, v in r.items() if k != MODEL_SHA256_COLUMN} for r in pred_rows]
+            schema = [f for f in PREDICTIONS_SCHEMA if f.name != MODEL_SHA256_COLUMN]
+
         run_start = min(pd.Timestamp(r["predicted_at"]) for r in pred_rows)
         bucket = int(run_start.timestamp()) // self.DEDUPE_BUCKET_SECONDS
         body = _json.dumps([{k: v for k, v in sorted(r.items()) if k != "predicted_at"} for r in pred_rows],
@@ -1080,7 +1202,7 @@ class DailyPredictor:
         cfg = lambda: bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-            schema=PREDICTIONS_SCHEMA,
+            schema=schema,
         )
         try:
             job = self.bq.load_table_from_file(_io.BytesIO(ndjson), PREDICTIONS_TABLE,
