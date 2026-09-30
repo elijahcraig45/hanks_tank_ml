@@ -2,8 +2,9 @@
 -- disappears, so the field falls back to its default. Kept to portable SQL (no BigQuery-only syntax) so tests can run it in DuckDB.
 CREATE OR REPLACE VIEW `hankstank.control.model_control_current` AS
 WITH ranked AS (
-  SELECT sport, target, field, value, event_ts,
-         ROW_NUMBER() OVER (PARTITION BY sport, target, field ORDER BY event_ts DESC, recorded_at DESC, event_id DESC) AS rn
+  -- Legacy events written under the old field name `role` count as `lifecycle`, so the latest of either wins.
+  SELECT sport, target, CASE WHEN field = 'role' THEN 'lifecycle' ELSE field END AS field, value, event_ts,
+         ROW_NUMBER() OVER (PARTITION BY sport, target, CASE WHEN field = 'role' THEN 'lifecycle' ELSE field END ORDER BY event_ts DESC, recorded_at DESC, event_id DESC) AS rn
   FROM `hankstank.control.model_control_events`
   WHERE event_ts <= CURRENT_TIMESTAMP()
 ), latest AS (
@@ -12,7 +13,9 @@ WITH ranked AS (
 SELECT sport, target,
   MAX(IF(field = 'site_visible',   value, NULL)) AS site_visible,
   MAX(IF(field = 'run_state',      value, NULL)) AS run_state,
-  MAX(IF(field = 'role',           value, NULL)) AS role,
+  MAX(IF(field = 'lifecycle',      value, NULL)) AS lifecycle,
+  -- TRANSITION ALIAS: `role` is the same value as `lifecycle`, kept only until every deployed consumer reads `lifecycle`.
+  MAX(IF(field = 'lifecycle',      value, NULL)) AS role,
   MAX(IF(field = 'artifact_uri',   value, NULL)) AS artifact_uri,
   MAX(IF(field = 'artifact_sha256',value, NULL)) AS artifact_sha256,
   MAX(IF(field = 'display_label',  value, NULL)) AS display_label,

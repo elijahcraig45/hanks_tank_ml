@@ -80,16 +80,27 @@ class ControlState:
         value = _clean(self._row(key).get("run_state"))
         return value is not None and value.lower() == "paused"
 
+    def lifecycle(self, key: str) -> Optional[str]:
+        """live | shadow | archived (informational), lower-cased; None when unset.
+
+        Reads the `lifecycle` column, falling back to `role`: the deployed view exposes both during
+        the transition and an older view has only `role`. Not the site registry's `role`."""
+        row = self._row(key)
+        value = _clean(row.get("lifecycle"))
+        if value is None:
+            value = _clean(row.get("role"))
+        return value.lower() if value else None
+
     def pin(self, key: str) -> Optional[tuple[str, str]]:
         """(uri, sha256) when the key is `live` with BOTH a valid gs:// uri and a 64-hex sha256.
 
-        role=live is required, as the contract says: an artifact left over from an earlier pin
-        must not silently steer production once the operator has moved the role on."""
+        lifecycle=live is required, as the contract says: an artifact left over from an earlier pin
+        must not silently steer production once the operator has moved the lifecycle on."""
         row = self._row(key)
-        role = _clean(row.get("role"))
+        lifecycle = self.lifecycle(key)
         uri = _clean(row.get("artifact_uri"))
         sha = _clean(row.get("artifact_sha256"))
-        if role is None or role.lower() != "live" or uri is None or sha is None:
+        if lifecycle != "live" or uri is None or sha is None:
             return None
         sha = sha.lower()
         if not _GCS_RE.match(uri) or not _SHA256_RE.match(sha):

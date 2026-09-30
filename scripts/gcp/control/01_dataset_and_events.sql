@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS `hankstank.control.model_control_events` (
   recorded_at TIMESTAMP NOT NULL,   -- when it was written
   sport       STRING    NOT NULL,   -- mlb | nfl | cfb | *
   target      STRING    NOT NULL,   -- a model key, or '*' for sport-wide settings (banner)
-  field       STRING    NOT NULL,   -- site_visible | run_state | role | artifact_uri | artifact_sha256 | display_label | public_note | sort_order | tier_high | tier_medium | banner | banner_level
+  field       STRING    NOT NULL,   -- site_visible | run_state | lifecycle | artifact_uri | artifact_sha256 | display_label | public_note | sort_order | tier_high | tier_medium | banner | banner_level
   value       STRING,               -- '__unset__' removes the field (returns to the default)
   actor       STRING,               -- who or what: a person, `remedy:<rule>`, ...
   note        STRING

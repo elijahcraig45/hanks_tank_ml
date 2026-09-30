@@ -37,6 +37,10 @@ SRC_DIR=""
 
 DRY_RUN=false
 ONLY_SCHEDULER=false
+# --only-function redeploys the code and touches no scheduler job. --keep-env leaves the live environment
+# variables exactly as they are (use both for a code-only redeploy of a running function).
+ONLY_FUNCTION=false
+KEEP_ENV=false
 # --shadow turns on the shadow writers (margin ridge, drive simulator, pregame FPI
 # snapshots). They write only to their own tables; the served predictions are unchanged.
 # The drive simulator's tables are CREATE_NEVER: run
@@ -46,9 +50,13 @@ for arg in "$@"; do
     case $arg in
         --dry-run)        DRY_RUN=true ;;
         --only-scheduler) ONLY_SCHEDULER=true ;;
+        --only-function)  ONLY_FUNCTION=true ;;
+        --keep-env)       KEEP_ENV=true ;;
         --shadow)         SHADOW_ENV=",NFL_RIDGE_SHADOW=1,FPI_SNAPSHOT=1,NFL_DRIVE_SIM_SHADOW=1" ;;
     esac
 done
+ENV_ARGS=(--set-env-vars="GCP_PROJECT=$PROJECT,NFL_DATASET=nfl_season,NFL_HIST_DATASET=nfl_historical$SHADOW_ENV")
+[ "$KEEP_ENV" = true ] && ENV_ARGS=()
 
 echo "=============================================="
 echo " NFL Weekly Pipeline — deploy"
@@ -94,10 +102,11 @@ if [ "$ONLY_SCHEDULER" = false ]; then
         --memory="$MEMORY" \
         --timeout="$TIMEOUT" \
         --service-account="$SERVICE_ACCOUNT" \
-        --set-env-vars="GCP_PROJECT=$PROJECT,NFL_DATASET=nfl_season,NFL_HIST_DATASET=nfl_historical$SHADOW_ENV" \
+        ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
         --quiet
     echo "  ✓ deployed"
 fi
+[ "$ONLY_FUNCTION" = true ] && { echo "  (--only-function: scheduler jobs left untouched)"; exit 0; }
 
 FUNCTION_URL="https://$REGION-$PROJECT.cloudfunctions.net/$FUNCTION_NAME"
 if [ "$DRY_RUN" = false ]; then
