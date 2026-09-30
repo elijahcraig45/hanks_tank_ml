@@ -150,7 +150,7 @@ Pause (`run_state = paused`, keyed by model key):
 - Not covered: manual `backfill` modes and the weekly `predict` batch (`predict_2026_weekly`).
 - A pause takes effect on the next invocation; in-flight runs finish.
 
-Pin (MLB `v10` only: `role = live` + `artifact_uri` + `artifact_sha256`, all three required):
+Pin (MLB `v10` only: `lifecycle = live` + `artifact_uri` + `artifact_sha256`, all three required):
 - `load_model` loads the pinned `gs://` artifact first and checks the sha256 of the raw bytes before
   unpickling. A mismatch RAISES (HTTP 500, nothing written); it never falls back to another model.
 - If the object is missing or unreadable, an ERROR is logged and the normal chain is used, so a
@@ -160,7 +160,7 @@ Pin (MLB `v10` only: `role = live` + `artifact_uri` + `artifact_sha256`, all thr
   WARNING is logged, and a label other than `v10`/`v8` would be treated as a legacy model.
 - `model_sha256` is stored per row only once `scripts/gcp/control/03_add_model_sha256.sql` has been
   run; until then the pipeline silently omits the column. Un-pinning (clear the fields or set the
-  role to anything but `live`) returns to the normal chain on the next run.
+  lifecycle to anything but `live`) returns to the normal chain on the next run. (`lifecycle` was called `role` before 2026-09-29; the reader falls back to a `role` column during the transition.)
 - `--fallback-v4` requests ignore the pin. CLI runs and the backfill scripts never read the control
   plane (only the Cloud Function passes it in).
 

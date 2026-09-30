@@ -54,17 +54,38 @@ def test_pause_is_per_key_and_star_rows_ignored():
     assert s.is_paused("logit3") and not s.is_paused("v10") and not s.is_paused("*")
 
 
-def test_pin_requires_role_live_uri_and_sha():
-    ok = row("v10", role="live", artifact_uri=URI, artifact_sha256=SHA)
+def test_pin_requires_lifecycle_live_uri_and_sha():
+    ok = row("v10", lifecycle="live", artifact_uri=URI, artifact_sha256=SHA)
     assert state(ok).pin("v10") == (URI, SHA)
     assert state({**ok, "artifact_sha256": SHA.upper()}).pin("v10") == (URI, SHA)   # normalised
     for bad in (
-        {**ok, "role": "shadow"}, {**ok, "role": None},
+        {**ok, "lifecycle": "shadow"}, {**ok, "lifecycle": None}, {**ok, "lifecycle": "archived"},
         {**ok, "artifact_uri": None}, {**ok, "artifact_sha256": None},
         {**ok, "artifact_uri": "https://x/y.pkl"}, {**ok, "artifact_uri": "gs://bucket"},
         {**ok, "artifact_sha256": "abc"}, {**ok, "artifact_sha256": "g" * 64},
     ):
         assert state(bad).pin("v10") is None, bad
+
+
+def test_lifecycle_parsed_and_lowercased():
+    assert state(row("v10", lifecycle="Shadow")).lifecycle("v10") == "shadow"
+    assert state(row("v10")).lifecycle("v10") is None
+    assert model_control.empty_state().lifecycle("v10") is None
+
+
+def test_role_only_row_from_old_view_is_read_as_lifecycle():
+    ok = row("v10", role="live", artifact_uri=URI, artifact_sha256=SHA)
+    s = state(ok)
+    assert s.lifecycle("v10") == "live"
+    assert s.pin("v10") == (URI, SHA)
+    assert state({**ok, "role": "shadow"}).pin("v10") is None
+
+
+def test_lifecycle_wins_over_role_when_both_present():
+    both = row("v10", lifecycle="shadow", role="live", artifact_uri=URI, artifact_sha256=SHA)
+    assert state(both).lifecycle("v10") == "shadow" and state(both).pin("v10") is None
+    only_role_null = {**both, "lifecycle": None, "role": "live"}
+    assert state(only_role_null).pin("v10") == (URI, SHA)
 
 
 @pytest.mark.parametrize("high,medium,expected", [
@@ -361,7 +382,7 @@ def chain(tmp_path, monkeypatch):
 
 
 def pin_state(sha=SHA, uri=URI):
-    return state(row("v10", role="live", artifact_uri=uri, artifact_sha256=sha))
+    return state(row("v10", lifecycle="live", artifact_uri=uri, artifact_sha256=sha))
 
 
 def test_pin_match_loads_pinned_first_and_records_sha(chain, monkeypatch):
@@ -415,7 +436,7 @@ def test_no_pin_or_invalid_pin_or_fallback_v4_never_touch_gcs(chain, monkeypatch
     gcs = FakeGCS({})
     monkeypatch.setattr(ptg.storage, "Client", gcs)
     for ctl, fb in ((None, False), (state(), False),
-                    (state(row("v10", role="live", artifact_uri=URI, artifact_sha256="bad")), False)):
+                    (state(row("v10", lifecycle="live", artifact_uri=URI, artifact_sha256="bad")), False)):
         p = predictor(ctl, fallback_v4=fb)
         p.load_model()
         assert p.model_version == "v10" and p._is_v10

@@ -17,7 +17,7 @@ DDL lives in `mllab/sql/control/` and is copied to `hanks_tank_ml/scripts/gcp/co
 
 `control.model_control_events` (append-only): `event_id, event_ts, recorded_at, sport, target, field, value, actor, note`.
 `control.model_control_current` (view): one row per `(sport, target)` with the latest EFFECTIVE (`event_ts <= now`) value of each field:
-`sport, target, site_visible, run_state, role, artifact_uri, artifact_sha256, display_label, public_note, sort_order, tier_high, tier_medium, banner, banner_level, updated_at`.
+`sport, target, site_visible, run_state, lifecycle, role (transition alias of lifecycle), artifact_uri, artifact_sha256, display_label, public_note, sort_order, tier_high, tier_medium, banner, banner_level, updated_at`.
 All value columns are STRING (NULL = not set = default). A row with `target = '*'` carries sport-wide fields (`banner`, `banner_level`).
 
 Consumers read ONLY the view:
@@ -35,7 +35,7 @@ Consumers read ONLY the view:
 |---|---|---|---|
 | `site_visible` | `true`/`false` | `true` | backend: hide the model everywhere on the site |
 | `run_state` | `active`/`paused` | `active` | ML: stop producing this model (200, no writes) |
-| `role` | `live`/`shadow`/`archived` | (unset) | ML: `live` + artifact = pinned production artifact; others informational |
+| `lifecycle` | `live`/`shadow`/`archived` | (unset) | ML: `live` + artifact = pinned production artifact; others informational. Renamed from `role`; the view keeps a `role` alias during the transition |
 | `artifact_uri` | `gs://bucket/path` | unset | ML: pinned artifact location (production key only) |
 | `artifact_sha256` | 64 hex | unset | ML: REQUIRED with a pin; verified before use |
 | `display_label` | plain text <= 60 | registry label | backend: overrides the label |
@@ -100,3 +100,24 @@ Consumers read ONLY the view:
   Actions are a closed set (run an existing scheduler job by mode, hide a model behind an auto banner only when another healthy model is visible,
   prune idle envs, alert). Nothing is ever un-hidden or redeployed automatically. Failed attempts count toward the limits. Log: `mllab remedy log`.
 - Access: `scripts/grant_health_access.sh SA [--remedy]` (you run it).
+
+## Addendum 2026-09-29: stand-in, last-known-good, lifecycle, pin-mismatch
+Spec: `docs/specs/model-control-remaining.md`. Vocabulary: `GLOSSARY.md`. Six items in that spec are still OPEN; the defaults below are what is built, and each is reversible.
+
+### `role` -> `lifecycle` (field rename)
+- The control field is now `lifecycle` (`live` | `shadow` | `archived`), informational. The site registry's `role` (production/shadow/reference/benchmark) is unrelated and unchanged.
+- TRANSITION: deployed consumers still read the column `role`. The current-state view therefore exposes BOTH columns, `lifecycle` and `role` (same value), until every consumer is redeployed. Consumers read `lifecycle`, falling back to `role`. The lab writes only `lifecycle` and rejects the field name `role` with a message pointing to `lifecycle`. Dropping the `role` column is a later step.
+- Pin rule is unchanged (default for open question 5): a pin needs `lifecycle=live`, `artifact_uri` and `artifact_sha256`.
+
+### Last known good (backend only)
+- After a failed control read, the backend keeps applying the last successfully read state for up to 6 hours, then fails open. One WARNING per failure window and one when the remembered state expires. A successful read replaces it at once. ML is unchanged (one read per run, fails open).
+
+### Stand-in model (backend + frontend)
+- Applies when the PRODUCTION key of a sport is hidden (`site_visible=false`) or paused (`run_state=paused`) by the control state. Never otherwise. (Open question 2 is whether pause should trigger it; built as the user chose: hidden or paused.)
+- Scope: compare and slate routes for MLB only in this release (football and the legacy prediction endpoints are open questions 3 and 4 and are NOT changed).
+- Candidates: visible models, excluding the production key and the derived models (`elo`, `market`), that have predictions for the games being served. Choose the lowest season-to-date log loss (point estimate) on games every candidate was scored on, when there are at least 50 such graded games. Otherwise use the fixed order `sim_blend`, then `logit3`. If no candidate exists there is no stand-in.
+- Response contract: `stand_in: { model: <key>, label: <string>, reason: "production_hidden" | "production_paused", basis: "season_log_loss" | "fixed_order", n_games: <int|null> } | null`. `featured_default` becomes the stand-in key. The field is always present on the compare and slate responses (null when unused).
+- Frontend: when `stand_in` is non-null, show an automatic notice (plain text, not dismissible, cannot be turned off by control settings) such as "Showing <label> while <production label> is offline." It is separate from, and shown alongside, the owner banner.
+
+### Pin mismatch (lab)
+- New critical health finding `pin_mismatch` (names model and artifact, no remedy). Signal (default for open question 1, reversible): the lab's collector looks in Cloud Logging for the ML pipeline's pin-mismatch error line; if it cannot read logs the source shows `unavailable` and no finding is raised. The pipeline itself is unchanged: it fails the run and writes nothing.
