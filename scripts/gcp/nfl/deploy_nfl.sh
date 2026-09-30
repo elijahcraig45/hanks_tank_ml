@@ -73,6 +73,9 @@ if [ "$ONLY_SCHEDULER" = false ]; then
     # Kept as packages: they import each other by package path, which flattening breaks.
     cp -R "$ROOT_SRC/rankings" "$ROOT_SRC/stats" "$ROOT_SRC/season_sim" "$SRC_DIR"/
     cp "$ROOT_SRC/rankings/http.py" "$SRC_DIR/http_transport.py"
+    # Read-only model control plane client (pause / tiers). Optional at runtime: main.py
+    # fails open if it is absent, but staging it is what makes the control plane work.
+    cp "$ROOT_SRC/model_control.py" "$SRC_DIR"/
     # The Bradley-Terry fit builds a sparse design matrix.
     grep -q '^scipy' "$SRC_DIR/requirements.txt" || echo 'scipy==1.16.3' >> "$SRC_DIR/requirements.txt"
 

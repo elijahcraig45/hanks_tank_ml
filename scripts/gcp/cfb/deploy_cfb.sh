@@ -107,6 +107,8 @@ if [ "$ONLY_SCHEDULER" = false ]; then
     cp -R "$SRC_DIR/rankings" "$SRC_DIR/stats" "$SRC_DIR/season_sim" "$STAGE"/
     # rankings.http is also reachable flat, for anything staged without the package.
     cp "$SRC_DIR/rankings/http.py" "$STAGE/http_transport.py"
+    # Read-only model control plane client (pause / tiers); main.py fails open without it.
+    cp "$SRC_DIR/model_control.py" "$STAGE"/
 
     cat > "$STAGE/requirements.txt" <<'EOF'
 functions-framework==3.*

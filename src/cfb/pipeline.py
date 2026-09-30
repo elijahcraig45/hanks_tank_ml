@@ -55,11 +55,14 @@ SHADOW_TABLE = "game_predictions_ridge_shadow"
 CONFIDENCE_TIERS = {"high": 0.80, "medium": 0.65}  # wider than NFL: bigger mismatches
 
 
-def confidence_tier(p: float) -> str:
+def confidence_tier(p: float, tiers: tuple[float, float] | None = None) -> str:
+    """`tiers` is an optional validated (high, medium) control-plane override for the
+    production model; None keeps CONFIDENCE_TIERS. `edge` is the winning side's probability."""
+    high, medium = tiers if tiers else (CONFIDENCE_TIERS["high"], CONFIDENCE_TIERS["medium"])
     edge = abs(p - 0.5) + 0.5
-    if edge >= CONFIDENCE_TIERS["high"]:
+    if edge >= high:
         return "high"
-    if edge >= CONFIDENCE_TIERS["medium"]:
+    if edge >= medium:
         return "medium"
     return "low"
 
