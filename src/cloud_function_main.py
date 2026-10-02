@@ -240,7 +240,7 @@ def daily_pipeline(request):
                 results["steps"].append(_run_logit3(target, game_pks, dry_run))
             if mode == "pregame_v10" and req_json.get("run_sim_blend"):
                 results["steps"].append(_run_sim_blend(target, game_pks, dry_run, req_json))
-            results["steps"].append(_run_scouting_reports(target, dry_run))
+            results["steps"].append(_run_scouting_reports(target, dry_run, game_pks))
 
         # Weekly model training — mlb-2026-weekly-train-v10, Sunday 2 AM ET.
         # model_version options: v10 (recommended), v8, v7, v6 (legacy)
@@ -305,7 +305,7 @@ def daily_pipeline(request):
         # report before first pitch.
         if mode == "scouting_reports":
             report_date = date.fromisoformat(req_json.get("date", target.isoformat()))
-            results["steps"].append(_run_scouting_reports(report_date, dry_run))
+            results["steps"].append(_run_scouting_reports(report_date, dry_run, game_pks))
 
         # Morning schedule check: enqueue per-game Cloud Tasks for today.
         # Must target today, not the pipeline-wide default of yesterday — the
@@ -349,9 +349,9 @@ def _run_matchup_features(target: date, game_pks: list, dry_run: bool) -> dict:
     return {"step": "matchup_features", **result}
 
 
-def _run_scouting_reports(target: date, dry_run: bool) -> dict:
+def _run_scouting_reports(target: date, dry_run: bool, game_pks: list[int] | None = None) -> dict:
     from build_scouting_reports import run as build_reports
-    result = build_reports(target, dry_run=dry_run)
+    result = build_reports(target, dry_run=dry_run, game_pks=game_pks or None)
     return {"step": "scouting_reports", **result}
 
 

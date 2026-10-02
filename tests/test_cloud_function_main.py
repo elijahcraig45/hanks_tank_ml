@@ -140,6 +140,34 @@ class CloudFunctionMainTests(unittest.TestCase):
             self.addCleanup(p.stop)
         return mocks
 
+    def test_pregame_scouting_is_scoped_to_the_tasks_own_games(self):
+        # Every other pregame step is handed game_pks. The scouting step was not, so each task
+        # rebuilt the whole day's slate: with 15 games, 15x the queries for the same 15 reports.
+        mocks = self._pregame_patches()
+        cloud_function_main.daily_pipeline(FakeRequest(
+            {"mode": "pregame_v10", "date": "2026-09-20", "game_pks": [824776, 824777], "dry_run": True}))
+        args = mocks["_run_scouting_reports"].call_args.args
+        self.assertEqual([824776, 824777], list(args[2]))
+
+    def test_pregame_without_game_pks_still_builds_the_whole_slate(self):
+        mocks = self._pregame_patches()
+        cloud_function_main.daily_pipeline(FakeRequest(
+            {"mode": "pregame_v10", "date": "2026-09-20", "dry_run": True}))
+        self.assertFalse(list(mocks["_run_scouting_reports"].call_args.args[2]))
+
+    def test_scouting_reports_mode_passes_game_pks_when_given(self):
+        mocks = self._daily_patches()
+        cloud_function_main.daily_pipeline(FakeRequest(
+            {"mode": "scouting_reports", "date": "2026-09-24", "game_pks": [5], "dry_run": True}))
+        self.assertEqual([5], list(mocks["_run_scouting_reports"].call_args.args[2]))
+
+    def test_run_scouting_reports_treats_empty_game_pks_as_the_whole_slate(self):
+        with patch("build_scouting_reports.run", return_value={"reports_written": 0}) as run:
+            cloud_function_main._run_scouting_reports(__import__("datetime").date(2026, 9, 20), True, [])
+            self.assertIsNone(run.call_args.kwargs["game_pks"])
+            cloud_function_main._run_scouting_reports(__import__("datetime").date(2026, 9, 20), True, [7])
+            self.assertEqual([7], run.call_args.kwargs["game_pks"])
+
     def test_pregame_v10_shadows_are_off_by_default(self):
         mocks = self._pregame_patches()
         cloud_function_main.daily_pipeline(FakeRequest(
