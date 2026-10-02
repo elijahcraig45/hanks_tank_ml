@@ -67,3 +67,7 @@ data/cfb/
 # src/rankings/fpi.py and src/stats/*. All public feeds, so re-fetching is free.
 data/rankings/
 data/stats/
+
+# Local backtest outputs and odds pulls (regenerable, hundreds of MB)
+data/backtest_2026/
+data/odds/
