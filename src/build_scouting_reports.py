@@ -15,13 +15,13 @@ The JSON report is pre-computed so the frontend never does heavy BQ work at
 page-load time — it just fetches a single row.
 
 Usage:
-    python3 build_scouting_reports.py [--date YYYY-MM-DD] [--dry-run]
+    python3 build_scouting_reports.py [--date YYYY-MM-DD] [--game-pk PK ...] [--dry-run]
 """
 
 import argparse
 import json
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from google.cloud import bigquery
@@ -906,10 +906,67 @@ def assemble_report(
 # BQ write
 # ---------------------------------------------------------------------------
 
-def upsert_reports(bq: bigquery.Client, reports: list[dict], dry_run: bool = False) -> dict:
+MERGE_SQL = f"""
+MERGE `{REPORTS_TABLE}` T
+USING (
+  SELECT game_pk, game_date, home_team_id, away_team_id, home_team_name, away_team_name,
+         PARSE_JSON(report) AS report, generated_at
+  FROM UNNEST(@rows)
+) S
+ON T.game_pk = S.game_pk AND T.game_date = @game_date
+WHEN MATCHED THEN UPDATE SET
+  home_team_id = S.home_team_id, away_team_id = S.away_team_id,
+  home_team_name = S.home_team_name, away_team_name = S.away_team_name,
+  report = S.report, generated_at = S.generated_at
+WHEN NOT MATCHED THEN INSERT
+  (game_pk, game_date, home_team_id, away_team_id, home_team_name, away_team_name, report, generated_at)
+VALUES
+  (S.game_pk, S.game_date, S.home_team_id, S.away_team_id, S.home_team_name, S.away_team_name, S.report, S.generated_at)
+"""
+
+
+def _merge_param(r: dict) -> "bigquery.StructQueryParameter":
+    generated = datetime.fromisoformat(r["generated_at"].rstrip("Z")).replace(tzinfo=timezone.utc)
+    sp = bigquery.ScalarQueryParameter
+    return bigquery.StructQueryParameter(
+        None,
+        sp("game_pk", "INT64", r["game_pk"]),
+        sp("game_date", "DATE", date.fromisoformat(str(r["game_date"]))),
+        sp("home_team_id", "INT64", r["home_team_id"]),
+        sp("away_team_id", "INT64", r["away_team_id"]),
+        sp("home_team_name", "STRING", r["home_team_name"]),
+        sp("away_team_name", "STRING", r["away_team_name"]),
+        sp("report", "STRING", json.dumps(r)),
+        sp("generated_at", "TIMESTAMP", generated),
+    )
+
+
+def merge_reports(bq: bigquery.Client, reports: list[dict]) -> dict:
+    """Write only these games' rows and leave the rest of the day alone.
+
+    upsert_reports replaces the whole day's partition, which is right when the run built the whole
+    slate and wrong for a run that built one game: it would erase every other game's report. One
+    MERGE statement is atomic, so two tasks finishing together cannot undo each other's row, and
+    the rows travel as a query parameter, so there is no staging table to leave behind."""
+    if not reports:
+        return {"reports_written": 0}
+    # Every report in a run is for one date; stating it as a parameter lets BigQuery read that one partition.
+    params = [
+        bigquery.ScalarQueryParameter("game_date", "DATE", date.fromisoformat(str(reports[0]["game_date"]))),
+        bigquery.ArrayQueryParameter("rows", "STRUCT", [_merge_param(r) for r in reports]),
+    ]
+    bq.query(MERGE_SQL, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+    game_date = reports[0]["game_date"]
+    logger.info("Merged %d scouting report(s) into BQ for %s", len(reports), game_date)
+    return {"reports_written": len(reports), "game_date": game_date, "merged": True}
+
+
+def upsert_reports(bq: bigquery.Client, reports: list[dict], dry_run: bool = False, merge: bool = False) -> dict:
     if dry_run:
         logger.info("[DRY RUN] Would write %d reports", len(reports))
         return {"reports_written": 0, "dry_run": True}
+    if merge:
+        return merge_reports(bq, reports)
 
     game_date = reports[0]["game_date"] if reports else None
 
@@ -957,15 +1014,35 @@ def upsert_reports(bq: bigquery.Client, reports: list[dict], dry_run: bool = Fal
 # Main
 # ---------------------------------------------------------------------------
 
-def run(target_date: date, dry_run: bool = False) -> dict:
-    bq = bigquery.Client(project=PROJECT)
+def scope_games(games: list[dict], game_pks) -> list[dict]:
+    """Keep only the requested games. No game_pks means the whole slate."""
+    if not game_pks:
+        return games
+    wanted = {int(pk) for pk in game_pks}
+    return [g for g in games if int(g["game_pk"]) in wanted]
 
-    logger.info("Building scouting reports for %s", target_date)
+
+def run(target_date: date, dry_run: bool = False, game_pks=None) -> dict:
+    """Build scouting reports for a date.
+
+    With game_pks, build only those games and merge their rows in. A pregame task is for one game, and
+    rebuilding the whole slate in each of them multiplied the work (and the BigQuery queries) by the
+    number of games that day. Without game_pks, build the whole slate and overwrite the day's partition."""
+    bq = bigquery.Client(project=PROJECT)
+    scoped = bool(game_pks)
+
+    logger.info("Building scouting reports for %s%s", target_date, f" (games {sorted(int(p) for p in game_pks)})" if scoped else "")
 
     games = fetch_games_on_date(bq, target_date)
     if not games:
         logger.info("No games on %s", target_date)
         return {"reports_written": 0, "game_date": str(target_date)}
+
+    games = scope_games(games, game_pks)
+    if not games:
+        # Nothing to write, and a scoped run must never fall through to a write that replaces the day.
+        logger.info("None of the requested games are on %s", target_date)
+        return {"reports_written": 0, "game_date": str(target_date), "scoped": True}
 
     logger.info("Found %d games", len(games))
 
@@ -1037,18 +1114,19 @@ def run(target_date: date, dry_run: bool = False) -> dict:
                     len(report["fun_facts"]),
                     len(report["news"]["home"]) + len(report["news"]["away"]))
 
-    result = upsert_reports(bq, reports, dry_run=dry_run)
+    result = upsert_reports(bq, reports, dry_run=dry_run, merge=scoped)
     return result
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
+    parser.add_argument("--game-pk", type=int, nargs="+", default=None, help="Build only these games and merge them in")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     target = date.fromisoformat(args.date) if args.date else date.today()
-    result = run(target, dry_run=args.dry_run)
+    result = run(target, dry_run=args.dry_run, game_pks=args.game_pk)
     print(json.dumps(result, indent=2))
 
 
