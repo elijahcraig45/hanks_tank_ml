@@ -65,15 +65,58 @@ logger = logging.getLogger(__name__)
 DIVISIONS = ("fbs", "fcs")
 
 
+# ---------------------------------------------------------------------------
+# Model control plane (docs/MODEL_CONTROL.md): read once per invocation, fail open.
+# model_control.py is staged next to this file by the deploy script; if it is missing
+# (or anything else goes wrong) the pipeline behaves exactly as it did without control.
+# ---------------------------------------------------------------------------
+def _control_state(sport: str = "cfb"):
+    try:
+        import model_control
+
+        return model_control.get_state(sport)
+    except Exception as exc:  # noqa: BLE001 - fail open
+        logger.warning("model control unavailable, using defaults: %s", str(exc)[:200])
+        return None
 
 
-def _shadow_enabled(req: dict) -> bool:
+def _paused(state, key: str, what: str = "") -> bool:
+    """True when `key` is paused. One structured log line per pause. Never raises."""
+    try:
+        paused = bool(state is not None and state.is_paused(key))
+    except Exception:  # noqa: BLE001 - fail open
+        return False
+    if paused:
+        import json
+
+        print(json.dumps({"severity": "NOTICE", "event": "model_paused", "sport": "cfb",
+                          "model": key, "what": what or key,
+                          "message": f"model {key} paused by control plane; {what or key} "
+                                     "skipped, nothing written"}), flush=True)
+    return paused
+
+
+def _apply_tiers(rows, state, tier_fn):
+    """Production-key confidence tier override (both cut-offs valid, else constants)."""
+    try:
+        tiers = state.tiers("xgb") if state is not None else None
+    except Exception:  # noqa: BLE001 - fail open
+        tiers = None
+    if tiers and len(rows):
+        rows["confidence_tier"] = [tier_fn(p, tiers) for p in rows["home_win_probability"]]
+    return rows
+
+
+
+def _shadow_enabled(req: dict, state=None) -> bool:
     """The margin ridge is an experiment: it runs only when asked for, per request
     ({"shadow_ridge": true}) or per deployment (CFB_RIDGE_SHADOW=1), and writes only
     to its own table, which nothing reads. Off by default."""
     import os
 
-    return bool(req.get("shadow_ridge")) or os.environ.get("CFB_RIDGE_SHADOW") == "1"
+    enabled = bool(req.get("shadow_ridge")) or os.environ.get("CFB_RIDGE_SHADOW") == "1"
+    # A paused shadow is skipped exactly like a disabled one.
+    return enabled and not _paused(state, "ridge", "shadow ridge")
 
 
 def _shadow_ridge_week(season: int, week: int, steps: dict) -> None:
@@ -96,12 +139,13 @@ def _shadow_ridge_week(season: int, week: int, steps: dict) -> None:
         steps["shadow_ridge"] = {"error": str(exc)[:200]}
 
 
-def _drive_sim_enabled(req: dict) -> bool:
+def _drive_sim_enabled(req: dict, state=None) -> bool:
     """The drive simulator is a shadow: per request ({"shadow_drive_sim": true}) or per
     deployment (CFB_DRIVE_SIM_SHADOW=1). Off by default."""
     import os
 
-    return bool(req.get("shadow_drive_sim")) or os.environ.get("CFB_DRIVE_SIM_SHADOW") == "1"
+    enabled = bool(req.get("shadow_drive_sim")) or os.environ.get("CFB_DRIVE_SIM_SHADOW") == "1"
+    return enabled and not _paused(state, "drive_sim", "shadow drive_sim")
 
 
 def _drive_sim_week(season: int, week: int, steps: dict, dry_run: bool = False) -> None:
@@ -123,9 +167,14 @@ def _drive_sim_week(season: int, week: int, steps: dict, dry_run: bool = False) 
         steps["shadow_drive_sim"] = {"error": str(exc)[:200]}
 
 
-def _fpi_snapshot(season: int, week: int | None, steps: dict) -> None:
+def _fpi_snapshot(season: int, week: int | None, steps: dict, state=None) -> None:
     """Append FPI's pregame numbers for one week's games that have not kicked off. Never
     fatal: FPI is shown for comparison and must not cost the pipeline anything."""
+    if state is None:
+        state = _control_state()
+    if _paused(state, "fpi", "fpi snapshot"):
+        steps["fpi_snapshot"] = {"status": "paused"}
+        return
     try:
         from espn_data import fetch_scheduled
         from pipeline import next_unplayed_week
@@ -406,7 +455,11 @@ def cfb_pipeline(request):
             import cfb_config
             import pandas as pd
             from backfill_cfb import ensure_datasets, load
-            from pipeline import next_unplayed_week, predict_week
+            from pipeline import confidence_tier, next_unplayed_week, predict_week
+
+            state = _control_state()
+            if _paused(state, "xgb", "predict_week"):
+                return ({**result, "steps": {}, "status": "paused"}, 200)
 
             season = int(req.get("season", cfb_config.CTX.season))
             week = req.get("week")
@@ -418,20 +471,20 @@ def cfb_pipeline(request):
                     result["note"] = "no unplayed weeks remaining"
                     return (result, 200)
 
-            rows = predict_week(season, int(week))
+            rows = _apply_tiers(predict_week(season, int(week)), state, confidence_tier)
             if dry_run:
                 result["dry_run"] = True
                 result["week"] = int(week)
                 result["steps"]["predicted"] = len(rows)
                 result["steps"]["games"] = (rows["game_id"].astype(str).tolist()
                                             if not rows.empty else [])
-                if _shadow_enabled(req):
+                if _shadow_enabled(req, state):
                     try:
                         result["steps"]["shadow_ridge"] = len(
                             predict_week(season, int(week), model="ridge"))
                     except Exception as exc:
                         result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
-                if _drive_sim_enabled(req):
+                if _drive_sim_enabled(req, state):
                     _drive_sim_week(season, int(week), result["steps"], dry_run=True)
                 result["status"] = "ok"
                 return (result, 200)
@@ -448,15 +501,15 @@ def cfb_pipeline(request):
                                  cluster_fields=["season", "division"])
                 result["steps"]["predicted"] = len(rows)
 
-            if _shadow_enabled(req):
+            if _shadow_enabled(req, state):
                 _shadow_ridge_week(season, int(week), result["steps"])
-            if _drive_sim_enabled(req):
+            if _drive_sim_enabled(req, state):
                 _drive_sim_week(season, int(week), result["steps"])
 
             from rankings import fpi_games
 
             if fpi_games.enabled(req):
-                _fpi_snapshot(season, int(week), result["steps"])
+                _fpi_snapshot(season, int(week), result["steps"], state=state)
 
         elif mode == "backfill":
             import cfb_config
