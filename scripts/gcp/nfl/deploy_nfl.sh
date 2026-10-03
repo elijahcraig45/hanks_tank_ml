@@ -52,7 +52,7 @@ for arg in "$@"; do
         --only-scheduler) ONLY_SCHEDULER=true ;;
         --only-function)  ONLY_FUNCTION=true ;;
         --keep-env)       KEEP_ENV=true ;;
-        --shadow)         SHADOW_ENV=",NFL_RIDGE_SHADOW=1,FPI_SNAPSHOT=1,NFL_DRIVE_SIM_SHADOW=1" ;;
+        --shadow)         SHADOW_ENV=",NFL_RIDGE_SHADOW=1,FPI_SNAPSHOT=1,NFL_DRIVE_SIM_SHADOW=1,NFL_XGB_REG_SHADOW=1" ;;
     esac
 done
 ENV_ARGS=(--set-env-vars="GCP_PROJECT=$PROJECT,NFL_DATASET=nfl_season,NFL_HIST_DATASET=nfl_historical$SHADOW_ENV")
