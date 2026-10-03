@@ -29,7 +29,7 @@ from bq_io import ensure_dataset, load_table, replace_seasons, upsert_week  # no
 from config import CTX  # noqa: E402
 from data import completed_games, load_schedules  # noqa: E402
 from features import build_features, feature_columns  # noqa: E402
-from train_nfl_models import build_xgb  # noqa: E402
+from train_nfl_models import build_xgb, build_xgb_reg  # noqa: E402
 import margin_ridge as mr  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 # validated with. Rows written before the fix carry the old name and NULL EPA.
 MODEL_VERSION = "nfl_v1_pure_epa"
 RIDGE_MODEL_VERSION = "nfl_v2_margin_ridge"
+
+# The regularized XGBoost (models.build_xgb_reg) runs as a SHADOW too: same features, same training rows, different settings, its own table, read by nothing.
+XGB_REG_MODEL_VERSION = "nfl_v1_pure_epa_reg"
+XGB_REG_SHADOW_TABLE = "game_predictions_xgb_reg_shadow"
 
 # The ridge runs as a SHADOW model into its own table, read by nothing, until it has
 # earned a place in game_predictions.
@@ -239,8 +243,8 @@ def backfill_season(season: int, model: str = "xgb",
                     cfg: "mr.RidgeConfig" = mr.NFL_RIDGE) -> pd.DataFrame:
     """Week-by-week honest out-of-sample predictions for a completed season.
 
-    model="xgb" is production. model="ridge" is the shadow margin ridge, which needs
-    no EPA and trains on the decaying two-season window before each week.
+    model="xgb" is production. model="xgb_reg" is the regularized-XGBoost shadow: the same loop with different settings. model="ridge" is the shadow margin
+    ridge, which needs no EPA and trains on the decaying two-season window before each week.
     """
     games = completed_games()
     if model == "ridge":
@@ -271,10 +275,11 @@ def backfill_season(season: int, model: str = "xgb",
         if train.empty or test.empty:
             continue
 
-        xgb = build_xgb()
+        xgb = build_xgb_reg() if model == "xgb_reg" else build_xgb()
         xgb.fit(train[cols].fillna(0.0).values, train["home_won"].values)
         proba = xgb.predict_proba(test[cols].fillna(0.0).values)[:, 1]
-        out.append(build_prediction_rows(test, proba, actuals=games))
+        out.append(build_prediction_rows(test, proba, actuals=games,
+                                         **({"model_version": XGB_REG_MODEL_VERSION} if model == "xgb_reg" else {})))
 
     result = pd.concat(out, ignore_index=True)
     logger.info("backfilled %d predictions for %d", len(result), season)
@@ -322,7 +327,8 @@ def predict_week(season: int, week: int, model: str = "xgb",
     running the same chronological pass with the unplayed games appended. Unplayed
     rows produce features but do not update team state.
 
-    model="xgb" (production) needs EPA and refuses to run without it. model="ridge"
+    model="xgb" (production) needs EPA and refuses to run without it. model="xgb_reg"
+    (shadow) is the same with regularized settings, so it needs EPA too. model="ridge"
     (shadow) needs only scores.
     """
     played = completed_games() if played is None else played
@@ -358,11 +364,13 @@ def predict_week(season: int, week: int, model: str = "xgb",
     target = feats[feats["home_won"].isna()]
     cols = feature_columns(feats, include_market=False)
 
-    xgb = build_xgb()
+    xgb = build_xgb_reg() if model == "xgb_reg" else build_xgb()
     xgb.fit(train[cols].fillna(0.0).values, train["home_won"].astype(int).values)
     proba = xgb.predict_proba(target[cols].fillna(0.0).values)[:, 1]
 
-    logger.info("predicted %d games for %d week %d", len(target), season, week)
+    logger.info("%spredicted %d games for %d week %d", "xgb_reg " if model == "xgb_reg" else "", len(target), season, week)
+    if model == "xgb_reg":
+        return build_prediction_rows(target, proba, model_version=XGB_REG_MODEL_VERSION)
     return build_prediction_rows(target, proba)
 
 
@@ -423,12 +431,12 @@ def main() -> int:
     ap.add_argument("--backfill", type=int, help="season to backfill week by week")
     ap.add_argument("--season", type=int, help="season to predict (with --week)")
     ap.add_argument("--week", type=int, help="week to predict (with --season)")
-    ap.add_argument("--model", choices=["xgb", "ridge"], default="xgb",
-                    help="ridge is the shadow model and writes only to "
-                         f"{SHADOW_TABLE}")
+    ap.add_argument("--model", choices=["xgb", "xgb_reg", "ridge"], default="xgb",
+                    help="ridge writes only to "
+                         f"{SHADOW_TABLE}; xgb_reg writes only to {XGB_REG_SHADOW_TABLE}")
     ap.add_argument("--no-write", action="store_true")
     args = ap.parse_args()
-    table = SHADOW_TABLE if args.model == "ridge" else "game_predictions"
+    table = {"ridge": SHADOW_TABLE, "xgb_reg": XGB_REG_SHADOW_TABLE}.get(args.model, "game_predictions")
 
     if args.season and args.week:
         rows = predict_week(args.season, args.week, model=args.model)

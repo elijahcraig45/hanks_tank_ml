@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import HOLDOUT_SEASON  # noqa: E402
 from data import completed_games  # noqa: E402
 from features import build_features, elo_expected, feature_columns  # noqa: E402
-from models import build_lr, build_xgb, evaluate  # noqa: E402
+from models import build_lr, build_xgb, build_xgb_reg, evaluate  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)

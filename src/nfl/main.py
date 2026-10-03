@@ -23,6 +23,9 @@ Shadow model: {"shadow_ridge": true} on predict_week (or NFL_RIDGE_SHADOW=1) als
 the margin ridge's predictions to nfl_season.game_predictions_ridge_shadow. Nothing reads
 that table; it exists so the ridge can be scored live before adoption.
 
+Regularized-XGBoost shadow: {"shadow_xgb_reg": true} on predict_week (or NFL_XGB_REG_SHADOW=1) also writes the same model with slower, smaller, more regularized
+settings (models.build_xgb_reg) to nfl_season.game_predictions_xgb_reg_shadow. Nothing reads it.
+
 Drive-sim shadow: {"shadow_drive_sim": true} on predict_week (or NFL_DRIVE_SIM_SHADOW=1,
 which deploy_nfl.sh --shadow sets) also runs the drive simulator (drive_sim.py) and writes
 nfl_season.game_sim_distributions and nfl_season.game_predictions_drive_sim. Pregame games
@@ -145,6 +148,30 @@ def _shadow_enabled(req: dict, state=None) -> bool:
     enabled = bool(req.get("shadow_ridge")) or os.environ.get("NFL_RIDGE_SHADOW") == "1"
     # A paused shadow is skipped exactly like a disabled one.
     return enabled and not _paused(state, "ridge", "shadow ridge")
+
+
+def _xgb_reg_enabled(req: dict, state=None) -> bool:
+    """The regularized XGBoost is a shadow too: per request ({"shadow_xgb_reg": true}) or per deployment (NFL_XGB_REG_SHADOW=1). Off by default, and a paused
+    shadow is skipped exactly like a disabled one."""
+    import os
+
+    enabled = bool(req.get("shadow_xgb_reg")) or os.environ.get("NFL_XGB_REG_SHADOW") == "1"
+    return enabled and not _paused(state, "xgb_reg", "shadow xgb_reg")
+
+
+def _shadow_xgb_reg_week(season: int, week: int, steps: dict) -> None:
+    """Predict the week with the regularized XGBoost into its own table. Never fatal: it must not cost the headline anything."""
+    try:
+        from bq_io import upsert_week
+        from config import CTX
+        from predict_nfl import XGB_REG_SHADOW_TABLE, predict_week
+
+        rows = predict_week(season, week, model="xgb_reg")
+        upsert_week(rows, CTX.season_dataset, XGB_REG_SHADOW_TABLE, season, week)
+        steps["shadow_xgb_reg"] = len(rows)
+    except (Exception, SystemExit) as exc:
+        logger.error("shadow xgb_reg failed: %s", exc)
+        steps["shadow_xgb_reg"] = {"error": str(exc)[:200]}
 
 
 def _drive_sim_enabled(req: dict, state=None) -> bool:
@@ -384,6 +411,11 @@ def nfl_pipeline(request):
                             predict_week(int(season), int(week), model="ridge"))
                     except Exception as exc:
                         result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
+                if _xgb_reg_enabled(req, state):
+                    try:
+                        result["steps"]["shadow_xgb_reg"] = len(predict_week(int(season), int(week), model="xgb_reg"))
+                    except (Exception, SystemExit) as exc:
+                        result["steps"]["shadow_xgb_reg"] = {"error": str(exc)[:200]}
                 if _drive_sim_enabled(req, state):
                     _drive_sim_week(int(season), int(week), result["steps"], dry_run=True)
                 result["status"] = "ok"
@@ -397,6 +429,8 @@ def nfl_pipeline(request):
 
             if _shadow_enabled(req, state):
                 _shadow_ridge_week(int(season), int(week), result["steps"])
+            if _xgb_reg_enabled(req, state):
+                _shadow_xgb_reg_week(int(season), int(week), result["steps"])
             if _drive_sim_enabled(req, state):
                 _drive_sim_week(int(season), int(week), result["steps"])
 
