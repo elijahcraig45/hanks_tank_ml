@@ -84,9 +84,15 @@ class SportSpec:
     margin_cap: float | None = None
     margin_scale: float = 10.0
     blend: float = 0.5
-    # Also publish the results-only order (rankings.results) beside the rating. Football
-    # only so far: it was measured on college seasons, and has not been for the others.
-    results_board: bool = False
+    # Also publish the selectable boards (rankings.results: results, season, forecast,
+    # resume) beside the rating. College only so far: they were measured on college
+    # seasons, and have not been for the others.
+    extra_boards: bool = False
+    # The forecast board's prior: the PREVIOUS headline setting, kept selectable because it
+    # scored best on the walk-forward surface (the current headline trades a little accuracy
+    # for reading as this season's form sooner).
+    forecast_w0: float | None = None
+    forecast_tau: float | None = None
 
     def model_kw(self) -> dict:
         return {
@@ -119,7 +125,7 @@ SPORTS: dict[str, SportSpec] = {
         # on top of last season's games, in three designs, so it is not used.
         ridge_C=2.0, prior_w0=0.12, prior_tau=8.0, season_weeks=16,
         model="margin", margin_alpha=0.3, margin_cap=None, margin_scale=10.62,
-        results_board=True,
+        extra_boards=True, forecast_w0=0.25, forecast_tau=16.0,
     ),
     "nfl": SportSpec(
         key="nfl", label="NFL",

@@ -3,6 +3,7 @@
 import os
 import sys
 import unittest
+import unittest.mock
 
 import numpy as np
 import pandas as pd
@@ -112,9 +113,9 @@ class BuildTests(unittest.TestCase):
         return g
 
     def test_only_college_publishes_the_results_order(self):
-        self.assertTrue(sources.SPORTS["cfb"].results_board)
-        self.assertFalse(sources.SPORTS["nfl"].results_board)
-        self.assertFalse(sources.SPORTS["mlb"].results_board)
+        self.assertTrue(sources.SPORTS["cfb"].extra_boards)
+        self.assertFalse(sources.SPORTS["nfl"].extra_boards)
+        self.assertFalse(sources.SPORTS["mlb"].extra_boards)
 
     def test_the_college_board_carries_the_columns(self):
         table, meta = build.build_board("cfb", 2026, n_boot=5, use_prior=False,
@@ -130,9 +131,87 @@ class BuildTests(unittest.TestCase):
         self.assertFalse(meta["has_results"])
         self.assertNotIn("results_rank", table.columns)
 
+    def test_the_four_boards_are_numbered_within_the_board_with_nulls_for_idle_teams(self):
+        g = self.games()
+        g = g[g["week"] <= 3]  # inside the membership grace period, so last season's teams stay boarded
+        # Idle plays nobody this season; it only exists in last season's games.
+        prior = round_robin(["F1", "F2", "F3", "F4", "Idle"], season=2025, repeats=1)
+        prior["home_division"] = "fbs"
+        prior["away_division"] = "fbs"
+        prior["margin"] = np.where(prior["home_won"] == 1, 7.0, -7.0)
+        prior["home_score"] = None
+        prior["away_score"] = None
+        table, meta = build.build_board("cfb", 2026, n_boot=5, games=pd.concat([prior, g]),
+                                        with_fpi=False, with_rationale=False)
+        self.assertEqual(meta["extra_boards"],
+                         ["results_rank", "season_rank", "forecast_rank", "resume_rank"])
+        t = table.set_index("team")
+        played = ["F1", "F2", "F3", "F4"]
+        for col in ("results_rank", "season_rank"):
+            self.assertEqual(sorted(t.loc[played, col]), [1, 2, 3, 4], col)
+        for col in ("results_rank", "season_rank", "resume_rank"):
+            self.assertTrue(pd.isna(t.loc["Idle", col]), col)
+        # Last season's evidence ranks it too, so the forecast board covers all five.
+        self.assertEqual(sorted(t["forecast_rank"]), [1, 2, 3, 4, 5])
+
+    def test_preseason_nulls_everything_but_the_forecast(self):
+        prior = self.games(season=2025)
+        table, meta = build.build_board("cfb", 2026, n_boot=5, games=prior, with_fpi=False,
+                                        with_rationale=False)
+        self.assertTrue(meta["is_preseason"])
+        for col in ("results_rank", "season_rank", "resume_rank"):
+            self.assertTrue(table[col].isna().all(), col)
+        self.assertEqual(sorted(table["forecast_rank"]), [1, 2, 3, 4])
+        self.assertEqual(meta["extra_boards"], ["forecast_rank"])
+        self.assertFalse(meta["has_results"])
+
+    def test_forecast_uses_its_own_weights_not_the_headline_ones(self):
+        calls = []
+        real = build.core.fit_with_prior
+
+        def spy(current, prior, week, **kw):
+            calls.append((prior is None, kw["w0"], kw["tau"]))
+            return real(current, prior, week, **kw)
+
+        prior = self.games(season=2025)
+        with unittest.mock.patch.object(build.core, "fit_with_prior", spy):
+            build.build_board("cfb", 2026, n_boot=0, games=pd.concat([prior, self.games()]),
+                              with_fpi=False, with_rationale=False)
+        self.assertIn((False, 0.12, 8.0), calls)   # headline
+        self.assertIn((False, 0.25, 16.0), calls)  # forecast: the previous headline weights
+        self.assertIn((True, 0.12, 8.0), calls)    # season only: no prior at all
+
+    def test_resume_rank_follows_sor(self):
+        g = self.games()
+        prior = self.games(season=2025)
+        table, _ = build.build_board("cfb", 2026, n_boot=5, games=pd.concat([prior, g]),
+                                     with_fpi=False, with_rationale=False)
+        t = table.dropna(subset=["resume_rank"]).sort_values("resume_rank")
+        self.assertTrue(t["sor"].is_monotonic_decreasing)
+        self.assertEqual(int(t["resume_rank"].iloc[0]), 1)
+
+    def test_a_failed_season_fit_leaves_that_board_null_and_the_rest_intact(self):
+        real = build.core.fit_with_prior
+
+        def flaky(current, prior, week, **kw):
+            if prior is None:
+                raise ValueError("degenerate")
+            return real(current, prior, week, **kw)
+
+        prior = self.games(season=2025)
+        with unittest.mock.patch.object(build.core, "fit_with_prior", flaky):
+            table, meta = build.build_board("cfb", 2026, n_boot=0,
+                                            games=pd.concat([prior, self.games()]),
+                                            with_fpi=False, with_rationale=False)
+        self.assertTrue(table["season_rank"].isna().all())
+        self.assertNotIn("season_rank", meta["extra_boards"])
+        self.assertEqual(sorted(table["results_rank"]), [1, 2, 3, 4])
+        self.assertEqual(sorted(table["forecast_rank"]), [1, 2, 3, 4])
+
     def test_the_headline_weights_are_the_ones_the_comment_describes(self):
         spec = sources.SPORTS["cfb"]
         self.assertEqual((spec.prior_w0, spec.prior_tau), (0.12, 8.0))
+        self.assertEqual((spec.forecast_w0, spec.forecast_tau), (0.25, 16.0))
 
 
 if __name__ == "__main__":
