@@ -262,12 +262,17 @@ def build_board(sport: str, season: int, week: int | None = None,
     )
     out["sor"] = out["team"].map(sor).round(2)
 
-    # The results-only order, published beside the rating (see rankings.results): who
-    # has beaten whom, with nothing else in it. Not a forecast, and labelled as such.
+    # Selectable boards published beside the rating (see rankings.results): results-only,
+    # this-season-only, the previous forecast weights and strength of record. The results
+    # order is a record, not a forecast, and is labelled as such on the site.
     meta["has_results"] = False
-    if spec.results_board:
+    meta["extra_boards"] = []
+    if spec.extra_boards:
         out = results.attach(out, current, divisions, major, spec.ridge_C)
-        meta["has_results"] = bool(out["results_rank"].notna().any())
+        out = results.attach_boards(out, current, prior, effective_week, fit_kw,
+                                    spec.forecast_w0, spec.forecast_tau)
+        meta["extra_boards"] = [c for c in results.BOARD_COLUMNS if out[c].notna().any()]
+        meta["has_results"] = "results_rank" in meta["extra_boards"]
 
     # Why each team is where it is: rating decomposition, per-game contributions,
     # schedule strength, adjacent-pair explanations and a summary line — all computed

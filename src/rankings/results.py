@@ -1,4 +1,21 @@
-"""A results-only order: the ranking that contradicts the fewest games already played.
+"""Selectable college boards beside the headline rating, led by the results-only order.
+
+Four extra boards are written next to `rank` (the headline rating), each an integer rank
+within the team's board (fbs / fcs) and null where it does not apply, so the site can show
+any subset of them:
+
+  results_rank   who has beaten whom (the minimum-conflict order below)
+  season_rank    a margin fit of THIS season's games alone, no last season
+  forecast_rank  the previous headline weights (last season at 0.25, tau 16), kept
+                 selectable because that setting scored best on the walk-forward surface
+  resume_rank    strength of record: wins above what an average team would win against
+                 the same schedule, from the headline ratings
+
+Preseason (no games yet): results, season and resume are null; forecast is ranked, since
+it is last season's evidence exactly as the headline is.
+
+The results-only order, in detail: the ranking that contradicts the fewest games already
+played.
 
 The headline rating answers "who would win next week", so it blends this season with
 last, uses margins, and corrects for schedule. This answers a different question — "who
@@ -134,3 +151,58 @@ def attach(table: pd.DataFrame, current: pd.DataFrame, divisions: dict[str, str]
         out.loc[idx, "results_rank"] = out.loc[idx, "team"].map(ranks).astype("Int64")
     out["results_conflicts"] = out["team"].map(conflicts).astype("Int64")
     return out
+
+
+def rank_by(table: pd.DataFrame, strengths: pd.Series | None) -> pd.Series:
+    """Integer rank within each board by `strengths` (best first); null for teams without one."""
+    out = pd.Series(pd.array([pd.NA] * len(table), dtype="Int64"), index=table.index)
+    if strengths is None or len(strengths) == 0:
+        return out
+    for _, idx in table.groupby("division", dropna=False).groups.items():
+        teams = table.loc[idx, "team"]
+        have = [(t, strengths[t]) for t in teams if t in strengths.index and pd.notna(strengths[t])]
+        have.sort(key=lambda x: -x[1])
+        ranks = {t: r for r, (t, _) in enumerate(have, start=1)}
+        out.loc[idx] = teams.map(ranks).astype("Int64")
+    return out
+
+
+def _fit_strengths(current, prior, week, fit_kw, **override):
+    """Ratings from fit_with_prior with the headline's divisions / model, or None on failure."""
+    try:
+        strengths, _, _ = core.fit_with_prior(current, prior, week, **{**fit_kw, **override})
+        return strengths
+    except Exception:
+        return None
+
+
+def attach_boards(table: pd.DataFrame, current: pd.DataFrame, prior: pd.DataFrame | None,
+                  week: int, fit_kw: dict, forecast_w0: float, forecast_tau: float) -> pd.DataFrame:
+    """Add season_rank, forecast_rank and resume_rank (results_rank is added by `attach`).
+
+    Never fatal: a fit that fails leaves its column null.
+    """
+    out = table.copy()
+    has_current = current is not None and not current.empty
+
+    season = _fit_strengths(current, None, week, fit_kw) if has_current else None
+    out["season_rank"] = rank_by(out, season)
+
+    forecast = _fit_strengths(current, prior, week, fit_kw, w0=forecast_w0, tau=forecast_tau)
+    out["forecast_rank"] = rank_by(out, forecast)
+
+    resume = pd.Series(dtype=float)
+    if has_current and "sor" in out.columns:
+        played = set(current["home_team_name"]) | set(current["away_team_name"])
+        sor = out.loc[out["team"].isin(played), ["team", "sor"]].dropna()
+        resume = pd.Series(sor["sor"].to_numpy(dtype=float), index=sor["team"].to_numpy())
+    resume_rank = pd.Series(pd.array([pd.NA] * len(out), dtype="Int64"), index=out.index)
+    for _, idx in out.groupby("division", dropna=False).groups.items():
+        teams = out.loc[idx, "team"]
+        scores = teams.map(resume)
+        resume_rank.loc[idx] = scores.rank(ascending=False, method="min").astype("Int64")
+    out["resume_rank"] = resume_rank
+    return out
+
+
+BOARD_COLUMNS = ("results_rank", "season_rank", "forecast_rank", "resume_rank")
