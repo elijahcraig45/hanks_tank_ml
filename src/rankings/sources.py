@@ -84,6 +84,9 @@ class SportSpec:
     margin_cap: float | None = None
     margin_scale: float = 10.0
     blend: float = 0.5
+    # Also publish the results-only order (rankings.results) beside the rating. Football
+    # only so far: it was measured on college seasons, and has not been for the others.
+    results_board: bool = False
 
     def model_kw(self) -> dict:
         return {
@@ -98,15 +101,25 @@ SPORTS: dict[str, SportSpec] = {
         key="cfb", label="College Football",
         dataset_env="CFB_DATASET", default_dataset="cfb_season",
         major_division="fbs", board_divisions=("fbs", "fcs"),
-        # EXPERIMENT (branch fix/power-rankings, not deployed). Scoring-margin ridge,
-        # chosen by rankings.evaluate on 2017-19+2021 and scored frozen on 2022-2025
-        # (6,317 D1-vs-D1 games): log loss 0.5447 -> 0.5090, -0.036 [95% CI -0.043,
-        # -0.028], better in all four seasons; FBS-vs-FBS 0.584 -> 0.546. Accuracy
-        # 71.0% -> 73.6%. Last season now enters at 0.25 per game decaying with
-        # tau=16 (0.22 at week 2), against the W/L fit's 1.0/tau=8 (0.78). The W/L
-        # constants are kept for model="bt" (re-tuning them gains 0.004).
-        ridge_C=2.0, prior_w0=0.25, prior_tau=16.0, season_weeks=16,
+        # Scoring-margin ridge, chosen by rankings.evaluate on 2017-19+2021 and scored
+        # frozen on 2022-2025 (6,317 D1-vs-D1 games): log loss 0.5447 -> 0.5090, -0.036
+        # [95% CI -0.043, -0.028], better in all four seasons; FBS-vs-FBS 0.584 -> 0.546.
+        # Accuracy 71.0% -> 73.6%. The W/L fit's 1.0/tau=8 constants are kept for
+        # model="bt" (re-tuning them gains 0.004).
+        #
+        # Last season enters at 0.12 per game with tau=8 (0.11 at week 2, 0.06 at week 8).
+        # That is a CHOICE, not the argmin: the measured optimum is 0.25/tau=16, but the
+        # surface is flat. Over 2022-2025 (4,300 games, boards as of weeks 4-6) halving it
+        # and decaying twice as fast costs 0.5 points of next-three-weeks accuracy (70.7%
+        # -> 70.2%, inside the noise; halving alone costs 0.002 of week-5 log loss), and
+        # makes the board read as this season's form sooner. Dropping last season
+        # entirely is not free: week-5 log loss 0.555 against 0.528, catching up only
+        # around week 10. Turnover data (CFBD returning production and talent) predicts
+        # how far a team's rating moves year to year but added nothing to game prediction
+        # on top of last season's games, in three designs, so it is not used.
+        ridge_C=2.0, prior_w0=0.12, prior_tau=8.0, season_weeks=16,
         model="margin", margin_alpha=0.3, margin_cap=None, margin_scale=10.62,
+        results_board=True,
     ),
     "nfl": SportSpec(
         key="nfl", label="NFL",
