@@ -25,6 +25,9 @@ SELECT sport, target,
   MAX(IF(field = 'tier_medium',    value, NULL)) AS tier_medium,
   MAX(IF(field = 'banner',         value, NULL)) AS banner,
   MAX(IF(field = 'banner_level',   value, NULL)) AS banner_level,
+  -- Which power-rankings columns the site draws (sport-wide row, target '*'): ordered comma lists, or 'none'. NULL = today's behaviour.
+  MAX(IF(field = 'rankings_show',  value, NULL)) AS rankings_show,
+  MAX(IF(field = 'rankings_media', value, NULL)) AS rankings_media,
   MAX(event_ts) AS updated_at
 FROM latest
 GROUP BY sport, target;
