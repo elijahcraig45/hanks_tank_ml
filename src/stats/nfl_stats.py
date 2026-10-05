@@ -85,7 +85,11 @@ def fetch_player_stats(season: int, refresh: bool = False) -> pd.DataFrame:
             else:
                 raise
 
-    df = pd.read_csv(cached, low_memory=False)
+    # The *_list columns (fg_made_list, fg_blocked_list, gwfg_distance_list...) hold semicolon-joined distances ("51;43;41") and are STRING in BigQuery. A column whose
+    # every value happens to be a single number ("23") is read as float64 by pandas, which the load cannot convert to a STRING column: it failed the whole weekly refresh in
+    # September 2026. Read them as text, whatever they look like this week.
+    header = pd.read_csv(cached, nrows=0).columns
+    df = pd.read_csv(cached, low_memory=False, dtype={c: str for c in header if c.endswith("_list")})
     df["season"] = season
     logger.info("NFL player stats %d: %d players, %d columns",
                 season, len(df), len(df.columns))

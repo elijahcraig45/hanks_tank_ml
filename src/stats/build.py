@@ -123,6 +123,65 @@ def build(sport: str, season: int,
 TABLE_LAYOUT: dict[str, dict] = {}
 
 
+_DDL_TYPES = {"STRING": "STRING", "FLOAT": "FLOAT64", "FLOAT64": "FLOAT64", "INTEGER": "INT64", "INT64": "INT64", "BOOLEAN": "BOOL", "BOOL": "BOOL",
+              "TIMESTAMP": "TIMESTAMP", "DATE": "DATE", "DATETIME": "DATETIME", "TIME": "TIME", "NUMERIC": "NUMERIC", "BIGNUMERIC": "BIGNUMERIC", "BYTES": "BYTES"}
+
+
+def _load_config(bigquery, layout: dict | None = None):
+    cfg = bigquery.LoadJobConfig(
+        write_disposition="WRITE_APPEND",
+        # Without this, the first append that carries a new column is rejected.
+        # These tables do gain columns: the feeds widen, and a pivoted player table
+        # gains one per new (category, statType) pair the source starts publishing.
+        schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
+    )
+    layout = layout or {}
+    if layout.get("partition"):
+        cfg.time_partitioning = bigquery.TimePartitioning(field=layout["partition"])
+    if layout.get("cluster"):
+        cfg.clustering_fields = layout["cluster"]
+    return cfg
+
+
+def _replace_season(client, bigquery, table_id: str, df: pd.DataFrame, season: int, layout: dict | None = None) -> None:
+    """Replace one season's rows so that a failure anywhere leaves the table exactly as it was.
+
+    This used to DELETE the season and then load the new rows. A load that failed (a pandas dtype BigQuery would not convert, in September 2026) had already deleted the
+    season, and the site served an empty player table for weeks. Now the new rows are loaded into a scratch copy of the table first (same schema, same load options, so any
+    conversion or load error happens BEFORE the target is touched), and the swap is one transaction: if the INSERT fails, the DELETE is rolled back.
+    """
+    from google.api_core.exceptions import NotFound
+
+    try:
+        target = client.get_table(table_id)
+    except NotFound:
+        # First load: there is nothing to protect, and this is the only time a table's partitioning and clustering can be chosen.
+        client.load_table_from_dataframe(df, table_id, job_config=_load_config(bigquery, layout)).result()
+        return
+
+    stage_id = f"{table_id}__stage"
+    try:
+        client.query(f"CREATE OR REPLACE TABLE `{stage_id}` LIKE `{table_id}` "
+                     f"OPTIONS (expiration_timestamp = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 1 DAY))").result()
+        client.load_table_from_dataframe(df, stage_id, job_config=_load_config(bigquery)).result()
+        stage = client.get_table(stage_id)
+        have = {f.name for f in target.schema}
+        for f in stage.schema:  # a column the feed added: add it to the target first (DDL cannot run inside the transaction)
+            if f.name not in have:
+                client.query(f"ALTER TABLE `{table_id}` ADD COLUMN IF NOT EXISTS `{f.name}` {_DDL_TYPES.get(f.field_type, 'STRING')}").result()
+        cols = ", ".join(f"`{f.name}`" for f in stage.schema)
+        client.query(
+            "BEGIN TRANSACTION;\n"
+            f"DELETE FROM `{table_id}` WHERE season = {int(season)};\n"
+            f"INSERT INTO `{table_id}` ({cols}) SELECT {cols} FROM `{stage_id}`;\n"
+            "COMMIT TRANSACTION;").result()
+    finally:
+        try:
+            client.delete_table(stage_id, not_found_ok=True)
+        except Exception as exc:  # noqa: BLE001  the scratch table expires on its own after a day
+            logger.info("%s: could not drop the scratch table (%s)", stage_id, str(exc)[:120])
+
+
 def write_bq(sport: str, season: int, tables: dict[str, pd.DataFrame]) -> list[dict]:
     from google.cloud import bigquery
 
@@ -136,34 +195,7 @@ def write_bq(sport: str, season: int, tables: dict[str, pd.DataFrame]) -> list[d
         if df.empty:
             continue
         table_id = f"{project}.{dataset}.{name}"
-        # Replace this season's slice so re-runs are idempotent.
-        try:
-            client.query(
-                f"DELETE FROM `{table_id}` WHERE season = {season}"
-            ).result()
-        except Exception as exc:
-            # Expected on a first load: the table does not exist yet. Logged rather
-            # than swallowed, because every other cause looks identical from here.
-            logger.info("%s: pre-delete skipped (%s)", table_id, str(exc)[:120])
-
-        cfg = bigquery.LoadJobConfig(
-            write_disposition="WRITE_APPEND",
-            # Without this, the first append that carries a new column is rejected.
-            # These tables do gain columns: the feeds widen, and a pivoted player table
-            # gains one per new (category, statType) pair the source starts publishing.
-            schema_update_options=[
-                bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
-            ],
-        )
-        layout = TABLE_LAYOUT.get(name, {})
-        if layout.get("partition"):
-            cfg.time_partitioning = bigquery.TimePartitioning(
-                field=layout["partition"]
-            )
-        if layout.get("cluster"):
-            cfg.clustering_fields = layout["cluster"]
-
-        client.load_table_from_dataframe(df, table_id, job_config=cfg).result()
+        _replace_season(client, bigquery, table_id, df, season, TABLE_LAYOUT.get(name))
         out.append({"table": table_id, "rows": len(df)})
     return out
 
