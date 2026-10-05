@@ -143,6 +143,31 @@ def _load_config(bigquery, layout: dict | None = None):
     return cfg
 
 
+def _has_fraction(col: pd.Series) -> bool:
+    """True if a numeric column holds a value that is not a whole number (an integer column cannot store it)."""
+    if not pd.api.types.is_float_dtype(col):
+        return False
+    vals = col.dropna()
+    return bool(len(vals) and (vals % 1 != 0).any())
+
+
+def _widen_integer_columns(client, target, table_id: str, df: pd.DataFrame) -> list[str]:
+    """Widen INTEGER columns to FLOAT64 where the feed now sends fractions.
+
+    These tables are created by the first load, which types a column from that week's values: a percentage that happened to be 100.0 for every team became INT64 in
+    BigQuery, and the first week it was 71.43 the load failed with 'Float value 71.428570 was truncated converting to int64' (CFB team stats, 2026-10-05). INT64 -> FLOAT64
+    loses nothing below 2^53 and is the only direction the data can ever need, so it is done here, before the scratch copy is made from the target.
+    """
+    widened = []
+    for f in target.schema:
+        if f.field_type in ("INTEGER", "INT64") and f.name in df.columns and _has_fraction(df[f.name]):
+            client.query(f"ALTER TABLE `{table_id}` ALTER COLUMN `{f.name}` SET DATA TYPE FLOAT64").result()
+            widened.append(f.name)
+    if widened:
+        logger.warning("%s: widened %d INT64 column(s) to FLOAT64 for fractional values: %s", table_id, len(widened), ", ".join(widened))
+    return widened
+
+
 def _replace_season(client, bigquery, table_id: str, df: pd.DataFrame, season: int, layout: dict | None = None) -> None:
     """Replace one season's rows so that a failure anywhere leaves the table exactly as it was.
 
@@ -161,6 +186,8 @@ def _replace_season(client, bigquery, table_id: str, df: pd.DataFrame, season: i
 
     stage_id = f"{table_id}__stage"
     try:
+        if _widen_integer_columns(client, target, table_id, df):
+            target = client.get_table(table_id)  # the schema changed: the scratch copy and the column comparison below must see the new one
         client.query(f"CREATE OR REPLACE TABLE `{stage_id}` LIKE `{table_id}` "
                      f"OPTIONS (expiration_timestamp = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 1 DAY))").result()
         client.load_table_from_dataframe(df, stage_id, job_config=_load_config(bigquery)).result()
