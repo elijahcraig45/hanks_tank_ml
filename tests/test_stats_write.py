@@ -36,9 +36,9 @@ class Job:
 
 
 class FakeClient:
-    def __init__(self, exists=True, target_cols=("player_id", "season"), stage_cols=None, fail_load=None, fail_script=None):
+    def __init__(self, exists=True, target_cols=("player_id", "season"), stage_cols=None, fail_load=None, fail_script=None, types=None):
         self.log, self.exists, self.fail_load, self.fail_script = [], exists, fail_load, fail_script
-        self.target_cols = [Field(c) for c in target_cols]
+        self.target_cols = [Field(c, (types or {}).get(c, "STRING")) for c in target_cols]
         self.stage_cols = [Field(c) for c in (stage_cols or target_cols)]
 
     def get_table(self, table_id):
@@ -175,3 +175,45 @@ def test_a_column_with_no_values_at_all_is_still_text_not_float(tmp_path, monkey
     (tmp_path / "nfl_player_stats_2026.csv").write_text("player_id,fg_blocked_list\na,\nb,\n")
     df = nfl_stats.fetch_player_stats(2026)
     assert df["fg_blocked_list"].isna().all() and df["fg_blocked_list"].dtype == object
+
+
+# ----------------------------------------------------------------------------------------------------------------------- integer columns that get fractions
+def widen_run(df, types, cols=("team", "pct")):
+    c = FakeClient(target_cols=cols, types=types)
+    build._replace_season(c, FakeBigQuery, TARGET, df, 2026)
+    return c
+
+
+def test_an_integer_column_that_receives_a_fraction_is_widened_before_the_scratch_copy_is_made():
+    # CFB team stats, 2026-10-05: 'Float value 71.428570 was truncated converting to int64'
+    df = pd.DataFrame({"team": ["a", "b"], "pct": [71.42857, 100.0]})
+    c = widen_run(df, {"pct": "INTEGER", "team": "STRING"})
+    sql = c.sql()
+    alter = next(i for i, s in enumerate(sql) if "ALTER COLUMN `pct` SET DATA TYPE FLOAT64" in s)
+    create = next(i for i, s in enumerate(sql) if s.startswith("CREATE OR REPLACE TABLE"))
+    assert alter < create                                                       # the scratch copy is cloned from the widened schema
+    assert any("BEGIN TRANSACTION" in s for s in sql)                           # and the swap went ahead
+
+
+def test_whole_numbers_in_a_float_column_do_not_touch_an_integer_column():
+    df = pd.DataFrame({"team": ["a", "b"], "pct": [100.0, 50.0], "n": [1.0, 2.0]})   # pandas holds ints with a gap as float64: still whole numbers
+    c = widen_run(df, {"pct": "INTEGER", "n": "INT64"}, cols=("team", "pct", "n"))
+    assert not any("ALTER COLUMN" in s for s in c.sql())
+
+
+def test_a_float_column_is_left_alone_and_only_integer_columns_are_ever_widened():
+    df = pd.DataFrame({"team": ["a"], "pct": [71.4], "name": ["x"]})
+    c = widen_run(df, {"pct": "FLOAT", "name": "STRING"}, cols=("team", "pct", "name"))
+    assert not any("ALTER COLUMN" in s for s in c.sql())
+
+
+def test_a_missing_value_does_not_count_as_a_fraction():
+    df = pd.DataFrame({"team": ["a", "b"], "pct": [float("nan"), 80.0]})
+    assert not any("ALTER COLUMN" in s for s in widen_run(df, {"pct": "INTEGER"}).sql())
+
+
+def test_only_the_columns_with_fractions_are_widened():
+    df = pd.DataFrame({"team": ["a", "b"], "pct": [71.4, 80.0], "wins": [3.0, 4.0]})
+    c = widen_run(df, {"pct": "INTEGER", "wins": "INTEGER"}, cols=("team", "pct", "wins"))
+    alters = [s for s in c.sql() if "ALTER COLUMN" in s]
+    assert len(alters) == 1 and "`pct`" in alters[0]
