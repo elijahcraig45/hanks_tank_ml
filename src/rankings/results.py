@@ -194,9 +194,10 @@ def attach_boards(table: pd.DataFrame, current: pd.DataFrame, prior: pd.DataFram
 
     try:
         strengths, home_adv = resume.opponent_ratings(current, prior, week, fit_kw) if has_current else (None, 0.0)
-        out["resume_rank"] = resume.rank_resume(out, current, strengths, home_adv,
-                                                 margin_scale=fit_kw.get("margin_scale", 10.62))
-    except Exception:  # never fatal: the column stays null
+        cols = resume.resume_table(out, current, strengths, home_adv, margin_scale=fit_kw.get("margin_scale", 10.62))
+        for c in resume.RESUME_COLUMNS:
+            out[c] = cols[c]
+    except Exception:  # never fatal: the columns stay null
         out["resume_rank"] = pd.array([pd.NA] * len(out), dtype="Int64")
     return out
 
