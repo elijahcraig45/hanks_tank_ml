@@ -65,21 +65,15 @@ def _expected_score(mu: float, sg: float, lam: float) -> tuple[float, float]:
     return e, float((_GH_W * c * c).sum()) - e * e
 
 
-def record_scores(current: pd.DataFrame, strengths: pd.Series, home_adv: float, benchmark: float = 0.0,
-                  lam: float = 0.0, margin_scale: float = 10.62) -> tuple[dict[str, float], dict[str, float]]:
-    """(strength of record, its variance) per team, from `strengths` of the opponents.
+def iter_credits(current: pd.DataFrame, strengths: pd.Series, home_adv: float, benchmark: float = 0.0,
+                 lam: float = 0.0, margin_scale: float = 10.62):
+    """Yield (team, opponent, game row, credit, variance) once per team per game.
 
     A game's credit is its score minus the score a team rated `benchmark` would expect against the same opponent at
     the same venue. With `lam` = 0 the score is the win (1 or 0) and the expectation is the win probability, so this is
     wins minus expected wins. With lam > 0 a bounded margin credit joins it (a game without scores counts as a win/loss).
-
-    A benchmark of 0 is an average team, which beats most opponents, so a long run of wins over weak teams still scores
-    well. A benchmark near the top of the division (see `top_benchmark`) is the usual resume yardstick: beating a weak
-    team earns almost nothing, beating a strong one a lot, and losing to a weak one costs a lot.
     """
     sg = margin_scale * np.pi / np.sqrt(3.0)       # game-margin sd implied by the logistic scale
-    sor: dict[str, float] = {}
-    var: dict[str, float] = {}
     has_margin = "margin" in current.columns
     for g in current.itertuples(index=False):
         m = getattr(g, "margin", np.nan) if has_margin else np.nan
@@ -92,14 +86,26 @@ def record_scores(current: pd.DataFrame, strengths: pd.Series, home_adv: float, 
             venue = 0.0 if g.neutral_site else (home_adv if is_home else -home_adv)
             if lam <= 0 or pd.isna(m):
                 p = core.win_prob(benchmark + venue, float(strengths[opp]))
-                sor[team] = sor.get(team, 0.0) + float(won) - p
-                var[team] = var.get(team, 0.0) + p * (1.0 - p)
+                yield team, opp, g, float(won) - p, p * (1.0 - p)
                 continue
             mu = (benchmark + venue - float(strengths[opp])) / core.ELO_SCALE * margin_scale
             e, v = _expected_score(mu, sg, lam)
-            actual = float(_game_score(m if is_home else -m, lam))
-            sor[team] = sor.get(team, 0.0) + actual - e
-            var[team] = var.get(team, 0.0) + v
+            yield team, opp, g, float(_game_score(m if is_home else -m, lam)) - e, v
+
+
+def record_scores(current: pd.DataFrame, strengths: pd.Series, home_adv: float, benchmark: float = 0.0,
+                  lam: float = 0.0, margin_scale: float = 10.62) -> tuple[dict[str, float], dict[str, float]]:
+    """(strength of record, its variance) per team: the sum of `iter_credits` over its games.
+
+    A benchmark of 0 is an average team, which beats most opponents, so a long run of wins over weak teams still scores
+    well. A benchmark near the top of the division (see `top_benchmark`) is the usual resume yardstick: beating a weak
+    team earns almost nothing, beating a strong one a lot, and losing to a weak one costs a lot.
+    """
+    sor: dict[str, float] = {}
+    var: dict[str, float] = {}
+    for team, _, _, credit, v in iter_credits(current, strengths, home_adv, benchmark, lam, margin_scale):
+        sor[team] = sor.get(team, 0.0) + credit
+        var[team] = var.get(team, 0.0) + v
     return sor, var
 
 
@@ -175,18 +181,96 @@ def opponent_ratings(current: pd.DataFrame, prior: pd.DataFrame | None, week: in
         return pd.Series(0.0, index=teams), 0.0
 
 
-def rank_resume(table: pd.DataFrame, current: pd.DataFrame, strengths: pd.Series, home_adv: float,
-                z: float = Z, lam: float = LAM, margin_scale: float = 10.62) -> pd.Series:
-    """Integer `resume_rank` within each division of `table` (null where the team has no game this season)."""
-    out = pd.Series(pd.array([pd.NA] * len(table), dtype="Int64"), index=table.index)
-    if current is None or current.empty:
+RESUME_COLUMNS = ("resume_rank", "resume_sor", "resume_sd", "resume_tie_lo", "resume_tie_hi",
+                  "resume_summary", "resume_games_json")
+TEXT_COLUMNS = ("resume_summary", "resume_games_json")
+
+
+def _num(x):
+    return None if x is None or (isinstance(x, float) and np.isnan(x)) else float(x)
+
+
+def _game_line(team: str, opp: str, g, credit: float, rank_of: dict[str, int]) -> dict:
+    home = g.home_team_name == team
+    pf, pa = (g.home_score, g.away_score) if home else (g.away_score, g.home_score)
+    won = bool(g.home_won) == home
+    return {"opp": opp, "opp_rank": rank_of.get(opp), "date": str(pd.Timestamp(g.game_date).date()),
+            "site": "N" if g.neutral_site else ("H" if home else "A"), "won": won,
+            "pf": _num(pf), "pa": _num(pa), "credit": round(float(credit), 2)}
+
+
+def _phrase(line: dict) -> str:
+    verb = ("won" if line["won"] else "lost")
+    prep = {"A": "at", "H": "vs", "N": "vs"}[line["site"]] if line["won"] else {"A": "at", "H": "to", "N": "to"}[line["site"]]
+    rank = f" (#{line['opp_rank']})" if line["opp_rank"] else ""
+    return f"{verb} {prep} {line['opp']}{rank}, {line['credit']:+.2f}"
+
+
+def summary_line(lines: list[dict], sor: float, lo: int, hi: int) -> str:
+    wins = sum(1 for x in lines if x["won"])
+    tie = f", tied with #{lo}\u2013#{hi}" if hi > lo else ""
+    out = f"{wins}-{len(lines) - wins}, strength of record {sor:+.2f}{tie}."
+    if lines:
+        out += f" Best result: {_phrase(max(lines, key=lambda x: x['credit']))}."
+    if len(lines) > 1:
+        out += f" Weakest: {_phrase(min(lines, key=lambda x: x['credit']))}."
+    return out
+
+
+def resume_table(table: pd.DataFrame, current: pd.DataFrame, strengths: pd.Series | None, home_adv: float,
+                 z: float = Z, lam: float = LAM, margin_scale: float = 10.62) -> pd.DataFrame:
+    """Every resume column for `table`'s rows, index-aligned; all null where there is no resume to grade.
+
+    resume_rank / resume_sor / resume_sd: the order, strength of record and its noise. resume_tie_lo..hi: the best and
+    worst rank among the teams this one's record is tied with (itself included), so the site can say "tied with
+    #3-#7". resume_summary: one line; resume_games_json: per-game results and credits.
+    """
+    import json
+
+    out = pd.DataFrame(index=table.index)
+    out["resume_rank"] = pd.array([pd.NA] * len(table), dtype="Int64")
+    out["resume_sor"] = np.nan
+    out["resume_sd"] = np.nan
+    out["resume_tie_lo"] = pd.array([pd.NA] * len(table), dtype="Int64")
+    out["resume_tie_hi"] = pd.array([pd.NA] * len(table), dtype="Int64")
+    out["resume_summary"] = pd.Series([None] * len(table), index=table.index, dtype="object")
+    out["resume_games_json"] = pd.Series([None] * len(table), index=table.index, dtype="object")
+    if current is None or current.empty or strengths is None:
         return out
+    played = set(current["home_team_name"]) | set(current["away_team_name"])
     for _, idx in table.groupby("division", dropna=False).groups.items():
-        played = set(current["home_team_name"]) | set(current["away_team_name"])
         teams = [t for t in table.loc[idx, "team"] if t in played]
         if not teams:
             continue
-        sor, var = record_scores(current, strengths, home_adv, top_benchmark(strengths, teams, BENCH_N), lam, margin_scale)
-        ranks = {t: r for r, t in enumerate(order_division([t for t in teams if t in sor], current, sor, var, z), start=1)}
-        out.loc[idx] = table.loc[idx, "team"].map(ranks).astype("Int64")
+        bench = top_benchmark(strengths, teams, BENCH_N)
+        sor: dict[str, float] = {}
+        var: dict[str, float] = {}
+        credits: dict[str, list] = {}
+        for team, opp, g, credit, v in iter_credits(current, strengths, home_adv, bench, lam, margin_scale):
+            if team not in teams:
+                continue
+            sor[team] = sor.get(team, 0.0) + credit
+            var[team] = var.get(team, 0.0) + v
+            credits.setdefault(team, []).append((opp, g, credit))
+        teams = [t for t in teams if t in sor]
+        order = order_division(teams, current, sor, var, z)
+        rank = {t: r for r, t in enumerate(order, start=1)}
+        for team in teams:
+            ties = [rank[u] for u in teams if u == team or tied(team, u, sor, var, z)]
+            lines = [_game_line(team, opp, g, c, rank) for opp, g, c in sorted(credits[team], key=lambda x: x[1].game_date)]
+            lo, hi = min(ties), max(ties)
+            row = table.index[(table["team"] == team) & table.index.isin(idx)][0]
+            out.loc[row, "resume_rank"] = rank[team]
+            out.loc[row, "resume_sor"] = round(sor[team], 2)
+            out.loc[row, "resume_sd"] = round(float(np.sqrt(var[team])), 2)
+            out.loc[row, "resume_tie_lo"] = lo
+            out.loc[row, "resume_tie_hi"] = hi
+            out.loc[row, "resume_summary"] = summary_line(lines, sor[team], lo, hi)
+            out.loc[row, "resume_games_json"] = json.dumps(lines)
     return out
+
+
+def rank_resume(table: pd.DataFrame, current: pd.DataFrame, strengths: pd.Series | None, home_adv: float,
+                z: float = Z, lam: float = LAM, margin_scale: float = 10.62) -> pd.Series:
+    """Integer `resume_rank` within each division of `table` (null where the team has no game this season)."""
+    return resume_table(table, current, strengths, home_adv, z, lam, margin_scale)["resume_rank"]

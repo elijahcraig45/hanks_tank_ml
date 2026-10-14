@@ -154,3 +154,53 @@ class TestRank(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResumeTable(unittest.TestCase):
+    def build(self):
+        g = games(("A", "B", 1), ("A", "C", 1), ("B", "C", 1), ("A", "D", 0), ("B", "D", 1), ("C", "D", 1))
+        g["home_score"], g["away_score"] = 30.0, 10.0
+        t = pd.DataFrame({"team": ["A", "B", "C", "D", "Idle"], "division": "fbs"})
+        st = pd.Series({"A": 300.0, "B": 200.0, "C": 100.0, "D": 0.0})
+        return t, g, resume.resume_table(t, g, st, 0.0, z=0.5)
+
+    def test_every_column_is_present_and_idle_teams_are_null(self):
+        _, _, r = self.build()
+        self.assertEqual(list(r.columns), list(resume.RESUME_COLUMNS))
+        idle = r.iloc[4]
+        self.assertTrue(all(pd.isna(idle[c]) for c in resume.RESUME_COLUMNS))
+
+    def test_rank_sor_and_tie_range_are_consistent(self):
+        _, _, r = self.build()
+        played = r.iloc[:4]
+        self.assertEqual(sorted(played["resume_rank"].astype(int)), [1, 2, 3, 4])
+        self.assertTrue((played["resume_tie_lo"] <= played["resume_rank"]).all())
+        self.assertTrue((played["resume_tie_hi"] >= played["resume_rank"]).all())
+        self.assertTrue((played["resume_sd"] > 0).all())
+
+    def test_games_json_has_each_game_with_its_credit_and_opponent_rank(self):
+        import json
+        _, _, r = self.build()
+        lines = json.loads(r.iloc[0]["resume_games_json"])      # team A: three home games
+        self.assertEqual(len(lines), 3)
+        self.assertEqual({x["opp"] for x in lines}, {"B", "C", "D"})
+        self.assertTrue(all({"opp", "opp_rank", "date", "site", "won", "pf", "pa", "credit"} <= set(x) for x in lines))
+        self.assertAlmostEqual(sum(x["credit"] for x in lines), r.iloc[0]["resume_sor"], places=1)
+
+    def test_summary_names_the_best_and_weakest_result(self):
+        _, _, r = self.build()
+        text = r.iloc[0]["resume_summary"]
+        self.assertIn("2-1", text)
+        self.assertIn("Best result: won", text)
+        self.assertIn("Weakest: lost to D", text)
+
+    def test_rank_resume_is_the_rank_column(self):
+        t, g, r = self.build()
+        st = pd.Series({"A": 300.0, "B": 200.0, "C": 100.0, "D": 0.0})
+        self.assertEqual(list(resume.rank_resume(t, g, st, 0.0, z=0.5)), list(r["resume_rank"]))
+
+    def test_no_games_or_no_ratings_gives_all_null(self):
+        t = pd.DataFrame({"team": ["A"], "division": "fbs"})
+        for cur, st in ((games(), pd.Series({"A": 0.0})), (None, None)):
+            r = resume.resume_table(t, cur, st, 0.0)
+            self.assertTrue(r.isna().all().all())

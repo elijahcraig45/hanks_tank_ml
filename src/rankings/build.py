@@ -22,7 +22,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rankings import context, core, explain, fpi, results, sources  # noqa: E402
+from rankings import context, core, explain, fpi, resume, results, sources  # noqa: E402
 from rankings.sources import SPORTS  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -372,7 +372,7 @@ def print_board(table: pd.DataFrame, meta: dict, top: int = 25) -> None:
 # in BigQuery as FLOAT, and the load fails outright because FLOAT cannot be a
 # clustering field.
 TEXT_COLUMNS = ("team", "division", "record", "conference", "division_name", "model",
-                *explain.TEXT_COLUMNS)
+                *explain.TEXT_COLUMNS, *resume.TEXT_COLUMNS)
 
 
 def write_bq(table: pd.DataFrame, meta: dict) -> dict:
