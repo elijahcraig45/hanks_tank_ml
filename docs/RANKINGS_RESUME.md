@@ -9,9 +9,11 @@ from this season's games alone, no scores.
    in at the headline's decaying weight. A win/loss-only fit of five or six games cannot tell a weak conference from a
    strong one (first version: USC 6-1 #2, James Madison 6-0 #4 on soft schedules).
 2. Strength of record: for each game, its score minus the score a typical TOP-25 team (mean rating of the division's best
-   25) would expect against that opponent at that venue. The score is `(1-LAM)*win + LAM*Phi(margin/SIGMA)` with LAM=0.5,
+   25) would expect against that opponent at that venue. The score is `(1-LAM)*win + LAM*Phi(margin/SIGMA)` with LAM=0.75,
    SIGMA=14 points: a bounded margin credit, so a blowout counts more than a narrow win but never outweighs the result.
-   Games without scores count as wins/losses. Variance comes from the same expectation.
+   A win never scores below zero and a loss never above it (`FLOOR`): without that, a narrow win over a decent team could fall
+   just under what a top-25 team would have done and show as a small negative. Games without scores count as wins/losses.
+   Variance comes from the same expectation.
 3. Head-to-head: start from strength of record and let played games reorder two teams only when those two are TIED (gap
    under Z=0.5 standard deviations of the difference). A team is never moved past one whose record is clearly different.
    Every move strictly reduces the number of contradicted games.
@@ -47,3 +49,17 @@ what reads as wrong.
 ## Other caveats
 - ESPN returned 502 for some postseason weeks during the backtest (same data for every board).
 - Experiments: `mllab` scratch scripts `cfb_resume_exp.py` (results kept on the homelab under `work/resumeexp`).
+
+## Final choice of margin weight and floor (2026-10-14)
+
+`LAM = 0.75` and `FLOOR = True`, chosen by a rule fixed before the run (docs/RESUME_V2_REPORT.md section 7.5) and measured on
+the production code against the previously live board (0.5, no floor), paired block bootstrap, eval = 2022-25:
+
+| | next-3-weeks accuracy | top-25 contradictions | reliability | persistence skill |
+|---|---|---|---|---|
+| tune | +0.35 pts [-0.15,+0.86] | +1.63 pts [-0.31,+3.62] | -0.00 | -0.008 |
+| eval | **+1.03 pts [+0.50,+1.53]** | +1.11 pts [-0.50,+2.75] | -0.02 | -0.001 |
+
+All four tolerances held. The floor alone (at 0.5) costs 0.02-0.03 of reliability and nothing else; at 0.75 the margin weight
+recovers it. The unfloored 0.75 is a little more reliable (+0.04) but can score a win negative. More margin weight means
+margin counts for more relative to the result; 0.5 remains available as a one-line change if that is not wanted.

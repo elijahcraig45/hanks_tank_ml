@@ -28,8 +28,12 @@ from scipy.stats import norm
 from rankings import core
 
 # Each game scores (1-LAM)*win + LAM*Phi(margin/SIGMA): a bounded margin credit, so a 40-point win counts more than a
-# 3-point win but cannot run away. SIGMA is about two touchdowns. LAM=0 is a pure win/loss resume.
-LAM = 0.5
+# 3-point win but cannot run away. SIGMA is about two touchdowns. LAM=0 is a pure win/loss resume. 0.75 was chosen over 0.5
+# by a pre-registered rule (docs/RESUME_V2_REPORT.md, round 3): +1.0 points of next-game accuracy on the frozen seasons
+# (CI +0.5..+1.5) with reliability and coherence within the stated tolerances.
+LAM = 0.75
+# A win never scores below zero and a loss never above it (round 3 measured the cost: about 0.02-0.04 of reliability).
+FLOOR = True
 SIGMA = 14.0
 
 # Opponents are rated by the headline fit with this much weight on the win/loss likelihood (rest: margins).
@@ -66,12 +70,15 @@ def _expected_score(mu: float, sg: float, lam: float) -> tuple[float, float]:
 
 
 def iter_credits(current: pd.DataFrame, strengths: pd.Series, home_adv: float, benchmark: float = 0.0,
-                 lam: float = 0.0, margin_scale: float = 10.62):
+                 lam: float = 0.0, margin_scale: float = 10.62, floor: bool = False):
     """Yield (team, opponent, game row, credit, variance) once per team per game.
 
     A game's credit is its score minus the score a team rated `benchmark` would expect against the same opponent at
     the same venue. With `lam` = 0 the score is the win (1 or 0) and the expectation is the win probability, so this is
     wins minus expected wins. With lam > 0 a bounded margin credit joins it (a game without scores counts as a win/loss).
+
+    `floor`: a win never scores below zero and a loss never above it. Without it a narrow win over a decent team can fall
+    below what a top-25 team would have done and score slightly negative, which reads as a bug (docs/RESUME_V2_REPORT.md).
     """
     sg = margin_scale * np.pi / np.sqrt(3.0)       # game-margin sd implied by the logistic scale
     has_margin = "margin" in current.columns
@@ -90,11 +97,15 @@ def iter_credits(current: pd.DataFrame, strengths: pd.Series, home_adv: float, b
                 continue
             mu = (benchmark + venue - float(strengths[opp])) / core.ELO_SCALE * margin_scale
             e, v = _expected_score(mu, sg, lam)
-            yield team, opp, g, float(_game_score(m if is_home else -m, lam)) - e, v
+            credit = float(_game_score(m if is_home else -m, lam)) - e
+            if floor:
+                credit = max(credit, 0.0) if won else min(credit, 0.0)
+            yield team, opp, g, credit, v
 
 
 def record_scores(current: pd.DataFrame, strengths: pd.Series, home_adv: float, benchmark: float = 0.0,
-                  lam: float = 0.0, margin_scale: float = 10.62) -> tuple[dict[str, float], dict[str, float]]:
+                  lam: float = 0.0, margin_scale: float = 10.62, floor: bool = False
+                  ) -> tuple[dict[str, float], dict[str, float]]:
     """(strength of record, its variance) per team: the sum of `iter_credits` over its games.
 
     A benchmark of 0 is an average team, which beats most opponents, so a long run of wins over weak teams still scores
@@ -103,7 +114,7 @@ def record_scores(current: pd.DataFrame, strengths: pd.Series, home_adv: float, 
     """
     sor: dict[str, float] = {}
     var: dict[str, float] = {}
-    for team, _, _, credit, v in iter_credits(current, strengths, home_adv, benchmark, lam, margin_scale):
+    for team, _, _, credit, v in iter_credits(current, strengths, home_adv, benchmark, lam, margin_scale, floor):
         sor[team] = sor.get(team, 0.0) + credit
         var[team] = var.get(team, 0.0) + v
     return sor, var
@@ -246,7 +257,7 @@ def resume_table(table: pd.DataFrame, current: pd.DataFrame, strengths: pd.Serie
         sor: dict[str, float] = {}
         var: dict[str, float] = {}
         credits: dict[str, list] = {}
-        for team, opp, g, credit, v in iter_credits(current, strengths, home_adv, bench, lam, margin_scale):
+        for team, opp, g, credit, v in iter_credits(current, strengths, home_adv, bench, lam, margin_scale, FLOOR):
             if team not in teams:
                 continue
             sor[team] = sor.get(team, 0.0) + credit
