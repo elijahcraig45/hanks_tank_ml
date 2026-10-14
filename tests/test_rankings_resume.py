@@ -88,6 +88,54 @@ class TestBenchmark(unittest.TestCase):
         self.assertEqual(resume.top_benchmark(st, [], n=2), 0.0)
 
 
+class TestFloor(unittest.TestCase):
+    """A win never scores below zero and a loss never above it (docs/RESUME_V2_REPORT.md, desideratum D2)."""
+
+    def frame(self, margins, home_won):
+        g = games(*[("X", "Opp", int(w)) for w in home_won])
+        g["margin"] = margins
+        return g
+
+    def test_production_defaults(self):
+        self.assertTrue(resume.FLOOR)
+        self.assertEqual(resume.LAM, 0.75)
+
+    def test_a_narrow_win_over_a_decent_team_scores_negative_without_the_floor_and_not_with_it(self):
+        st = pd.Series({"Opp": 0.0, "X": 0.0})
+        g = self.frame([3.0], [1])
+        plain = resume.record_scores(g, st, 0.0, 300.0, lam=0.75)[0]["X"]
+        floored = resume.record_scores(g, st, 0.0, 300.0, lam=0.75, floor=True)[0]["X"]
+        self.assertLess(plain, 0.0)
+        self.assertEqual(floored, 0.0)
+
+    def test_over_random_games_wins_are_never_negative_and_losses_never_positive(self):
+        import numpy as np
+        rng = np.random.default_rng(0)
+        for strength in (-200.0, 0.0, 150.0, 400.0):
+            st = pd.Series({"Opp": strength, "X": 0.0})
+            for m in rng.normal(0, 25, 80):
+                g = self.frame([m], [m > 0])
+                credit = resume.record_scores(g, st, 0.0, 300.0, lam=0.75, floor=True)[0]["X"]
+                self.assertTrue(credit >= 0.0 if m > 0 else credit <= 0.0, (strength, m, credit))
+
+    def test_the_floor_changes_nothing_when_the_credit_already_has_the_right_sign(self):
+        st = pd.Series({"Opp": 300.0, "X": 0.0})
+        g = self.frame([25.0, -20.0], [1, 0])
+        a = resume.record_scores(g, st, 0.0, 300.0, lam=0.75)[0]["X"]
+        b = resume.record_scores(g, st, 0.0, 300.0, lam=0.75, floor=True)[0]["X"]
+        self.assertGreater(a, 0.0)
+        self.assertAlmostEqual(resume.record_scores(g.iloc[:1], st, 0.0, 300.0, lam=0.75)[0]["X"],
+                               resume.record_scores(g.iloc[:1], st, 0.0, 300.0, lam=0.75, floor=True)[0]["X"])
+        self.assertIsInstance(b, float)
+
+    def test_a_bigger_win_is_never_worth_less_and_a_win_always_beats_a_loss_to_the_same_team(self):
+        st = pd.Series({"Opp": 150.0, "X": 0.0})
+        wins = [resume.record_scores(self.frame([m], [1]), st, 0.0, 300.0, lam=0.75, floor=True)[0]["X"] for m in (1, 7, 14, 28, 50)]
+        self.assertEqual(wins, sorted(wins))
+        loss = resume.record_scores(self.frame([-1.0], [0]), st, 0.0, 300.0, lam=0.75, floor=True)[0]["X"]
+        self.assertGreaterEqual(min(wins), loss)
+
+
 class TestMarginCredit(unittest.TestCase):
     st = pd.Series({"Opp": 300.0, "X": 0.0, "Y": 0.0})
 
@@ -193,6 +241,8 @@ class TestResumeTable(unittest.TestCase):
         self.assertIn("2-1", text)
         self.assertIn("Best result: won", text)
         self.assertIn("Weakest: lost to D", text)
+        self.assertNotIn("tied", text)                      # the site's plain wording: a range of places, or "firm"
+        self.assertRegex(text, r"anywhere from #\d+ to #\d+|its place is firm")
 
     def test_rank_resume_is_the_rank_column(self):
         t, g, r = self.build()
