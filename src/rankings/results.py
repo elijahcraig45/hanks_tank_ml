@@ -8,8 +8,9 @@ any subset of them:
   season_rank    a margin fit of THIS season's games alone, no last season
   forecast_rank  the previous headline weights (last season at 0.25, tau 16), kept
                  selectable because that setting scored best on the walk-forward surface
-  resume_rank    strength of record: wins above what an average team would win against
-                 the same schedule, from the headline ratings
+  resume_rank    the season-scale resume (rankings.resume): wins above what a typical top-25 team
+                 would win on the same schedule, with head-to-head deciding teams whose records
+                 are not statistically separable
 
 Preseason (no games yet): results, season and resume are null; forecast is ranked, since
 it is last season's evidence exactly as the headline is.
@@ -39,7 +40,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from rankings import core
+from rankings import core, resume
 
 # Local search stops when a full pass moves nobody; the cap is a backstop, not a tuning
 # knob (a 300-team season settles in under ten passes).
@@ -191,17 +192,12 @@ def attach_boards(table: pd.DataFrame, current: pd.DataFrame, prior: pd.DataFram
     forecast = _fit_strengths(current, prior, week, fit_kw, w0=forecast_w0, tau=forecast_tau)
     out["forecast_rank"] = rank_by(out, forecast)
 
-    resume = pd.Series(dtype=float)
-    if has_current and "sor" in out.columns:
-        played = set(current["home_team_name"]) | set(current["away_team_name"])
-        sor = out.loc[out["team"].isin(played), ["team", "sor"]].dropna()
-        resume = pd.Series(sor["sor"].to_numpy(dtype=float), index=sor["team"].to_numpy())
-    resume_rank = pd.Series(pd.array([pd.NA] * len(out), dtype="Int64"), index=out.index)
-    for _, idx in out.groupby("division", dropna=False).groups.items():
-        teams = out.loc[idx, "team"]
-        scores = teams.map(resume)
-        resume_rank.loc[idx] = scores.rank(ascending=False, method="min").astype("Int64")
-    out["resume_rank"] = resume_rank
+    try:
+        strengths, home_adv = resume.opponent_ratings(current, prior, week, fit_kw) if has_current else (None, 0.0)
+        out["resume_rank"] = resume.rank_resume(out, current, strengths, home_adv,
+                                                 margin_scale=fit_kw.get("margin_scale", 10.62))
+    except Exception:  # never fatal: the column stays null
+        out["resume_rank"] = pd.array([pd.NA] * len(out), dtype="Int64")
     return out
 
 

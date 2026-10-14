@@ -181,14 +181,12 @@ class BuildTests(unittest.TestCase):
         self.assertIn((False, 0.25, 16.0), calls)  # forecast: the previous headline weights
         self.assertIn((True, 0.12, 8.0), calls)    # season only: no prior at all
 
-    def test_resume_rank_follows_sor(self):
+    def test_resume_rank_numbers_every_team_that_played(self):
         g = self.games()
         prior = self.games(season=2025)
         table, _ = build.build_board("cfb", 2026, n_boot=5, games=pd.concat([prior, g]),
                                      with_fpi=False, with_rationale=False)
-        t = table.dropna(subset=["resume_rank"]).sort_values("resume_rank")
-        self.assertTrue(t["sor"].is_monotonic_decreasing)
-        self.assertEqual(int(t["resume_rank"].iloc[0]), 1)
+        self.assertEqual(sorted(table["resume_rank"].dropna().astype(int)), [1, 2, 3, 4])
 
     def test_a_failed_season_fit_leaves_that_board_null_and_the_rest_intact(self):
         real = build.core.fit_with_prior
