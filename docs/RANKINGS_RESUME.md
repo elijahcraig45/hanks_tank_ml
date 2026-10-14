@@ -34,7 +34,7 @@ and the loss clearly apart. Headline for comparison: 69.4% eval, 25.5% of top-25
 
 Tie width: z=2 gave the fewest contradictions (top-25 1.5-2% eval) but let a team climb about 10 places above its
 strength-of-record order (a 3-2 team in the top 10); z=0.5 averages about 3.5 places and contradicts more (4.4% top-25,
-9.0% of all games; results order: 5.6%). Chosen: z=0.5, because moving a team past teams it is only barely tied with is
+9.0% of all games; results order: 5.6%). Chosen: z=0.5, because moving a team past teams it is only barely level with is
 what reads as wrong.
 
 ## Known limits

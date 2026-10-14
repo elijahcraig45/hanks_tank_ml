@@ -208,8 +208,8 @@ def _phrase(line: dict) -> str:
 
 def summary_line(lines: list[dict], sor: float, lo: int, hi: int) -> str:
     wins = sum(1 for x in lines if x["won"])
-    tie = f", tied with #{lo}\u2013#{hi}" if hi > lo else ""
-    out = f"{wins}-{len(lines) - wins}, strength of record {sor:+.2f}{tie}."
+    rng = f" (records this close could put it anywhere from #{lo} to #{hi})" if hi > lo else " (its place is firm)"
+    out = f"{wins}-{len(lines) - wins}, strength of record {sor:+.2f}{rng}."
     if lines:
         out += f" Best result: {_phrase(max(lines, key=lambda x: x['credit']))}."
     if len(lines) > 1:
@@ -222,8 +222,8 @@ def resume_table(table: pd.DataFrame, current: pd.DataFrame, strengths: pd.Serie
     """Every resume column for `table`'s rows, index-aligned; all null where there is no resume to grade.
 
     resume_rank / resume_sor / resume_sd: the order, strength of record and its noise. resume_tie_lo..hi: the best and
-    worst rank among the teams this one's record is tied with (itself included), so the site can say "tied with
-    #3-#7". resume_summary: one line; resume_games_json: per-game results and credits.
+    worst rank among the teams whose records cannot be told apart from this one's (itself included), so the site can
+    show the range of places it could reasonably hold, e.g. "#3-#7". resume_summary: one line; resume_games_json: per-game results and credits.
     """
     import json
 
