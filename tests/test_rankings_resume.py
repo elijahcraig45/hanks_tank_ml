@@ -193,6 +193,8 @@ class TestResumeTable(unittest.TestCase):
         self.assertIn("2-1", text)
         self.assertIn("Best result: won", text)
         self.assertIn("Weakest: lost to D", text)
+        self.assertNotIn("tied", text)                      # the site's plain wording: a range of places, or "firm"
+        self.assertRegex(text, r"anywhere from #\d+ to #\d+|its place is firm")
 
     def test_rank_resume_is_the_rank_column(self):
         t, g, r = self.build()
