@@ -23,9 +23,16 @@ Modes (POST body {"mode": ...}):
   drives        fetch CFBD /drives for completed weeks not yet stored, into
                 cfb_historical.drives (game_id-scoped; honours dry_run: fetches, writes nothing)
 
-Shadow model: {"shadow_ridge": true} on predict_week/predict_next (or CFB_RIDGE_SHADOW=1)
-also writes the margin ridge's predictions to cfb_season.game_predictions_ridge_shadow.
-Nothing reads that table; it exists so the ridge can be scored live before adoption.
+Headline: from 2026 week 11 the margin ridge (cfb_v2_margin_ridge) is the published model.
+predict_week/predict_next write its rows to cfb_season.game_predictions and the same rows to
+game_predictions_ridge_shadow, the ridge's own table (its whole live record, read by the
+comparison page). Its control-plane key is `ridge`: pausing it pauses the predict modes, and
+tier overrides on it apply to the headline. {"shadow_ridge": true} and CFB_RIDGE_SHADOW no
+longer do anything.
+
+Former headline: the per-division XGBoost (cfb_v1) runs every week as a shadow into
+cfb_season.game_predictions_xgb_shadow (control key `xgb`, so pausing it skips only the
+shadow). Never fatal.
 
 Drive-sim shadow: {"shadow_drive_sim": true} on predict_week/predict_next (or
 CFB_DRIVE_SIM_SHADOW=1, which deploy_cfb.sh --shadow sets) also runs the college drive
@@ -96,10 +103,10 @@ def _paused(state, key: str, what: str = "") -> bool:
     return paused
 
 
-def _apply_tiers(rows, state, tier_fn):
-    """Production-key confidence tier override (both cut-offs valid, else constants)."""
+def _apply_tiers(rows, state, tier_fn, key: str = "ridge"):
+    """Headline-key confidence tier override (both cut-offs valid, else constants)."""
     try:
-        tiers = state.tiers("xgb") if state is not None else None
+        tiers = state.tiers(key) if state is not None else None
     except Exception:  # noqa: BLE001 - fail open
         tiers = None
     if tiers and len(rows):
@@ -108,35 +115,48 @@ def _apply_tiers(rows, state, tier_fn):
 
 
 
-def _shadow_enabled(req: dict, state=None) -> bool:
-    """The margin ridge is an experiment: it runs only when asked for, per request
-    ({"shadow_ridge": true}) or per deployment (CFB_RIDGE_SHADOW=1), and writes only
-    to its own table, which nothing reads. Off by default."""
-    import os
-
-    enabled = bool(req.get("shadow_ridge")) or os.environ.get("CFB_RIDGE_SHADOW") == "1"
-    # A paused shadow is skipped exactly like a disabled one.
-    return enabled and not _paused(state, "ridge", "shadow ridge")
+def _xgb_shadow_enabled(state=None) -> bool:
+    """The former headline runs every week, unless its control key `xgb` is paused."""
+    return not _paused(state, "xgb", "shadow xgb")
 
 
-def _shadow_ridge_week(season: int, week: int, steps: dict) -> None:
-    """Predict the week with the margin ridge into the shadow table. Never fatal:
-    an experiment must not cost the production predictions anything."""
+def _write_game_rows(rows, table: str) -> int:
+    """Replace exactly the games in `rows` in one cfb_season prediction table."""
+    import cfb_config
+    from backfill_cfb import ensure_datasets, replace_game_ids
+
+    if rows.empty:
+        return 0
+    ensure_datasets()
+    return replace_game_ids(rows, cfb_config.CTX.season_dataset, table,
+                            partition_field="game_date",
+                            cluster_fields=["season", "division"])
+
+
+def _shadow_xgb_week(season: int, week: int, steps: dict) -> None:
+    """Predict the week with the per-division XGBoost into its own table. Never fatal:
+    the former headline must not cost the headline anything."""
     try:
-        import cfb_config
-        from backfill_cfb import ensure_datasets, replace_game_ids
-        from pipeline import SHADOW_TABLE, predict_week
+        from pipeline import XGB_SHADOW_TABLE, predict_week
 
-        rows = predict_week(season, week, model="ridge")
-        if not rows.empty:
-            ensure_datasets()
-            replace_game_ids(rows, cfb_config.CTX.season_dataset, SHADOW_TABLE,
-                             partition_field="game_date",
-                             cluster_fields=["season", "division"])
-        steps["shadow_ridge"] = len(rows)
+        rows = predict_week(season, week, model="xgb")
+        _write_game_rows(rows, XGB_SHADOW_TABLE)
+        steps["shadow_xgb"] = len(rows)
     except Exception as exc:
-        logger.error("shadow ridge failed: %s", exc)
-        steps["shadow_ridge"] = {"error": str(exc)[:200]}
+        logger.error("shadow xgb failed: %s", exc)
+        steps["shadow_xgb"] = {"error": str(exc)[:200]}
+
+
+def _ridge_own_table(rows, steps: dict) -> None:
+    """The headline rows again, into the ridge's own table, so its record there stays
+    whole. Never fatal: game_predictions is already written."""
+    try:
+        from pipeline import SHADOW_TABLE
+
+        steps["ridge_table"] = _write_game_rows(rows, SHADOW_TABLE)
+    except Exception as exc:
+        logger.error("ridge table write failed: %s", exc)
+        steps["ridge_table"] = {"error": str(exc)[:200]}
 
 
 def _drive_sim_enabled(req: dict, state=None) -> bool:
@@ -206,28 +226,37 @@ def _score_predictions(steps: dict) -> None:
         import cfb_config
         from google.cloud import bigquery
 
-        client = bigquery.Client(project=cfb_config.CTX.project)
-        preds = (f"{cfb_config.CTX.project}."
-                 f"{cfb_config.CTX.season_dataset}.game_predictions")
-        games = f"{cfb_config.CTX.project}.{cfb_config.CTX.hist_dataset}.games"
+        from pipeline import XGB_SHADOW_TABLE
 
-        job = client.query(f"""
-            UPDATE `{preds}` p
-            SET p.home_won = g.home_won,
-                p.actual_winner = IF(g.home_won = 1,
-                                     p.home_team_name, p.away_team_name),
-                p.prediction_correct =
-                    IF((p.home_win_probability > 0.5) = (g.home_won = 1), 1, 0)
-            FROM `{games}` g
-            WHERE p.game_id = g.game_id
-              AND g.home_won IS NOT NULL
-              AND p.prediction_correct IS NULL
-        """)
-        job.result()
-        steps["scored"] = job.num_dml_affected_rows
+        client = bigquery.Client(project=cfb_config.CTX.project)
+        games = f"{cfb_config.CTX.project}.{cfb_config.CTX.hist_dataset}.games"
     except Exception as exc:
         logger.error("scoring failed: %s", exc)
         steps["scored"] = {"error": str(exc)[:200]}
+        return
+
+    # The former headline's table is scored the same way, so its record reads as it did
+    # in game_predictions. Each table fails on its own.
+    for table, step in (("game_predictions", "scored"), (XGB_SHADOW_TABLE, "scored_xgb")):
+        preds = f"{cfb_config.CTX.project}.{cfb_config.CTX.season_dataset}.{table}"
+        try:
+            job = client.query(f"""
+                UPDATE `{preds}` p
+                SET p.home_won = g.home_won,
+                    p.actual_winner = IF(g.home_won = 1,
+                                         p.home_team_name, p.away_team_name),
+                    p.prediction_correct =
+                        IF((p.home_win_probability > 0.5) = (g.home_won = 1), 1, 0)
+                FROM `{games}` g
+                WHERE p.game_id = g.game_id
+                  AND g.home_won IS NOT NULL
+                  AND p.prediction_correct IS NULL
+            """)
+            job.result()
+            steps[step] = job.num_dml_affected_rows
+        except Exception as exc:
+            logger.error("scoring %s failed: %s", table, exc)
+            steps[step] = {"error": str(exc)[:200]}
 
 
 def season_sim_games(season: int, played=None, fetch=None):
@@ -455,10 +484,10 @@ def cfb_pipeline(request):
             import cfb_config
             import pandas as pd
             from backfill_cfb import ensure_datasets, load
-            from pipeline import confidence_tier, next_unplayed_week, predict_week
+            from pipeline import HEADLINE_KEY, confidence_tier, next_unplayed_week, predict_week
 
             state = _control_state()
-            if _paused(state, "xgb", "predict_week"):
+            if _paused(state, HEADLINE_KEY, "predict_week"):
                 return ({**result, "steps": {}, "status": "paused"}, 200)
 
             season = int(req.get("season", cfb_config.CTX.season))
@@ -471,38 +500,35 @@ def cfb_pipeline(request):
                     result["note"] = "no unplayed weeks remaining"
                     return (result, 200)
 
-            rows = _apply_tiers(predict_week(season, int(week)), state, confidence_tier)
+            rows = _apply_tiers(predict_week(season, int(week), model=HEADLINE_KEY),
+                                state, confidence_tier, key=HEADLINE_KEY)
             if dry_run:
                 result["dry_run"] = True
                 result["week"] = int(week)
                 result["steps"]["predicted"] = len(rows)
                 result["steps"]["games"] = (rows["game_id"].astype(str).tolist()
                                             if not rows.empty else [])
-                if _shadow_enabled(req, state):
+                if _xgb_shadow_enabled(state):
                     try:
-                        result["steps"]["shadow_ridge"] = len(
-                            predict_week(season, int(week), model="ridge"))
+                        result["steps"]["shadow_xgb"] = len(
+                            predict_week(season, int(week), model="xgb"))
                     except Exception as exc:
-                        result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
+                        result["steps"]["shadow_xgb"] = {"error": str(exc)[:200]}
                 if _drive_sim_enabled(req, state):
                     _drive_sim_week(season, int(week), result["steps"], dry_run=True)
                 result["status"] = "ok"
                 return (result, 200)
             if not rows.empty:
-                from backfill_cfb import replace_game_ids
-
-                ensure_datasets()
                 # Replace exactly the games predicted, so re-runs are idempotent. This
                 # used to clear every unscored row of the week, which deleted the
                 # pregame rows of games already under way or final-but-unscored,
                 # and predict_week never rewrites those.
-                replace_game_ids(rows, cfb_config.CTX.season_dataset, "game_predictions",
-                                 partition_field="game_date",
-                                 cluster_fields=["season", "division"])
+                _write_game_rows(rows, "game_predictions")
                 result["steps"]["predicted"] = len(rows)
+                _ridge_own_table(rows, result["steps"])
 
-            if _shadow_enabled(req, state):
-                _shadow_ridge_week(season, int(week), result["steps"])
+            if _xgb_shadow_enabled(state):
+                _shadow_xgb_week(season, int(week), result["steps"])
             if _drive_sim_enabled(req, state):
                 _drive_sim_week(season, int(week), result["steps"])
 

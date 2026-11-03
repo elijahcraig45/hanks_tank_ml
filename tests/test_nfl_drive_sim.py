@@ -292,7 +292,7 @@ def test_shadow_off_by_default(monkeypatch):
     out, status, sim, up = _run({"mode": "predict_week", "season": 2026, "week": 3}, monkeypatch)
     assert status == 200
     sim.assert_not_called()
-    assert [c.args[2] for c in up.call_args_list] == ["game_predictions"]
+    assert [c.args[2] for c in up.call_args_list] == ["game_predictions", "game_predictions_ridge_shadow", "game_predictions_xgb_shadow"]
 
 
 def test_shadow_writes_both_tables_game_scoped_and_create_never(monkeypatch):
@@ -300,7 +300,8 @@ def test_shadow_writes_both_tables_game_scoped_and_create_never(monkeypatch):
                                  "shadow_drive_sim": True}, monkeypatch)
     assert status == 200
     tables = {c.args[2]: c for c in up.call_args_list}
-    assert set(tables) == {"game_predictions", "game_sim_distributions",
+    assert set(tables) == {"game_predictions", "game_predictions_ridge_shadow",
+                           "game_predictions_xgb_shadow", "game_sim_distributions",
                            "game_predictions_drive_sim"}
     for t in ("game_sim_distributions", "game_predictions_drive_sim"):
         c = tables[t]
@@ -405,7 +406,7 @@ BODY = {"mode": "predict_week", "season": 2026, "week": 3}
 def test_control_paused_production_returns_200_paused_and_writes_nothing(monkeypatch):
     for extra in ({}, {"dry_run": True}):
         out, status, pw, sim, up, ens, gs = _run_ctl(
-            {**BODY, **extra}, monkeypatch, _ctl_state({"target": "xgb", "run_state": "paused"}))
+            {**BODY, **extra}, monkeypatch, _ctl_state({"target": "ridge", "run_state": "paused"}))
         assert status == 200 and out["status"] == "paused"
         pw.assert_not_called(); sim.assert_not_called(); up.assert_not_called(); ens.assert_not_called()
         assert gs.call_count == 1
@@ -413,20 +414,20 @@ def test_control_paused_production_returns_200_paused_and_writes_nothing(monkeyp
 
 def test_control_paused_shadows_are_skipped_like_disabled(monkeypatch):
     out, status, pw, sim, up, *_ = _run_ctl(
-        {**BODY, "shadow_ridge": True, "shadow_drive_sim": True}, monkeypatch,
-        _ctl_state({"target": "ridge", "run_state": "paused"},
+        {**BODY, "shadow_drive_sim": True}, monkeypatch,
+        _ctl_state({"target": "xgb", "run_state": "paused"},
                    {"target": "drive_sim", "run_state": "paused"}))
     assert status == 200 and out["status"] == "ok"
-    assert [c.kwargs.get("model") for c in pw.call_args_list] == [None]     # no ridge call
+    assert [c.kwargs.get("model") for c in pw.call_args_list] == ["ridge"]  # no xgb call
     sim.assert_not_called()
-    assert [c.args[2] for c in up.call_args_list] == ["game_predictions"]
-    assert "shadow_ridge" not in out["steps"] and "shadow_drive_sim" not in out["steps"]
+    assert [c.args[2] for c in up.call_args_list] == ["game_predictions", "game_predictions_ridge_shadow"]
+    assert "shadow_xgb" not in out["steps"] and "shadow_drive_sim" not in out["steps"]
 
 
 def test_control_only_the_paused_shadow_is_skipped(monkeypatch):
     out, status, pw, sim, up, *_ = _run_ctl(
-        {**BODY, "shadow_ridge": True, "shadow_drive_sim": True}, monkeypatch,
-        _ctl_state({"target": "ridge", "run_state": "paused"}))
+        {**BODY, "shadow_drive_sim": True}, monkeypatch,
+        _ctl_state({"target": "xgb", "run_state": "paused"}))
     sim.assert_called_once()
     assert "game_predictions_drive_sim" in [c.args[2] for c in up.call_args_list]
 
@@ -443,13 +444,13 @@ def test_control_paused_fpi_snapshot_is_skipped(monkeypatch):
 
 def test_control_tier_override_applies_to_production_rows_only(monkeypatch):
     out, status, pw, sim, up, *_ = _run_ctl(
-        BODY, monkeypatch, _ctl_state({"target": "xgb", "tier_high": "0.7", "tier_medium": "0.6"}))
+        BODY, monkeypatch, _ctl_state({"target": "ridge", "tier_high": "0.7", "tier_medium": "0.6"}))
     written = up.call_args_list[0].args[0]
     assert written["confidence_tier"].tolist() == ["medium", "high"]       # 0.66 was "high"
 
 
 def test_control_invalid_or_absent_tiers_leave_rows_untouched(monkeypatch):
-    for st in (None, _ctl_state(), _ctl_state({"target": "xgb", "tier_high": "0.5",
+    for st in (None, _ctl_state(), _ctl_state({"target": "ridge", "tier_high": "0.5",
                                                 "tier_medium": "0.6"})):
         out, status, pw, sim, up, *_ = _run_ctl(BODY, monkeypatch, st)
         assert up.call_args_list[0].args[0]["confidence_tier"].tolist() == ["high", "high"]
@@ -457,8 +458,8 @@ def test_control_invalid_or_absent_tiers_leave_rows_untouched(monkeypatch):
 
 def test_control_read_failure_fails_open(monkeypatch):
     out, status, pw, sim, up, *_ = _run_ctl(BODY, monkeypatch, get_state_exc=RuntimeError("bq"))
-    assert status == 200 and out["status"] == "ok" and pw.call_count == 1
-    assert [c.args[2] for c in up.call_args_list] == ["game_predictions"]
+    assert status == 200 and out["status"] == "ok" and pw.call_count == 2
+    assert [c.args[2] for c in up.call_args_list] == ["game_predictions", "game_predictions_ridge_shadow", "game_predictions_xgb_shadow"]
 
 
 def test_confidence_tier_helper_default_and_override():
