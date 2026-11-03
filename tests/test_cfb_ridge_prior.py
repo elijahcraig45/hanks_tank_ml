@@ -193,3 +193,24 @@ def test_majority_divisions_does_not_depend_on_row_order():
     first = cp.majority_divisions(g)
     for seed in range(5):
         assert cp.majority_divisions(g.sample(frac=1, random_state=seed)) == first
+
+
+def test_the_ridge_division_term_does_not_depend_on_row_order():
+    import pipeline as cp
+
+    g = cfb_games(seasons=(2024, 2025))
+    first = cp.ridge_frame(g).set_index("game_id")["fbs_diff"].sort_index()
+    for seed in range(3):
+        again = cp.ridge_frame(g.sample(frac=1, random_state=seed)).set_index("game_id")["fbs_diff"].sort_index()
+        pd.testing.assert_series_equal(again, first)
+
+
+def test_a_stray_fcs_feed_tag_no_longer_moves_an_fbs_program():
+    import pipeline as cp
+
+    g = cfb_games(seasons=(2024, 2025))
+    stray = g[(g.home_team == "F0") & (g.season == 2025)].head(1).copy()
+    stray["division"], stray["cross_division"], stray["game_id"] = "fcs", 0, "stray"
+    rg = cp.ridge_frame(pd.concat([g, stray], ignore_index=True))
+    cross = rg[(rg.home_team == "F0") & rg.away_team.str.startswith("C")]
+    assert (cross.fbs_diff == 1).all()           # F0 still counts as FBS in its games against FCS teams
