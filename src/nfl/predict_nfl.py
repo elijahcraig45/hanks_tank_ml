@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Bumped from nfl_v1_pure: same XGBoost, but now actually fed the EPA block it was
 # validated with. Rows written before the fix carry the old name and NULL EPA.
+# The headline through 2026 week 8; a shadow since (see HEADLINE_KEY).
 MODEL_VERSION = "nfl_v1_pure_epa"
 RIDGE_MODEL_VERSION = "nfl_v2_margin_ridge"
 
@@ -44,9 +45,18 @@ RIDGE_MODEL_VERSION = "nfl_v2_margin_ridge"
 XGB_REG_MODEL_VERSION = "nfl_v1_pure_epa_reg"
 XGB_REG_SHADOW_TABLE = "game_predictions_xgb_reg_shadow"
 
-# The ridge runs as a SHADOW model into its own table, read by nothing, until it has
-# earned a place in game_predictions.
+# The HEADLINE since 2026 week 9: the margin ridge's rows are what game_predictions publishes. Backtest log loss 2017-24 0.6342 vs the XGBoost's 0.6455
+# (2025: 0.6339 vs 0.6416), and 2026 weeks 3-8 live 0.6446 vs 0.6715 (docs/EXPERIMENT_LOG.md). The key is also its control-plane key: pausing `ridge`
+# pauses predict_week.
+HEADLINE_KEY = "ridge"
+
+# The ridge's own table. Still written every week (the same rows as game_predictions): it holds the ridge's whole live record since 2026 week 3, and the
+# model comparison page reads each model from its own table.
 SHADOW_TABLE = "game_predictions_ridge_shadow"
+
+# The former headline. The EPA XGBoost keeps running every week as a shadow (control key `xgb`), into its own table, seeded with its earlier rows from
+# game_predictions so its record stays continuous (scripts/gcp/football/ridge_headline_swap.sql).
+XGB_SHADOW_TABLE = "game_predictions_xgb_shadow"
 
 # Recalibrated for NFL. MLB's {high: 0.64, medium: 0.57} is far too tight — football
 # win probabilities spread much wider than baseball's.

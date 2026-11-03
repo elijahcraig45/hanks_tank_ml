@@ -19,6 +19,8 @@ import predict_nfl  # noqa: E402
 from test_nfl_drive_sim import BODY, _ctl_state, _load_main, _run_ctl  # noqa: E402  (the control-plane harness the other shadows use)
 
 SHADOW_TABLE = "game_predictions_xgb_reg_shadow"
+# What every predict_week run writes before any optional shadow: the headline (the ridge), its own table, and the former headline's table.
+HEADLINE_WRITES = ["game_predictions", "game_predictions_ridge_shadow", "game_predictions_xgb_shadow"]
 
 
 # ----------------------------------------------------------------------------------------------------------------------------- settings
@@ -60,23 +62,23 @@ def test_when_enabled_it_predicts_with_its_model_and_writes_only_its_own_table(m
     monkeypatch.setenv("NFL_XGB_REG_SHADOW", "1")
     out, status, pw, sim, up, *_ = _run_ctl({**BODY, "shadow_xgb_reg": True}, monkeypatch)
     assert status == 200 and out["status"] == "ok"
-    assert [c.kwargs.get("model") for c in pw.call_args_list] == [None, "xgb_reg"]
-    assert [c.args[2] for c in up.call_args_list] == ["game_predictions", SHADOW_TABLE]
+    assert [c.kwargs.get("model") for c in pw.call_args_list] == ["ridge", "xgb", "xgb_reg"]
+    assert [c.args[2] for c in up.call_args_list] == HEADLINE_WRITES + [SHADOW_TABLE]
     assert out["steps"]["shadow_xgb_reg"] == 2
 
 
 def test_when_not_asked_for_nothing_extra_is_predicted_or_written(monkeypatch):
     monkeypatch.delenv("NFL_XGB_REG_SHADOW", raising=False)
     out, status, pw, sim, up, *_ = _run_ctl(BODY, monkeypatch)
-    assert [c.kwargs.get("model") for c in pw.call_args_list] == [None]
-    assert [c.args[2] for c in up.call_args_list] == ["game_predictions"]
+    assert [c.kwargs.get("model") for c in pw.call_args_list] == ["ridge", "xgb"]
+    assert [c.args[2] for c in up.call_args_list] == HEADLINE_WRITES
     assert "shadow_xgb_reg" not in out["steps"]
 
 
 def test_a_paused_shadow_is_skipped_like_a_disabled_one(monkeypatch):
     out, status, pw, sim, up, *_ = _run_ctl({**BODY, "shadow_xgb_reg": True}, monkeypatch, _ctl_state({"target": "xgb_reg", "run_state": "paused"}))
     assert status == 200 and out["status"] == "ok"
-    assert [c.kwargs.get("model") for c in pw.call_args_list] == [None] and [c.args[2] for c in up.call_args_list] == ["game_predictions"]
+    assert [c.kwargs.get("model") for c in pw.call_args_list] == ["ridge", "xgb"] and [c.args[2] for c in up.call_args_list] == HEADLINE_WRITES
 
 
 def test_a_failing_shadow_never_costs_the_headline_anything(monkeypatch):
@@ -100,7 +102,7 @@ def test_a_failing_shadow_never_costs_the_headline_anything(monkeypatch):
         out, status = main.nfl_pipeline(Req())
     assert status == 200 and out["status"] == "ok" and out["steps"]["predicted"] == 1                # the headline was written
     assert out["steps"]["shadow_xgb_reg"] == {"error": "boom"}
-    assert [c.args[2] for c in up.call_args_list] == ["game_predictions"]                           # and nothing half-written to the shadow table
+    assert [c.args[2] for c in up.call_args_list] == HEADLINE_WRITES                                # and nothing half-written to the shadow table
 
 
 # -------------------------------------------------------------------------------------------------- the prediction path uses the right builder
@@ -140,6 +142,6 @@ def test_predict_week_with_xgb_reg_uses_the_regularized_builder_and_its_version(
     assert set(rows["model_version"]) == {predict_nfl.XGB_REG_MODEL_VERSION} and list(rows["home_win_probability"].round(2)) == [0.7, 0.7]
 
 
-def test_the_headline_path_is_unchanged(monkeypatch):
+def test_the_xgb_path_is_unchanged(monkeypatch):
     rows = _predict("xgb", monkeypatch)
     assert set(rows["model_version"]) == {predict_nfl.MODEL_VERSION} and list(rows["home_win_probability"].round(2)) == [0.55, 0.55]
