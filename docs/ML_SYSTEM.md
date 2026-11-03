@@ -232,6 +232,7 @@ Consequences:
 | NFL | ESPN FPI | Comparison snapshot (not ours) | `fpi_game_predictions` (32 rows) | [M] |
 | NFL | Power rankings, margin ridge | **Production** | `nfl_season.power_rankings` (`model='margin'`) | [M] |
 | CFB | Margin ridge `cfb_v2_margin_ridge` | **Production** from 2026 week 11 (adopted 2026-11-03) | `cfb_season.game_predictions`, and the same rows in its own `game_predictions_ridge_shadow` | [M] |
+| CFB | Margin ridge + program prior `cfb_v3_ridge_prior` | **Shadow** from 2026 week 11 (control key `ridge_prior`) | `cfb_season.game_predictions_ridge_prior_shadow` | table created 2026-11-03 [M] |
 | CFB | XGBoost `cfb_v1` | **Shadow** (was production through week 10) | `game_predictions_xgb_shadow` (seeded with all its `game_predictions` rows) | 4,625 rows seeded [M] |
 | CFB | ESPN FPI | Comparison snapshot | `fpi_game_predictions` (138 rows) | [M] |
 | CFB | Power rankings, margin ridge | **Production** | `cfb_season.power_rankings` (`model='margin'`, 266 teams) | [M] |
