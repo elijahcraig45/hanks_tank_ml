@@ -46,12 +46,21 @@ CFB_ELO = EloParams(
     mov_damping=cfb_config.ELO_MOV_DAMPING,
 )
 
-MODEL_VERSION = "cfb_v1"
+MODEL_VERSION = "cfb_v1"  # the headline through 2026 week 10; a shadow since (see HEADLINE_KEY)
 RIDGE_MODEL_VERSION = "cfb_v2_margin_ridge"
 
-# The ridge runs as a SHADOW model: it writes to its own table, which nothing reads,
-# until it has earned a place in game_predictions. Off unless asked for.
+# The HEADLINE from 2026 week 11: the margin ridge's rows are what game_predictions publishes. Backtest FBS log loss 0.4948 (2023-24) and 0.4801 (2025)
+# vs the XGBoost's 0.5406 and 0.5313 (docs/EXPERIMENT_LOG.md); live 2026 it led in FBS weeks 5+ and in FCS. The key is also its control-plane key:
+# pausing `ridge` pauses predict_week.
+HEADLINE_KEY = "ridge"
+
+# The ridge's own table. Still written every week (the same rows as game_predictions): it holds the ridge's whole live record, and the model
+# comparison page reads each model from its own table.
 SHADOW_TABLE = "game_predictions_ridge_shadow"
+
+# The former headline keeps running every week as a shadow (control key `xgb`), into its own table, seeded with its earlier rows from
+# game_predictions so its record stays continuous (scripts/gcp/football/ridge_headline_swap.sql).
+XGB_SHADOW_TABLE = "game_predictions_xgb_shadow"
 CONFIDENCE_TIERS = {"high": 0.80, "medium": 0.65}  # wider than NFL: bigger mismatches
 
 
