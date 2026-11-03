@@ -61,6 +61,13 @@ SHADOW_TABLE = "game_predictions_ridge_shadow"
 # The former headline keeps running every week as a shadow (control key `xgb`), into its own table, seeded with its earlier rows from
 # game_predictions so its record stays continuous (scripts/gcp/football/ridge_headline_swap.sql).
 XGB_SHADOW_TABLE = "game_predictions_xgb_shadow"
+
+# SHADOW from 2026 week 11 (control key `ridge_prior`): the headline ridge with a preseason program prior (margin_ridge.program_prior), so each
+# team's rating starts from its last three seasons instead of from last season's decayed games alone. Backtest 2022-24 log loss -0.0045
+# [-0.0071, -0.0019] vs the ridge, 2026 weeks 1-9 -0.0115 [-0.0186, -0.0035] (one shot); the gain is FBS weeks 1-6 and all of FCS.
+PRIOR_MODEL_VERSION = "cfb_v3_ridge_prior"
+PRIOR_SHADOW_TABLE = "game_predictions_ridge_prior_shadow"
+RIDGE_MODELS = ("ridge", "ridge_prior")
 CONFIDENCE_TIERS = {"high": 0.80, "medium": 0.65}  # wider than NFL: bigger mismatches
 
 
@@ -142,6 +149,45 @@ CFB_NON_FEATURE = {
 def cfb_feature_columns(feats: pd.DataFrame) -> list[str]:
     return [c for c in feature_columns(feats, include_market=False)
             if c not in CFB_NON_FEATURE]
+
+
+def majority_divisions(games: pd.DataFrame) -> dict[str, str]:
+    """Each team's division by MAJORITY of its same-division games in the latest season it
+    played any. A team that only ever crossed takes the majority of the opposite of its
+    known opponents' divisions (a tie goes to FCS); a team with no evidence is left out.
+
+    resolve_team_divisions lets the last same-division game it reads win, and the feed
+    tags some FBS-vs-FCS games as same-division "fcs" (Boise State, San Diego State), so
+    its answer for about eight programs depends on row order, which BigQuery does not
+    fix. A majority inside the latest season does not depend on order and follows a
+    program that changed division (Sacramento State, James Madison). Used for the
+    prior's per-division regression; the headline ridge's covariate still uses the
+    resolver.
+    """
+    if games.empty:
+        return {}
+    same = games[games["cross_division"].fillna(0) == 0] if "cross_division" in games else games
+    long = pd.concat([same[["season", "home_team", "division"]].rename(columns={"home_team": "team"}),
+                      same[["season", "away_team", "division"]].rename(columns={"away_team": "team"})],
+                     ignore_index=True).dropna(subset=["division"])
+    long = long[long["season"] == long.groupby("team")["season"].transform("max")]
+    counts = long.groupby(["team", "division"]).size().unstack(fill_value=0)
+    fbs = counts["fbs"] if "fbs" in counts else 0
+    fcs = counts["fcs"] if "fcs" in counts else 0
+    div = dict(zip(counts.index, np.where(fbs >= fcs, "fbs", "fcs")))
+    crossed = games[games["cross_division"].fillna(0) == 1] if "cross_division" in games else games.iloc[:0]
+    pairs = list(zip(crossed["home_team"], crossed["away_team"]))
+    for _ in range(3):              # one crossed-only team can be another's only evidence
+        votes: dict[str, list[str]] = {}
+        for h, a in pairs:
+            for team, opp in ((h, a), (a, h)):
+                if team not in div and opp in div:
+                    votes.setdefault(team, []).append("fcs" if div[opp] == "fbs" else "fbs")
+        if not votes:
+            break
+        for team, v in votes.items():
+            div[team] = "fbs" if v.count("fbs") > v.count("fcs") else "fcs"
+    return div
 
 
 def ridge_frame(games: pd.DataFrame) -> pd.DataFrame:
@@ -318,9 +364,11 @@ def predict_week(season: int, week: int, model: str = "xgb",
     Mirrors the NFL path: team state is built from every completed game, the unplayed
     slate is appended so it inherits that state without contributing to it.
 
-    model="xgb" (production): each division gets a model trained on its own history.
-    model="ridge" (shadow): one margin ridge over both divisions, fit on the window
+    model="ridge" (the headline): one margin ridge over both divisions, fit on the window
     before this week; also emits the predicted margin and the power ratings behind it.
+    model="ridge_prior" (shadow): the same ridge with each team shrunk toward its
+    preseason program prior (margin_ridge.program_prior) instead of toward 0.
+    model="xgb" (former headline, shadow): each division gets a model trained on its own history.
     """
     from espn_data import fetch_scheduled
 
@@ -348,9 +396,12 @@ def predict_week(season: int, week: int, model: str = "xgb",
     feats = build(combined)
 
     ridge = rg = None
-    if model == "ridge":
+    if model in RIDGE_MODELS:
         rg = ridge_frame(combined)
-        ridge = mr.fit(rg, mr.time_index(season, week), cfg)
+        prior = None
+        if model == "ridge_prior":
+            prior = mr.program_prior(rg, season, cfg, majority_divisions(combined))
+        ridge = mr.fit(rg, mr.time_index(season, week), cfg, prior=prior)
         if ridge is None:
             logger.warning("ridge: too few games before %d wk%d", season, week)
             return pd.DataFrame()
@@ -364,12 +415,13 @@ def predict_week(season: int, week: int, model: str = "xgb",
         if target.empty:
             continue
 
-        if model == "ridge":
+        if model in RIDGE_MODELS:
             tgt = target.merge(rg[["game_id", "neutral", "fbs_diff"]],
                                on="game_id", how="left")
             margin = ridge.predict_margin(tgt)
             proba = mr.win_prob(margin, cfg.sigma)
-            rows = _prediction_rows(target, proba, division, RIDGE_MODEL_VERSION,
+            version = PRIOR_MODEL_VERSION if model == "ridge_prior" else RIDGE_MODEL_VERSION
+            rows = _prediction_rows(target, proba, division, version,
                                     margin=margin, ridge=ridge, scored=False)
         else:
             if len(train) < 300:

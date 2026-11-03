@@ -113,11 +113,15 @@ def _design(games: pd.DataFrame, teams: pd.Index, cfg: RidgeConfig) -> np.ndarra
     return X
 
 
-def _solve(X: np.ndarray, y: np.ndarray, w: np.ndarray, alpha: float) -> np.ndarray:
-    """argmin_b sum w (y - Xb)^2 + alpha |b|^2  (no intercept; = sklearn Ridge)."""
+def _solve(X: np.ndarray, y: np.ndarray, w: np.ndarray, alpha: float,
+           center: np.ndarray | None = None) -> np.ndarray:
+    """argmin_b sum w (y - Xb)^2 + alpha |b - center|^2  (no intercept; center None or 0 = sklearn Ridge)."""
     Xw = X * w[:, None]
     A = X.T @ Xw + alpha * np.eye(X.shape[1])
-    return np.linalg.solve(A, Xw.T @ y)
+    rhs = Xw.T @ y
+    if center is not None:
+        rhs = rhs + alpha * center
+    return np.linalg.solve(A, rhs)
 
 
 def _train_mask(t: np.ndarray, t_now: float, has_margin: np.ndarray,
@@ -125,11 +129,16 @@ def _train_mask(t: np.ndarray, t_now: float, has_margin: np.ndarray,
     return (t < t_now) & (t >= t_now - cfg.window_seasons * WEEKS_PER_SEASON) & has_margin
 
 
-def fit(games: pd.DataFrame, t_now: float, cfg: RidgeConfig) -> MarginRidge | None:
+def fit(games: pd.DataFrame, t_now: float, cfg: RidgeConfig,
+        prior: dict[str, float] | None = None) -> MarginRidge | None:
     """Fit on completed games in the window strictly before time index `t_now`.
 
     `games` needs a `margin` column (home minus away; NaN for unplayed games).
     Returns None when the window holds fewer than `cfg.min_train` games.
+
+    `prior` (team -> points, e.g. program_prior()) shrinks each team's rating toward its
+    prior instead of toward 0, with the same penalty alpha; a team with no game in the
+    window gets its prior as its rating. None or {} is exactly the plain ridge.
     """
     _require(games, cfg)
     t = time_index(games["season"], games["week"])
@@ -144,10 +153,19 @@ def fit(games: pd.DataFrame, t_now: float, cfg: RidgeConfig) -> MarginRidge | No
     if cfg.margin_cap is not None:
         y = np.clip(y, -cfg.margin_cap, cfg.margin_cap)
     w = np.exp(-(t_now - t[tr]) / cfg.tau)
-    b = _solve(X, y, w, cfg.alpha)
     T = len(teams)
+    center = None
+    if prior:
+        center = np.zeros(X.shape[1])
+        center[:T] = teams.map(lambda k: prior.get(k, 0.0)).to_numpy(float)
+    b = _solve(X, y, w, cfg.alpha, center)
+    ratings = dict(zip(teams, b[:T]))
+    if prior:
+        # No game in the window: the penalised solve would leave the rating at its prior, so that is the rating.
+        for team, mu in prior.items():
+            ratings.setdefault(team, float(mu))
     return MarginRidge(
-        ratings=dict(zip(teams, b[:T])),
+        ratings=ratings,
         hfa=float(b[T] * HFA_SCALE),
         betas={col: float(b[T + 1 + k]) for k, (col, _) in enumerate(cfg.covariates)},
         cfg=cfg,
@@ -185,6 +203,64 @@ def walk_forward(games: pd.DataFrame, target: np.ndarray, cfg: RidgeConfig) -> n
         te = target & (t == t_now)
         pred[te] = X[te] @ b
     return pred
+
+
+# ---------------------------------------------------------------------------------------------- program prior
+# A preseason starting point for each team's rating, from our own scores only: last season's one-season rating
+# and the two before it, regressed toward the mean. Validated for CFB only (CFB_RIDGE; research/cfb_preseason_prior,
+# 2026-11-03): tuned on 2017-19 + 2021, frozen, then 2022-24 log loss -0.0045 [-0.0071, -0.0019] and a one-shot
+# 2026 weeks 1-9 check -0.0115 [-0.0186, -0.0035]. The gain is early-season FBS and all of FCS; FBS week 7+ is flat.
+PRIOR_MIN_ROWS = 30       # team-seasons a division needs before its regression is trusted
+
+
+def season_ratings(games: pd.DataFrame, cfg: RidgeConfig, seasons) -> dict[int, dict[str, float]]:
+    """One rating per team per season: the same ridge on that season's games alone, no decay."""
+    one = cfg.with_(window_seasons=1, tau=1e12)
+    out = {}
+    for u in seasons:
+        m = fit(games[games["season"] == u], (int(u) + 1) * WEEKS_PER_SEASON, one)
+        if m is not None:
+            out[int(u)] = m.ratings
+    return out
+
+
+def _lag_rows(R: dict[int, dict[str, float]], division_of: dict[str, str], u: int) -> pd.DataFrame:
+    """(team, division, rating u-1, u-2, u-3, rating u) for every team rated in u-1. A missing older season repeats
+    the newer one, so a new program leans on what it has."""
+    rows = []
+    for team, r1 in R.get(u - 1, {}).items():
+        r2 = R.get(u - 2, {}).get(team, r1)
+        r3 = R.get(u - 3, {}).get(team, r2)
+        rows.append((team, division_of.get(team, "fcs"), r1, r2, r3, R.get(u, {}).get(team, np.nan)))
+    return pd.DataFrame(rows, columns=["team", "div", "l1", "l2", "l3", "target"])
+
+
+def program_prior(games: pd.DataFrame, season: int, cfg: RidgeConfig,
+                  division_of: dict[str, str]) -> dict[str, float]:
+    """Preseason prior (team -> points) for `season`, for fit(prior=...).
+
+    Uses only seasons before `season`: per division, an OLS of each season's rating on the three before it, fit on
+    every earlier season, applied to the last three. A division with fewer than PRIOR_MIN_ROWS team-seasons gets no
+    prior, and so does a team not rated last season: both keep the plain ridge's 0."""
+    past = games[(games["season"] < season) & games["margin"].notna()]
+    R = season_ratings(past, cfg, sorted(int(u) for u in past["season"].unique()))
+    if not R:
+        return {}
+    frames = [_lag_rows(R, division_of, u) for u in range(min(R) + 1, season) if u in R]
+    if not frames:
+        return {}
+    train = pd.concat(frames, ignore_index=True).dropna(subset=["target"])
+    cur = _lag_rows(R, division_of, season)
+    prior: dict[str, float] = {}
+    for div in ("fbs", "fcs"):
+        tr, te = train[train["div"] == div], cur[cur["div"] == div]
+        if len(tr) < PRIOR_MIN_ROWS or te.empty:
+            continue
+        Xtr = np.column_stack([np.ones(len(tr)), tr[["l1", "l2", "l3"]].to_numpy(float)])
+        beta, *_ = np.linalg.lstsq(Xtr, tr["target"].to_numpy(float), rcond=None)
+        Xte = np.column_stack([np.ones(len(te)), te[["l1", "l2", "l3"]].to_numpy(float)])
+        prior.update({t: float(v) for t, v in zip(te["team"], Xte @ beta)})
+    return prior
 
 
 def fit_sigma(margin_pred: np.ndarray, won: np.ndarray,
