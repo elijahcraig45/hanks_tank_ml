@@ -19,12 +19,13 @@ import predict_nfl  # noqa: E402
 from test_nfl_drive_sim import BODY as NFL_BODY, _load_main as _load_nfl, _Req  # noqa: E402
 
 RIDGE_TABLE, XGB_TABLE = "game_predictions_ridge_shadow", "game_predictions_xgb_shadow"
+PRIOR_TABLE = "game_predictions_ridge_prior_shadow"
 
 
 def _frames():
     """One distinct frame per model, so a test can tell whose rows were written where."""
     return {m: pd.DataFrame({"game_id": ["g1"], "home_win_probability": [p], "confidence_tier": ["low"], "model_version": [m]})
-            for m, p in (("ridge", 0.61), ("xgb", 0.52))}
+            for m, p in (("ridge", 0.61), ("xgb", 0.52), ("ridge_prior", 0.63))}
 
 
 def _versions(calls):
@@ -140,8 +141,8 @@ def _cfb_predict(monkeypatch, predict=None, replace=None):
 def test_cfb_publishes_the_ridge_and_files_the_xgboost_under_its_own_table(monkeypatch):
     out, status, pw, rep = _cfb_predict(monkeypatch)
     assert status == 200 and out["status"] == "ok"
-    assert [c.kwargs.get("model") for c in pw.call_args_list] == ["ridge", "xgb"]
-    assert _versions(rep.call_args_list) == {"game_predictions": "ridge", RIDGE_TABLE: "ridge", XGB_TABLE: "xgb"}
+    assert [c.kwargs.get("model") for c in pw.call_args_list] == ["ridge", "xgb", "ridge_prior"]
+    assert _versions(rep.call_args_list) == {"game_predictions": "ridge", RIDGE_TABLE: "ridge", XGB_TABLE: "xgb", PRIOR_TABLE: "ridge_prior"}
     for c in rep.call_args_list:                      # every table keeps the partitioning the headline always had
         assert c.kwargs["partition_field"] == "game_date" and c.kwargs["cluster_fields"] == ["season", "division"]
 
@@ -157,7 +158,7 @@ def test_cfb_a_failing_xgboost_never_costs_the_headline(monkeypatch):
     out, status, pw, rep = _cfb_predict(monkeypatch, predict=predict)
     assert status == 200 and out["status"] == "ok" and out["steps"]["predicted"] == 1
     assert out["steps"]["shadow_xgb"] == {"error": "too few rows"}
-    assert [c.args[2] for c in rep.call_args_list] == ["game_predictions", RIDGE_TABLE]
+    assert [c.args[2] for c in rep.call_args_list] == ["game_predictions", RIDGE_TABLE, PRIOR_TABLE]
 
 
 def test_cfb_score_updates_both_tables_and_each_fails_alone(monkeypatch):

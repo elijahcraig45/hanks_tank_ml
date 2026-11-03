@@ -34,6 +34,11 @@ Former headline: the per-division XGBoost (cfb_v1) runs every week as a shadow i
 cfb_season.game_predictions_xgb_shadow (control key `xgb`, so pausing it skips only the
 shadow). Never fatal.
 
+Prior shadow: the headline ridge with a preseason program prior (cfb_v3_ridge_prior) runs
+every week into cfb_season.game_predictions_ridge_prior_shadow (control key `ridge_prior`;
+pausing it skips only this shadow). Never fatal. The table must exist first
+(scripts/gcp/football/create_ridge_prior_shadow.sql).
+
 Drive-sim shadow: {"shadow_drive_sim": true} on predict_week/predict_next (or
 CFB_DRIVE_SIM_SHADOW=1, which deploy_cfb.sh --shadow sets) also runs the college drive
 simulator (cfb_drive_sim.py) and writes cfb_season.game_sim_distributions and
@@ -145,6 +150,25 @@ def _shadow_xgb_week(season: int, week: int, steps: dict) -> None:
     except Exception as exc:
         logger.error("shadow xgb failed: %s", exc)
         steps["shadow_xgb"] = {"error": str(exc)[:200]}
+
+
+def _prior_shadow_enabled(state=None) -> bool:
+    """The prior shadow runs every week, unless its control key `ridge_prior` is paused."""
+    return not _paused(state, "ridge_prior", "shadow ridge_prior")
+
+
+def _shadow_ridge_prior_week(season: int, week: int, steps: dict) -> None:
+    """Predict the week with the prior ridge into its own table. Never fatal: a shadow
+    must not cost the headline anything."""
+    try:
+        from pipeline import PRIOR_SHADOW_TABLE, predict_week
+
+        rows = predict_week(season, week, model="ridge_prior")
+        _write_game_rows(rows, PRIOR_SHADOW_TABLE)
+        steps["shadow_ridge_prior"] = len(rows)
+    except Exception as exc:
+        logger.error("shadow ridge_prior failed: %s", exc)
+        steps["shadow_ridge_prior"] = {"error": str(exc)[:200]}
 
 
 def _ridge_own_table(rows, steps: dict) -> None:
@@ -514,6 +538,12 @@ def cfb_pipeline(request):
                             predict_week(season, int(week), model="xgb"))
                     except Exception as exc:
                         result["steps"]["shadow_xgb"] = {"error": str(exc)[:200]}
+                if _prior_shadow_enabled(state):
+                    try:
+                        result["steps"]["shadow_ridge_prior"] = len(
+                            predict_week(season, int(week), model="ridge_prior"))
+                    except Exception as exc:
+                        result["steps"]["shadow_ridge_prior"] = {"error": str(exc)[:200]}
                 if _drive_sim_enabled(req, state):
                     _drive_sim_week(season, int(week), result["steps"], dry_run=True)
                 result["status"] = "ok"
@@ -529,6 +559,8 @@ def cfb_pipeline(request):
 
             if _xgb_shadow_enabled(state):
                 _shadow_xgb_week(season, int(week), result["steps"])
+            if _prior_shadow_enabled(state):
+                _shadow_ridge_prior_week(season, int(week), result["steps"])
             if _drive_sim_enabled(req, state):
                 _drive_sim_week(season, int(week), result["steps"])
 
