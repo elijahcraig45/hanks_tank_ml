@@ -227,12 +227,12 @@ Consequences:
 | MLB | sim_blend (PA sim v2 + strength) | **Shadow**, separate function; 0 rows so far | `game_predictions_sim_blend`, `game_props_sim` | 0 rows [M] |
 | MLB | PA sim v1 | Deprecated shadow, never enabled | (`game_predictions_sim`, absent) | [M] |
 | MLB | Power rankings, Bradley-Terry W/L | **Production** | `power_rankings` (`model='bt'`) | [M] |
-| NFL | XGBoost `nfl_v1_pure_epa` (EPA fixed) | **Production** since 2026-09-25 | `nfl_season.game_predictions` | 15 rows, week 3 [M] |
-| NFL | Margin ridge `nfl_v2_margin_ridge` | **Shadow** | `game_predictions_ridge_shadow` (15 rows) | [M] |
+| NFL | Margin ridge `nfl_v2_margin_ridge` | **Production** from 2026 week 9 (adopted 2026-11-03) | `nfl_season.game_predictions`, and the same rows in its own `game_predictions_ridge_shadow` (record since week 3) | [M] |
+| NFL | XGBoost `nfl_v1_pure_epa` (EPA fixed) | **Shadow** (was production 2026-09-25 .. week 8) | `game_predictions_xgb_shadow` (seeded with all its `game_predictions` rows) | 690 rows seeded [M] |
 | NFL | ESPN FPI | Comparison snapshot (not ours) | `fpi_game_predictions` (32 rows) | [M] |
 | NFL | Power rankings, margin ridge | **Production** | `nfl_season.power_rankings` (`model='margin'`) | [M] |
-| CFB | XGBoost `cfb_v1` | **Production** | `cfb_season.game_predictions` | [M] |
-| CFB | Margin ridge `cfb_v2_margin_ridge` | **Shadow** | `game_predictions_ridge_shadow` (121 rows) | [M] |
+| CFB | Margin ridge `cfb_v2_margin_ridge` | **Production** from 2026 week 11 (adopted 2026-11-03) | `cfb_season.game_predictions`, and the same rows in its own `game_predictions_ridge_shadow` | [M] |
+| CFB | XGBoost `cfb_v1` | **Shadow** (was production through week 10) | `game_predictions_xgb_shadow` (seeded with all its `game_predictions` rows) | 4,625 rows seeded [M] |
 | CFB | ESPN FPI | Comparison snapshot | `fpi_game_predictions` (138 rows) | [M] |
 | CFB | Power rankings, margin ridge | **Production** | `cfb_season.power_rankings` (`model='margin'`, 266 teams) | [M] |
 | All | Drive sim (NFL), matchup features, injuries, weather, state-space, series unit, autosearch | **Research only** | — | see EXPERIMENT_LOG |

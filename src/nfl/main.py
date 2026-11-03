@@ -19,9 +19,16 @@ Modes (POST body {"mode": ...}):
                 Runs from its own Scheduler job after the weekly ingest (deploy --shadow), not
                 inside it, so it can never cost the ingest its 540 s.
 
-Shadow model: {"shadow_ridge": true} on predict_week (or NFL_RIDGE_SHADOW=1) also writes
-the margin ridge's predictions to nfl_season.game_predictions_ridge_shadow. Nothing reads
-that table; it exists so the ridge can be scored live before adoption.
+Headline: since 2026 week 9 the margin ridge (margin_ridge.py, nfl_v2_margin_ridge) is the
+published model. predict_week writes its rows to nfl_season.game_predictions and the same
+rows to game_predictions_ridge_shadow, the ridge's own table (its whole live record since
+2026 week 3, read by the comparison page). Its control-plane key is `ridge`: pausing it
+pauses predict_week, and tier overrides on it apply to the headline. {"shadow_ridge": true}
+and NFL_RIDGE_SHADOW no longer do anything.
+
+Former headline: the EPA XGBoost (nfl_v1_pure_epa) runs every week as a shadow into
+nfl_season.game_predictions_xgb_shadow (control key `xgb`, so pausing it skips only the
+shadow). Never fatal.
 
 Regularized-XGBoost shadow: {"shadow_xgb_reg": true} on predict_week (or NFL_XGB_REG_SHADOW=1) also writes the same model with slower, smaller, more regularized
 settings (models.build_xgb_reg) to nfl_season.game_predictions_xgb_reg_shadow. Nothing reads it.
@@ -93,10 +100,10 @@ def _paused(state, key: str, what: str = "") -> bool:
     return paused
 
 
-def _apply_tiers(rows, state, tier_fn):
-    """Production-key confidence tier override (both cut-offs valid, else constants)."""
+def _apply_tiers(rows, state, tier_fn, key: str = "ridge"):
+    """Headline-key confidence tier override (both cut-offs valid, else constants)."""
     try:
-        tiers = state.tiers("xgb") if state is not None else None
+        tiers = state.tiers(key) if state is not None else None
     except Exception:  # noqa: BLE001 - fail open
         tiers = None
     if tiers and len(rows):
@@ -139,15 +146,37 @@ def _next_unplayed_week() -> tuple[int, int]:
 
 
 
-def _shadow_enabled(req: dict, state=None) -> bool:
-    """The margin ridge is an experiment: it runs only when asked for, per request
-    ({"shadow_ridge": true}) or per deployment (NFL_RIDGE_SHADOW=1), and writes only
-    to its own table. Off by default."""
-    import os
+def _xgb_shadow_enabled(state=None) -> bool:
+    """The former headline runs every week, unless its control key `xgb` is paused."""
+    return not _paused(state, "xgb", "shadow xgb")
 
-    enabled = bool(req.get("shadow_ridge")) or os.environ.get("NFL_RIDGE_SHADOW") == "1"
-    # A paused shadow is skipped exactly like a disabled one.
-    return enabled and not _paused(state, "ridge", "shadow ridge")
+
+def _shadow_xgb_week(season: int, week: int, steps: dict) -> None:
+    """Predict the week with the EPA XGBoost into its own table. Never fatal: the former headline must not cost the headline anything."""
+    try:
+        from bq_io import upsert_week
+        from config import CTX
+        from predict_nfl import XGB_SHADOW_TABLE, predict_week
+
+        rows = predict_week(season, week, model="xgb")
+        upsert_week(rows, CTX.season_dataset, XGB_SHADOW_TABLE, season, week)
+        steps["shadow_xgb"] = len(rows)
+    except (Exception, SystemExit) as exc:  # _upcoming raises SystemExit on an empty slate
+        logger.error("shadow xgb failed: %s", exc)
+        steps["shadow_xgb"] = {"error": str(exc)[:200]}
+
+
+def _ridge_own_table(rows, season: int, week: int, steps: dict) -> None:
+    """The headline rows again, into the ridge's own table, so its record there stays whole. Never fatal: game_predictions is already written."""
+    try:
+        from bq_io import upsert_week
+        from config import CTX
+        from predict_nfl import SHADOW_TABLE
+
+        steps["ridge_table"] = upsert_week(rows, CTX.season_dataset, SHADOW_TABLE, season, week)
+    except Exception as exc:
+        logger.error("ridge table write failed: %s", exc)
+        steps["ridge_table"] = {"error": str(exc)[:200]}
 
 
 def _xgb_reg_enabled(req: dict, state=None) -> bool:
@@ -217,21 +246,6 @@ def _refresh_drives(season: int, steps: dict) -> None:
     except Exception as exc:
         logger.error("drives refresh failed: %s", exc)
         steps["drives"] = {"error": str(exc)[:200]}
-
-
-def _shadow_ridge_week(season: int, week: int, steps: dict) -> None:
-    """Predict the week with the margin ridge into the shadow table. Never fatal."""
-    try:
-        from bq_io import upsert_week
-        from config import CTX
-        from predict_nfl import SHADOW_TABLE, predict_week
-
-        rows = predict_week(season, week, model="ridge")
-        upsert_week(rows, CTX.season_dataset, SHADOW_TABLE, season, week)
-        steps["shadow_ridge"] = len(rows)
-    except Exception as exc:
-        logger.error("shadow ridge failed: %s", exc)
-        steps["shadow_ridge"] = {"error": str(exc)[:200]}
 
 
 def _fpi_snapshot(season: int, steps: dict, refresh: bool = False, state=None) -> None:
@@ -388,10 +402,10 @@ def nfl_pipeline(request):
         elif mode == "predict_week":
             from bq_io import ensure_dataset, upsert_week
             from config import CTX
-            from predict_nfl import confidence_tier, predict_week
+            from predict_nfl import HEADLINE_KEY, confidence_tier, predict_week
 
             state = _control_state()
-            if _paused(state, "xgb", "predict_week"):
+            if _paused(state, HEADLINE_KEY, "predict_week"):
                 return ({**result, "steps": {}, "status": "paused"}, 200)
 
             season = req.get("season")
@@ -399,18 +413,19 @@ def nfl_pipeline(request):
             if not (season and week):
                 season, week = _next_unplayed_week()
 
-            rows = _apply_tiers(predict_week(int(season), int(week)), state, confidence_tier)
+            rows = _apply_tiers(predict_week(int(season), int(week), model=HEADLINE_KEY),
+                                state, confidence_tier, key=HEADLINE_KEY)
             if dry_run:
                 result["dry_run"] = True
                 result["season"], result["week"] = season, week
                 result["steps"]["predicted"] = len(rows)
                 result["steps"]["games"] = rows["game_id"].astype(str).tolist()
-                if _shadow_enabled(req, state):
+                if _xgb_shadow_enabled(state):
                     try:
-                        result["steps"]["shadow_ridge"] = len(
-                            predict_week(int(season), int(week), model="ridge"))
-                    except Exception as exc:
-                        result["steps"]["shadow_ridge"] = {"error": str(exc)[:200]}
+                        result["steps"]["shadow_xgb"] = len(
+                            predict_week(int(season), int(week), model="xgb"))
+                    except (Exception, SystemExit) as exc:
+                        result["steps"]["shadow_xgb"] = {"error": str(exc)[:200]}
                 if _xgb_reg_enabled(req, state):
                     try:
                         result["steps"]["shadow_xgb_reg"] = len(predict_week(int(season), int(week), model="xgb_reg"))
@@ -427,8 +442,9 @@ def nfl_pipeline(request):
             result["season"] = season
             result["week"] = week
 
-            if _shadow_enabled(req, state):
-                _shadow_ridge_week(int(season), int(week), result["steps"])
+            _ridge_own_table(rows, int(season), int(week), result["steps"])
+            if _xgb_shadow_enabled(state):
+                _shadow_xgb_week(int(season), int(week), result["steps"])
             if _xgb_reg_enabled(req, state):
                 _shadow_xgb_reg_week(int(season), int(week), result["steps"])
             if _drive_sim_enabled(req, state):
@@ -448,18 +464,30 @@ def nfl_pipeline(request):
             # them. The diagnostics endpoint derives Brier and log loss from it, so a
             # row scored without it reads as an away win and reports the wrong error
             # for every game — while still looking correctly scored.
-            sql = f"""
-              UPDATE `{CTX.project}.{CTX.season_dataset}.game_predictions` p
-              SET p.home_won = g.home_won,
-                  p.prediction_correct =
-                    IF((p.home_win_probability > 0.5) = (g.home_won = 1), 1, 0),
-                  p.actual_winner =
-                    IF(g.home_won = 1, p.home_team_name, p.away_team_name)
-              FROM `{CTX.project}.{CTX.hist_dataset}.games` g
-              WHERE p.game_id = g.game_id AND g.home_won IS NOT NULL
-            """
-            query(sql)
+            # The former headline's table is scored too, so its record reads the same as
+            # it did in game_predictions; a failure there never costs the headline its scores.
+            from predict_nfl import XGB_SHADOW_TABLE
+
+            def score_sql(tbl: str) -> str:
+                return f"""
+                  UPDATE `{CTX.project}.{CTX.season_dataset}.{tbl}` p
+                  SET p.home_won = g.home_won,
+                      p.prediction_correct =
+                        IF((p.home_win_probability > 0.5) = (g.home_won = 1), 1, 0),
+                      p.actual_winner =
+                        IF(g.home_won = 1, p.home_team_name, p.away_team_name)
+                  FROM `{CTX.project}.{CTX.hist_dataset}.games` g
+                  WHERE p.game_id = g.game_id AND g.home_won IS NOT NULL
+                """
+
+            query(score_sql("game_predictions"))
             result["steps"]["scored"] = "ok"
+            try:
+                query(score_sql(XGB_SHADOW_TABLE))
+                result["steps"]["scored_xgb"] = "ok"
+            except Exception as exc:
+                logger.error("scoring %s failed: %s", XGB_SHADOW_TABLE, exc)
+                result["steps"]["scored_xgb"] = {"error": str(exc)[:200]}
 
         elif mode == "backfill":
             from bq_io import ensure_dataset, load_table
