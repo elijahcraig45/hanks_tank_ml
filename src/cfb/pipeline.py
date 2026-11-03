@@ -160,9 +160,8 @@ def majority_divisions(games: pd.DataFrame) -> dict[str, str]:
     tags some FBS-vs-FCS games as same-division "fcs" (Boise State, San Diego State), so
     its answer for about eight programs depends on row order, which BigQuery does not
     fix. A majority inside the latest season does not depend on order and follows a
-    program that changed division (Sacramento State, James Madison). Used for the
-    prior's per-division regression; the headline ridge's covariate still uses the
-    resolver.
+    program that changed division (Sacramento State, James Madison). Used by
+    ridge_frame (the ridge's division term) and the prior's per-division regression.
     """
     if games.empty:
         return {}
@@ -196,8 +195,12 @@ def ridge_frame(games: pd.DataFrame) -> pd.DataFrame:
     `fbs_diff` is the division covariate: +1 FBS home vs FCS away, -1 the reverse, 0
     otherwise. Without it the only thing separating the two populations is the ~350
     cross-division games a window holds, and FCS ratings drift toward FBS's.
+
+    Divisions come from majority_divisions, not resolve_team_divisions: the resolver's
+    answer for about eight programs depended on row order, which moved up to 300 of a
+    season's predictions by over half a point between two runs on the same games.
     """
-    div_of = resolve_team_divisions(games)
+    div_of = majority_divisions(games)
     rg = games[["game_id", "season", "week", "division", "home_team", "away_team"]].copy()
     rg["margin"] = pd.to_numeric(games["result"], errors="coerce")
     rg["neutral"] = games["neutral_site"].fillna(0).astype(int)
