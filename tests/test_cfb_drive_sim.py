@@ -593,3 +593,75 @@ def test_confidence_tier_helper_default_and_override():
 
     assert pipeline.confidence_tier(0.7) == "medium"
     assert pipeline.confidence_tier(0.7, (0.69, 0.6)) == "high"
+
+
+# ---------------------------------------------------------------- team ids that drift from the games table
+# 2026-11-10: ESPN had renamed four non-D1 opponents (GLN -> GVLS, CENO -> UCO, FRNK -> FRKL, DCK -> DKSN).
+# cfb_historical.games was rewritten with the new ids, the stored drives kept the old ones, and the team index
+# (built from games) had no column for them: get_indexer gave -1 and the sparse design raised
+# "negative axis 1 index: -1", which lost the whole week-11 shadow.
+def _renamed(drives, old="FFF", new="FFX", season=2026, week=2):
+    """The stored drives of one week call a team by an id the games table no longer uses."""
+    d = drives.copy()
+    m = (d.season == season) & (d.week == week)
+    for c in ("home_team", "away_team", "posteam", "defteam"):
+        d.loc[m & (d[c] == old), c] = new
+    return d
+
+
+def test_prep_drives_takes_team_ids_from_the_games_table(drives):
+    g = played_games(drives)                      # the games table says FFF
+    stale = _renamed(drives)                      # the drives say FFX for 2026 week 2
+    assert ((stale.posteam == "FFX") | (stale.defteam == "FFX")).any()
+    got = ds.prep_drives(stale, g, ds.CFB)
+    want = ds.prep_drives(drives, g, ds.CFB)
+    pd.testing.assert_frame_equal(got[["game_id", "posteam", "defteam"]], want[["game_id", "posteam", "defteam"]])
+
+
+def test_nfl_prep_drives_leaves_team_ids_alone(drives):
+    g = played_games(drives)
+    got = ds.prep_drives(_renamed(drives), g, ds.NFL)
+    assert ((got.posteam == "FFX") | (got.defteam == "FFX")).any()
+
+
+def test_predict_survives_a_renamed_team(drives):
+    # games from the clean drives (new ids), drives as stored (old ids): the production mismatch
+    dist, pred, info = cfb_drive_sim.predict_week_drive_sim(
+        2026, 3, played=played_games(drives), upcoming=upcoming(), drives=_renamed(drives),
+        lines=LINES, now=NOW, n_sims=300)
+    assert pred.game_id.tolist() == ["u2", "u3"]
+
+
+def test_fit_drops_drives_of_teams_it_cannot_place(drives, caplog):
+    import logging
+
+    stale = _renamed(drives)
+    g = played_games(drives)
+    g = g[~((g.season == 2026) & (g.week == 2))]   # those games are not in the games table at all
+    teams = pd.Index(sorted(TEAMS))
+    fbs = {t: int(t in FBS) for t in TEAMS}
+    with caplog.at_level(logging.WARNING, logger="drive_sim"):
+        m = ds.fit_week(ds.prep_drives(stale, g, ds.CFB), g, 2026, 3, teams=teams, cfg=ds.CFB, fbs=fbs)
+    assert list(m.teams) == list(teams)
+    assert "FFX" in caplog.text and "dropping" in caplog.text
+
+
+def _swap_listing(g, season=2026, week=2):
+    """The games table lists home and away the other way round (it happens at neutral sites)."""
+    g = g.copy()
+    m = (g.season == season) & (g.week == week)
+    g.loc[m, ["home_team", "away_team"]] = g.loc[m, ["away_team", "home_team"]].values
+    return g
+
+
+def test_swapped_home_away_listing_never_flips_offence(drives):
+    g = _swap_listing(played_games(drives))
+    got = ds.prep_drives(drives, g, ds.CFB)                    # no rename: ids already agree
+    pd.testing.assert_series_equal(got.posteam, drives[drives.res.notna()].posteam.reset_index(drop=True))
+
+
+def test_rename_with_swapped_listing_keeps_who_had_the_ball(drives):
+    g = _swap_listing(played_games(drives))
+    got = ds.prep_drives(_renamed(drives), g, ds.CFB)
+    truth = drives[drives.res.notna()].reset_index(drop=True)   # FFF, as the games table now says
+    pd.testing.assert_frame_equal(got[["posteam", "defteam"]], truth[["posteam", "defteam"]])

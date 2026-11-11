@@ -145,6 +145,7 @@ class SimConfig:
     max_iter: int = 400                # drive-outcome logistic solver cap (frozen configs use 400)
     p2pt: float = 0.45                 # CFB overtime two-point rate
     regulation_only_kernels: bool = False
+    team_ids_from_games: bool = False  # re-derive drive offence/defence ids from `games` (CFB)
     platt: dict = field(default_factory=lambda: dict(PLATT))
     relocated: dict = field(default_factory=lambda: dict(RELOCATED))
 
@@ -179,6 +180,9 @@ CFB = SimConfig(
     sd_edges=(-28.5, -16.5, -8.5, -3.5, -0.5, 0.5, 3.5, 8.5, 16.5, 28.5),
     division=True, ot="cfb", dur_decay="ktau", margin_lo=-100, margin_hi=100, sparse=True,
     p2pt=0.45, regulation_only_kernels=True,
+    # Stored drives keep the ESPN ids they were written with; the games table is rewritten each week and
+    # follows ESPN renames. Not a model setting: it only changes rows whose ids disagree with their game.
+    team_ids_from_games=True,
     # Platt on the research walk-forward outputs, 2022-2025 (sim_c_C0.1_t16_pw1_N4000_s0).
     platt={"intercept": CFB_PLATT_INTERCEPT, "coef": CFB_PLATT_COEF,
            "fit_window": "2022-2025 (6,550 games, research walk-forward sim outputs)"},
@@ -190,10 +194,53 @@ def time_index(season: int, week: int) -> int:
     return int(season) * WPS + int(week)
 
 
+def _team_ids_from_games(d: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
+    """Rename drive team ids that the games table no longer uses.
+
+    The team index, divisions and the slate all come from the games table, so its ids are the
+    ones that count. Stored drives keep the ids they were written with, and a feed rename splits
+    the two: on 2026-11-10 ESPN had renamed several non-D1 opponents (GLN -> GVLS, BSU -> BOWE,
+    ...), the drives still used the old ids, and the team index had no column for them.
+
+    Per game, the drive's own home/away pair is matched to the games table's pair through the
+    team they still share, so one renamed id is mapped to its new id and nothing else moves.
+    Which side had the ball is never re-derived, so a game the two tables list home/away the
+    other way round keeps its offences. Games where the pairs already agree, where both ids
+    changed (no shared team to anchor on) or that are missing from `games` are left alone; the
+    fit drops any drive whose team is still unknown.
+    """
+    pair = {"home_team", "away_team"}
+    if d.empty or not pair <= set(d.columns) or not pair <= set(games.columns):
+        return d
+    g = games.assign(_gid=games["game_id"].astype(str)).drop_duplicates("_gid").set_index("_gid")
+    gid = d["game_id"].astype(str)
+    gh, ga = gid.map(g["home_team"]), gid.map(g["away_team"])
+    dh, da = d["home_team"].copy(), d["away_team"].copy()   # copies: the loop below rewrites these columns
+    agree = ((dh == gh) & (da == ga)) | ((dh == ga) & (da == gh))
+    same_order = (dh == gh) ^ (da == ga)          # exactly one id matches in the same slot
+    swapped = ~same_order & ((dh == ga) ^ (da == gh))
+    fix = gh.notna() & ga.notna() & ~agree & (same_order | swapped)
+    if not fix.any():
+        return d
+    new_h = gh.where(same_order, ga)              # what the drive table's home id becomes
+    new_a = ga.where(same_order, gh)
+    before = set(d.loc[fix, "home_team"]) | set(d.loc[fix, "away_team"])
+    for col in ("posteam", "defteam", "home_team", "away_team"):
+        v = d[col]
+        d.loc[fix, col] = v.where(v != dh, new_h).where(v != da, new_a)[fix]
+    after = set(d.loc[fix, "home_team"]) | set(d.loc[fix, "away_team"])
+    logger.warning("drive_sim: %d drives in %d games used team ids the games table no longer uses; renamed %s -> %s",
+                   int(fix.sum()), gid[fix].nunique(), ",".join(sorted(map(str, before - after))),
+                   ",".join(sorted(map(str, after - before))))
+    return d
+
+
 def prep_drives(d: pd.DataFrame, games: pd.DataFrame, cfg: SimConfig = NFL) -> pd.DataFrame:
     """Drive rows -> model frame. `games` supplies game_id -> location (Neutral/Home), or
     for college `neutral_site` (0/1)."""
     d = d[d.res.notna()].copy()
+    if cfg.team_ids_from_games:
+        d = _team_ids_from_games(d, games)
     if "location" in games.columns:
         loc = games.set_index("game_id")["location"]
         loc = loc[~loc.index.duplicated()]
@@ -311,6 +358,15 @@ class DriveModel:
     def fit(self, tr: pd.DataFrame, t_now: int, teams: pd.Index, fbs: dict | None = None):
         from sklearn.linear_model import LogisticRegression, Ridge
 
+        # A drive whose team has no column in `teams` gets index -1, which the sparse design rejects
+        # ("negative axis 1 index: -1") and the dense one would silently write into the last column. Drop it.
+        placed = (teams.get_indexer(tr.posteam) >= 0) & (teams.get_indexer(tr.defteam) >= 0)
+        if not placed.all():
+            lost = sorted(set(tr.posteam[teams.get_indexer(tr.posteam) < 0])
+                          | set(tr.defteam[teams.get_indexer(tr.defteam) < 0]), key=str)
+            logger.warning("drive_sim: dropping %d of %d training drives from teams not in the team index: %s",
+                           int((~placed).sum()), len(tr), ",".join(map(str, lost)))
+            tr = tr[placed]
         self.teams = teams
         self.fbs = fbs or {}
         self.t_now = t_now
