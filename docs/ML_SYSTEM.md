@@ -1,9 +1,18 @@
 # Hank's Tank ML — System Reference
 
-Last verified: **2026-09-25**, against `main` at `3fd0b98` (PR #6), the live GCP project
+Last verified: **2026-09-25**, against `main` at `d2193d7` (PR #6), the live GCP project
 `hankstank`, and stored research outputs. This is the main reference for what runs, how it
 runs, and how to change it safely. Model history is in [EXPERIMENT_LOG.md](EXPERIMENT_LOG.md).
 Per-model details are in [MODEL_CARDS.md](MODEL_CARDS.md).
+
+> **Update 2026-11-16: where the jobs run.** Since 2026-10-05 every scheduled job and the per-game
+> MLB predictions run on a homelab server (systemd timers plus a per-game planner) instead of Cloud
+> Scheduler and Cloud Tasks. They call the same entry points with the same request bodies, so the
+> modes, tables and safety rules below still apply. The functions, Scheduler jobs and Cloud Tasks
+> queues in sections 1-3 are kept, paused, as a manual fallback; deploying them can switch the
+> schedules back on (see the README's safety rules). Section 4 reflects the 2026-11-03 football
+> headline change. Commit ids in this repo changed on 2026-11-16 (history rewrite); the ones cited
+> here are the new ids.
 
 **Evidence labels.** Each claim carries one of these labels:
 
@@ -144,7 +153,7 @@ The modes are `ingest`, `score`, `rankings`, `stats`, `cfbd`, `predict_week`/`pr
 
 ### 2.5 The 2026-09-25 incident, and what changed
 
-Before commit `0f7b709`, both football functions ignored `dry_run`. [H]
+Before commit `9ef7713`, both football functions ignored `dry_run`. [H]
 - A `{"dry_run":true}` call to `predict_week`/`predict_next` ran for real. It replaced NFL week 3 (16 games) and CFB week 4 (122 games), and wrote FPI snapshots.
 - Three already-kicked-off games lost their true pregame rows: ATL@GB, Liberty@Coastal Carolina and Army@Temple.
 - The user restored those three rows with BigQuery time travel (`mlb/ml_writeups/restore_3_pregame_rows.sql`).
