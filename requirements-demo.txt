@@ -1,0 +1,6 @@
+# Only what `make demo` needs. The versions match requirements.txt, so the demo prints the numbers CI checks.
+numpy==2.4.0
+pandas==2.3.3
+scipy==1.16.3
+scikit-learn==1.8.0
+xgboost==3.1.3

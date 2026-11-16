@@ -33,4 +33,4 @@ jobs:
         run: python -m pytest tests -v
 
       - name: Compile source tree
-        run: python -m compileall src scripts
+        run: python -m compileall src scripts demo
