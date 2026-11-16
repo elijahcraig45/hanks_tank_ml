@@ -39,7 +39,7 @@ flowchart LR
 | | Headline model (shown on the site) | Shadows (scored, not shown) | How it's doing |
 |---|---|---|---|
 | MLB | V10 XGBoost, 73 features (lineup matchups, Elo, recent form) | 3-feature logistic; plate-appearance simulator blended with team strength | 54.0% correct on 1,984 pregame predictions in 2026, against a 52.8% home-team win rate |
-| NFL | Margin ridge (from 2026 week 9) | XGBoost (the previous headline), regularized XGBoost, drive simulator; ESPN FPI kept for comparison | Backtest 2017–24 log loss 0.634, vs 0.646 for XGBoost and 0.609 for the betting market |
+| NFL | Margin ridge (from 2026 week 9) | XGBoost (the previous headline), regularized XGBoost, drive simulator; ESPN FPI kept for comparison | Backtest 2017–24 log loss 0.634, vs 0.646 for XGBoost and 0.609 for the betting market (`make demo` reruns it) |
 | College football | Margin ridge (from 2026 week 11) | XGBoost (the previous headline), ridge with a preseason program prior, drive simulator; ESPN FPI for comparison | Backtest 2025 FBS log loss 0.480, vs 0.531 for XGBoost |
 | Power rankings | Bradley–Terry (MLB) and margin ratings (NFL, CFB) with bootstrap rank ranges, plus a results-based college resume board | | |
 | Season projections | Monte Carlo of the rest of the season, 10,000 runs (NFL and FBS) | | NFL 2018–25 playoff-odds Brier score 0.149, vs 0.166 for extrapolating each team's record |
@@ -65,6 +65,18 @@ search across seven model families and a CFB margin cap all stayed out of the he
 [docs/EXPERIMENT_LOG.md](docs/EXPERIMENT_LOG.md) records every experiment with its numbers and
 verdict, including the failures.
 
+## Check the NFL result yourself
+
+```bash
+make demo   # about 5 seconds after a one-time install; no network, no cloud account
+```
+
+This reruns the backtest that moved the NFL headline from XGBoost to the margin ridge. It uses the production code
+in `src/nfl` and one committed file of nflverse schedules. It tunes the ridge on 2010–2016, walks forward through
+2017–2025, and prints accuracy, log loss and Brier score for Elo, XGBoost, the ridge and the betting market, with a
+paired-bootstrap interval on the ridge-minus-XGBoost gap. The numbers match the experiment log, and a CI test fails
+if they move. [demo/README.md](demo/README.md) has the expected output and what the demo leaves out.
+
 ## Where it runs
 
 Since October 2026 the jobs run on a homelab server as systemd timers: 12 scheduled jobs plus a
@@ -72,7 +84,8 @@ per-game planner that queues each MLB prediction (a baseline, then 6 h, 3 h, 90 
 first pitch). They call the same entry points with the same request bodies as the Cloud Functions
 they replaced, and each release is a pinned commit of this repo. The Cloud Functions, their paused
 Cloud Scheduler jobs and the paused Cloud Tasks queues stay deployed as a manual fallback. The host
-layer (installer, units, runner, health checks) lives in a separate private repo.
+layer (installer, units, runner, health checks) lives in
+[hanks_tank_lab](https://github.com/elijahcraig45/hanks_tank_lab).
 
 ## Docs
 
@@ -84,6 +97,7 @@ layer (installer, units, runner, health checks) lives in a separate private repo
 | [docs/SHADOW_MODELS.md](docs/SHADOW_MODELS.md) | The MLB shadow writers (logit3, sim_blend) |
 | [research/backtest_2026/FINDINGS.md](research/backtest_2026/FINDINGS.md) | The 2026 MLB backtest programme |
 | [research/football_2026_09/README.md](research/football_2026_09/README.md) | The football experiments |
+| [demo/README.md](demo/README.md) | The offline NFL backtest behind `make demo` |
 
 ## Code map
 
@@ -101,6 +115,7 @@ layer (installer, units, runner, health checks) lives in a separate private repo
 | `src/rankings/` | Power rankings, rank ranges, rationale and the college resume board |
 | `src/stats/` | Player stats, CFBD ingest, pick'em sheet |
 | `scripts/gcp/` | Cloud Function deploys for the fallback (all support `--dry-run`) |
+| `demo/` | The offline NFL backtest (`make demo`) and its nflverse snapshot |
 
 ## Safety rules (short form)
 
@@ -118,8 +133,8 @@ layer (installer, units, runner, health checks) lives in a separate private repo
 
 ```bash
 python -m pip install -r requirements.txt pytest "polars==1.*"
-python -m pytest tests -v          # 555 tests in CI
-python -m compileall src scripts
+python -m pytest tests -v          # 565 tests in CI
+python -m compileall src scripts demo
 python3 src/season_2026_pipeline.py --dry-run --date 2026-09-24
 ```
 
