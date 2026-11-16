@@ -290,15 +290,6 @@ Removed: 34 duplicates
    bq cp hankstank:mlb_historical_data.games_historical_backup_20251224_110500 hankstank:mlb_historical_data.games_historical
 ```
 
-## ML Curriculum
-
-Comprehensive learning materials for data engineering and ML:
-- 20 lessons across 5 modules
-- Hands-on exercises using your MLB data
-- 16-week timeline to production-ready models
-
-Start here: [ml_curriculum/CURRICULUM.md](ml_curriculum/CURRICULUM.md)
-
 ## Data Schema
 
 Complete documentation of all BigQuery tables: [BIGQUERY_DATA_SCHEMA.md](BIGQUERY_DATA_SCHEMA.md)
