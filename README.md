@@ -51,7 +51,7 @@ These older figures do not describe the live system:
 | `src/stats/` | Player stats, CFBD, pick'em sheet |
 | `scripts/gcp/2026_season/deploy_v10.sh`, `deploy_sim_blend.sh`, `scripts/gcp/nfl/deploy_nfl.sh`, `scripts/gcp/cfb/deploy_cfb.sh` | Deploys (all support `--dry-run`) |
 
-`cloud_functions/` is a deprecated audit trail; see its `DEPRECATED.md`.
+The deprecated `cloud_functions/` directory was removed on 2026-11-16; it remains in git history.
 
 ## Safety rules (short form)
 
